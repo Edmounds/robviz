@@ -1,0 +1,50 @@
+{
+  "name": "robviz",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Web 机器人上位机：浏览器直连 foxglove_bridge 的 rviz/rqt 替代品，含 3D 可视化、地图/点云编辑、布局配置、插件系统与 agent CLI",
+  "license": "MIT",
+  "author": "Edmounds",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Edmounds/robviz.git"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "mock": "tsx mock/server.ts",
+    "test": "vitest run",
+    "cli": "tsx cli/robviz.ts",
+    "plugin:new": "tsx scripts/new-plugin.ts"
+  },
+  "dependencies": {
+    "@foxglove/cdr": "^3.5.1",
+    "@foxglove/rosmsg": "^5.0.5",
+    "@foxglove/rosmsg2-serialization": "^3.1.2",
+    "@foxglove/ws-protocol": "^0.8.0",
+    "jpeg-js": "^0.4.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "three": "^0.185.1",
+    "uplot": "^1.6.32",
+    "urdf-loader": "^0.13.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.185.4",
+    "@types/ws": "^8.18.1",
+    "@vitejs/plugin-react": "^6.0.4",
+    "oxlint": "^1.75.0",
+    "tsx": "^4.23.12",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.0",
+    "vitest": "^4.1.10",
+    "ws": "^8.21.3"
+  }
+}
