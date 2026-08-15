@@ -3,12 +3,14 @@
  * raw Image（rgb8/bgr8/mono8/mono16/16UC1/32FC1，深度图 turbo 上色）。
  * 悬停显示像素坐标 + 值（深度显示米数），视觉调参用。
  */
+import { X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
 import type { TopicInfo } from "../core/FoxgloveConnection";
 import { turbo } from "../renderers/colormap";
 import type { MessagePayload } from "../worker/protocol";
+import { useI18n } from "../app/i18n";
 
 const IMAGE_SCHEMAS = new Set(["sensor_msgs/msg/Image", "sensor_msgs/msg/CompressedImage"]);
 
@@ -136,6 +138,7 @@ export function ImagePanel({
   onTopicChange?: (topic: string) => void;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<RawFrame>(null);
   const [topic, setTopic] = useState(initialTopic ?? "");
@@ -220,7 +223,7 @@ export function ImagePanel({
     <div className="panel">
       <div className="panel-header">
         <select value={topic} onChange={(e) => setTopic(e.target.value)}>
-          <option value="">选择图像话题…</option>
+          <option value="">{t("chooseImageTopic")}</option>
           {imageTopics.map((t) => (
             <option key={t.topic} value={t.topic}>
               {t.topic}
@@ -229,9 +232,7 @@ export function ImagePanel({
         </select>
         <span className="panel-meta">{meta}</span>
         <span className="spacer" />
-        <button className="panel-close" onClick={onClose}>
-          ×
-        </button>
+        <button className="panel-close" onClick={onClose} title={t("closePanel")} aria-label={t("closePanel")}><X /></button>
       </div>
       <div className="panel-body image-body">
         <canvas ref={canvasRef} onMouseMove={onMove} onMouseLeave={() => setHover(undefined)} />

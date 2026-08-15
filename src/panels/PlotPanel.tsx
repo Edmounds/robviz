@@ -1,39 +1,38 @@
-/**
- * 曲线面板：uPlot + 环形缓冲。多话题字段对比（rqt_plot / Foxglove Plot 的核心用法）。
- * 字段用点路径表示，如 twist.twist.linear.x；时间轴用消息 header 时间戳（无则到达时间）。
- */
+import { Eye, EyeOff, Pause, Play, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
 import type { TopicInfo } from "../core/FoxgloveConnection";
-import { toSec } from "../core/types";
-import type { Time } from "../core/types";
+import { computeSharedRange, relativeArrivalSec, seriesKey } from "../core/plot";
+import { useI18n } from "../app/i18n";
 
 const WINDOW_SEC = 60;
 const MAX_POINTS = 3000;
-/** 数据是内容：曲线可以有颜色（UI 骨架保持单色） */
 const PALETTE = ["#4ea1ff", "#ffb347", "#5ad469", "#ff6b81", "#c792ea", "#6be7dd"];
 
 interface Series {
   id: number;
   topic: string;
   field: string;
+  color: string;
+  visible: boolean;
   ts: number[];
   vs: number[];
+  latest?: number;
+  status: "waiting" | "ok" | "invalid";
 }
 
 function getPath(obj: unknown, path: string): unknown {
-  let cur = obj;
+  let current = obj;
   for (const key of path.split(".")) {
-    if (cur == null || typeof cur !== "object") return undefined;
-    cur = (cur as Record<string, unknown>)[key];
+    if (current == null || typeof current !== "object") return undefined;
+    current = (current as Record<string, unknown>)[key];
   }
-  return cur;
+  return current;
 }
 
-/** 常用消息类型的字段建议 */
 const FIELD_HINTS: Record<string, string[]> = {
   "nav_msgs/msg/Odometry": [
     "twist.twist.linear.x",
@@ -48,6 +47,7 @@ const FIELD_HINTS: Record<string, string[]> = {
 export interface PlotSeriesConfig {
   topic: string;
   field: string;
+  visible?: boolean;
 }
 
 export function PlotPanel({
@@ -61,217 +61,298 @@ export function PlotPanel({
   bridge: WorkerBridge;
   topics: TopicInfo[];
   theme?: "dark" | "light";
-  /** 配置恢复：初始曲线列表 */
   initialSeries?: PlotSeriesConfig[];
-  /** 配置保存：曲线列表变化时上报 */
   onSeriesChange?: (series: PlotSeriesConfig[]) => void;
   onClose: () => void;
 }) {
+  const { t } = useI18n();
   const plotRef = useRef<HTMLDivElement>(null);
   const uplotRef = useRef<uPlot>(null);
   const seriesRef = useRef<Series[]>([]);
+  const subscriptionsRef = useRef(new Map<string, () => void>());
+  const startedAtRef = useRef(performance.now());
   const pausedRef = useRef(false);
-  const unsubsRef = useRef(new Map<number, () => void>());
   const themeRef = useRef(theme);
+  const onSeriesChangeRef = useRef(onSeriesChange);
+  const nextId = useRef(1);
   themeRef.current = theme;
+  onSeriesChangeRef.current = onSeriesChange;
 
-  const [seriesList, setSeriesList] = useState<Array<{ id: number; topic: string; field: string }>>(
-    [],
-  );
+  const [seriesList, setSeriesList] = useState<Series[]>([]);
   const [newTopic, setNewTopic] = useState("");
   const [newField, setNewField] = useState("");
   const [paused, setPaused] = useState(false);
-  const nextId = useRef(1);
+  const [, setStatusTick] = useState(0);
 
-  // 数值话题（有 raw payload 的都行，这里全列）
-  const plotTopics = topics.filter(
-    (t) => !["sensor_msgs/msg/Image", "sensor_msgs/msg/CompressedImage"].includes(t.schemaName),
+  const commitSeries = useCallback((next: Series[]) => {
+    seriesRef.current = next;
+    setSeriesList(next);
+  }, []);
+
+  const ensureSubscription = useCallback(
+    (topic: string) => {
+      if (subscriptionsRef.current.has(topic)) return;
+      const unsubscribe = bridge.subscribe(topic, (payload) => {
+        if (payload.kind !== "raw") return;
+        const now = relativeArrivalSec(performance.now(), startedAtRef.current);
+        for (const series of seriesRef.current) {
+          if (series.topic !== topic) continue;
+          const raw = getPath(payload.message, series.field);
+          if (typeof raw !== "number" && typeof raw !== "bigint") {
+            series.status = "invalid";
+            continue;
+          }
+          const value = Number(raw);
+          if (!Number.isFinite(value)) {
+            series.status = "invalid";
+            continue;
+          }
+          series.status = "ok";
+          series.latest = value;
+          series.ts.push(now);
+          series.vs.push(value);
+          const cutoff = now - WINDOW_SEC;
+          while (series.ts.length > MAX_POINTS || (series.ts[0] ?? now) < cutoff) {
+            series.ts.shift();
+            series.vs.shift();
+          }
+        }
+      });
+      subscriptionsRef.current.set(topic, unsubscribe);
+    },
+    [bridge],
   );
 
   const rebuild = useCallback(() => {
     uplotRef.current?.destroy();
     uplotRef.current = null;
-    const el = plotRef.current;
-    if (!el || seriesRef.current.length === 0) return;
-    // 轴/网格是 chrome，跟随明暗主题（曲线是数据色，不变）
+    const element = plotRef.current;
+    const current = seriesRef.current;
+    if (!element || current.length === 0) return;
     const dark = themeRef.current === "dark";
     const axis = {
-      stroke: dark ? "#888" : "#777",
-      grid: { stroke: dark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.07)" },
-      ticks: { stroke: dark ? "#444" : "#bbb" },
+      stroke: dark ? "rgba(245,245,245,0.74)" : "rgba(10,10,10,0.74)",
+      grid: { stroke: dark ? "rgba(245,245,245,0.14)" : "rgba(10,10,10,0.14)", width: 1 },
+      ticks: { stroke: dark ? "rgba(245,245,245,0.36)" : "rgba(10,10,10,0.36)", width: 1 },
     };
-    const u = new uPlot(
+    uplotRef.current = new uPlot(
       {
-        width: el.clientWidth,
-        height: el.clientHeight - 4,
+        width: element.clientWidth,
+        height: Math.max(100, element.clientHeight - 4),
         series: [
           {},
-          ...seriesRef.current.map((s, i) => ({
-            label: `${s.topic}.${s.field}`,
-            stroke: PALETTE[i % PALETTE.length],
-            width: 1.4,
+          ...current.map((series) => ({
+            label: `${series.topic}.${series.field}`,
+            stroke: series.color,
+            show: series.visible,
+            width: 2,
             points: { show: false },
           })),
         ],
         axes: [axis, { ...axis }],
         legend: { show: true },
-        cursor: { drag: { x: true, y: false } },
-        scales: { x: { time: false } },
+        cursor: { drag: { x: false, y: false } },
+        scales: { x: { time: false, auto: false }, y: { auto: false } },
       },
-      [[], ...seriesRef.current.map(() => [])] as uPlot.AlignedData,
-      el,
+      [[], ...current.map(() => [])] as uPlot.AlignedData,
+      element,
     );
-    uplotRef.current = u;
   }, []);
 
-  // 10Hz 刷新图表（数据在 handler 里进环形缓冲）
+  const addEntry = useCallback(
+    (config: PlotSeriesConfig) => {
+      const topic = config.topic.trim();
+      const field = config.field.trim();
+      if (!topic || !field) return false;
+      if (seriesRef.current.some((item) => seriesKey(item.topic, item.field) === seriesKey(topic, field))) {
+        return false;
+      }
+      const id = nextId.current++;
+      const next = [
+        ...seriesRef.current,
+        {
+          id,
+          topic,
+          field,
+          color: PALETTE[(id - 1) % PALETTE.length],
+          visible: config.visible ?? true,
+          ts: [],
+          vs: [],
+          status: "waiting" as const,
+        },
+      ];
+      commitSeries(next);
+      ensureSubscription(topic);
+      queueMicrotask(rebuild);
+      return true;
+    },
+    [commitSeries, ensureSubscription, rebuild],
+  );
+
+  useEffect(() => {
+    for (const series of initialSeries ?? []) addEntry(series);
+    // Initial state is intentionally restored once per panel instance.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    onSeriesChangeRef.current?.(
+      seriesList.map(({ topic, field, visible }) => ({ topic, field, ...(visible ? {} : { visible }) })),
+    );
+  }, [seriesList]);
+
   useEffect(() => {
     const timer = setInterval(() => {
-      const u = uplotRef.current;
-      const series = seriesRef.current;
-      if (!u || series.length === 0 || pausedRef.current) return;
-      // 合并时间轴：用第一条曲线的时间戳做 x（多曲线各自采样时间不同，
-      // uPlot 需要对齐数据 → 每条曲线独立插入 null 会复杂化；
-      // KISS：x 取全部时间戳的并集近似 —— 直接用逐条 setData 的多 x 不支持，
-      // 用 join 简化：按各自序列绘制时以最长的为 x，短的尾部对齐）
-      const joined = uPlot.join(
-        series.map((s) => [s.ts, s.vs] as uPlot.AlignedData),
-      ) as uPlot.AlignedData;
-      u.setData(joined);
+      if (pausedRef.current) return;
+      const plot = uplotRef.current;
+      const current = seriesRef.current;
+      if (!plot || current.length === 0) return;
+      const joined = uPlot.join(current.map((s) => [s.ts, s.vs] as uPlot.AlignedData)) as uPlot.AlignedData;
+      plot.setData(joined);
+      const latest = current.reduce((max, series) => Math.max(max, series.ts.at(-1) ?? 0), 0);
+      plot.setScale("x", { min: Math.max(0, latest - WINDOW_SEC), max: Math.max(WINDOW_SEC, latest) });
+      const visibleValues = current
+        .filter((series) => series.visible)
+        .map((series) => series.vs.filter((_, index) => (series.ts[index] ?? 0) >= latest - WINDOW_SEC));
+      const [min, max] = computeSharedRange(visibleValues);
+      plot.setScale("y", { min, max });
+      setStatusTick((value) => value + 1);
     }, 100);
     return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
-    const el = plotRef.current;
-    if (!el) return;
-    const ob = new ResizeObserver(() => {
-      uplotRef.current?.setSize({ width: el.clientWidth, height: el.clientHeight - 4 });
-    });
-    ob.observe(el);
-    return () => ob.disconnect();
-  }, []);
-
-  const addEntry = useCallback(
-    (topic: string, field: string) => {
-      if (!topic || !field) return;
-      const id = nextId.current++;
-      const s: Series = { id, topic, field, ts: [], vs: [] };
-      seriesRef.current = [...seriesRef.current, s];
-      const unsub = bridge.subscribe(topic, (payload) => {
-        if (payload.kind !== "raw") return;
-        const msg = payload.message;
-        const v = getPath(msg, s.field);
-        if (typeof v !== "number" && typeof v !== "bigint") return;
-        const header = getPath(msg, "header.stamp") as Time | undefined;
-        const t = header ? toSec(header) : Date.now() / 1000;
-        s.ts.push(t);
-        s.vs.push(Number(v));
-        // 时间窗 + 点数双限
-        const cutoff = t - WINDOW_SEC;
-        while (s.ts.length > MAX_POINTS || (s.ts.length > 0 && s.ts[0] < cutoff)) {
-          s.ts.shift();
-          s.vs.shift();
-        }
+    const element = plotRef.current;
+    if (!element) return;
+    const observer = new ResizeObserver(() => {
+      uplotRef.current?.setSize({
+        width: element.clientWidth,
+        height: Math.max(100, element.clientHeight - 4),
       });
-      unsubsRef.current.set(id, unsub);
-      setSeriesList((prev) => [...prev, { id, topic, field }]);
-      setTimeout(rebuild, 0);
-    },
-    [bridge, rebuild],
-  );
-
-  const addSeries = useCallback(() => {
-    addEntry(newTopic, newField);
-    setNewField("");
-  }, [addEntry, newTopic, newField]);
-
-  // 配置恢复：挂载时补上初始曲线
-  useEffect(() => {
-    for (const s of initialSeries ?? []) addEntry(s.topic, s.field);
-    // 仅恢复一次
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
   }, []);
 
-  // 配置保存：曲线列表变化时上报
-  useEffect(() => {
-    onSeriesChange?.(seriesList.map(({ topic, field }) => ({ topic, field })));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seriesList]);
-
-  const removeSeries = useCallback(
-    (id: number) => {
-      unsubsRef.current.get(id)?.();
-      unsubsRef.current.delete(id);
-      seriesRef.current = seriesRef.current.filter((s) => s.id !== id);
-      setSeriesList((prev) => prev.filter((s) => s.id !== id));
-      setTimeout(rebuild, 0);
-    },
-    [rebuild],
-  );
-
-  // 主题变化重建图表（uPlot 轴色是构造参数，无法动态改）
   useEffect(() => {
     rebuild();
   }, [theme, rebuild]);
 
   useEffect(() => {
-    const unsubs = unsubsRef.current;
+    const subscriptions = subscriptionsRef.current;
     return () => {
-      for (const unsub of unsubs.values()) unsub();
-      unsubs.clear();
+      for (const unsubscribe of subscriptions.values()) unsubscribe();
+      subscriptions.clear();
       uplotRef.current?.destroy();
     };
   }, []);
 
-  const hints = FIELD_HINTS[topics.find((t) => t.topic === newTopic)?.schemaName ?? ""] ?? [];
+  const removeSeries = useCallback(
+    (id: number) => {
+      const removed = seriesRef.current.find((series) => series.id === id);
+      if (!removed) return;
+      const next = seriesRef.current.filter((series) => series.id !== id);
+      commitSeries(next);
+      if (!next.some((series) => series.topic === removed.topic)) {
+        subscriptionsRef.current.get(removed.topic)?.();
+        subscriptionsRef.current.delete(removed.topic);
+      }
+      queueMicrotask(rebuild);
+    },
+    [commitSeries, rebuild],
+  );
+
+  const clearSeries = useCallback(() => {
+    for (const unsubscribe of subscriptionsRef.current.values()) unsubscribe();
+    subscriptionsRef.current.clear();
+    commitSeries([]);
+    uplotRef.current?.destroy();
+    uplotRef.current = null;
+  }, [commitSeries]);
+
+  const toggleSeries = useCallback(
+    (id: number) => {
+      commitSeries(
+        seriesRef.current.map((series) =>
+          series.id === id ? { ...series, visible: !series.visible } : series,
+        ),
+      );
+      queueMicrotask(rebuild);
+    },
+    [commitSeries, rebuild],
+  );
+
+  const plotTopics = topics.filter(
+    (topic) => !["sensor_msgs/msg/Image", "sensor_msgs/msg/CompressedImage"].includes(topic.schemaName),
+  );
+  const hints = FIELD_HINTS[topics.find((topic) => topic.topic === newTopic)?.schemaName ?? ""] ?? [];
+  const duplicate = seriesList.some(
+    (series) => seriesKey(series.topic, series.field) === seriesKey(newTopic, newField.trim()),
+  );
 
   return (
     <div className="panel">
       <div className="panel-header">
-        <select value={newTopic} onChange={(e) => setNewTopic(e.target.value)}>
-          <option value="">话题…</option>
-          {plotTopics.map((t) => (
-            <option key={t.topic} value={t.topic}>
-              {t.topic}
-            </option>
+        <select value={newTopic} onChange={(event) => setNewTopic(event.target.value)}>
+          <option value="">{t("chooseTopic")}</option>
+          {plotTopics.map((topic) => (
+            <option key={topic.topic} value={topic.topic}>{topic.topic}</option>
           ))}
         </select>
         <input
           className="field-input"
-          placeholder="字段路径，如 twist.twist.linear.x"
+          placeholder={t("fieldPath")}
           value={newField}
-          onChange={(e) => setNewField(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addSeries()}
+          onChange={(event) => setNewField(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && addEntry({ topic: newTopic, field: newField })) setNewField("");
+          }}
           list="field-hints"
         />
         <datalist id="field-hints">
-          {hints.map((h) => (
-            <option key={h} value={h} />
-          ))}
+          {hints.map((hint) => <option key={hint} value={hint} />)}
         </datalist>
-        <button onClick={addSeries}>添加</button>
         <button
           onClick={() => {
-            pausedRef.current = !paused;
-            setPaused(!paused);
+            if (addEntry({ topic: newTopic, field: newField })) setNewField("");
           }}
+          disabled={!newTopic || !newField.trim() || duplicate}
         >
-          {paused ? "继续" : "暂停"}
+          {t("add")}
         </button>
+        <button
+          className="icon-action"
+          onClick={() => {
+            pausedRef.current = !pausedRef.current;
+            setPaused(pausedRef.current);
+          }}
+          title={paused ? t("resume") : t("pause")}
+          aria-label={paused ? t("resume") : t("pause")}
+        >
+          {paused ? <Play /> : <Pause />}
+        </button>
+        {seriesList.length > 0 && (
+          <button className="icon-action" onClick={clearSeries} title={t("clearAll")} aria-label={t("clearAll")}>
+            <Trash2 />
+          </button>
+        )}
         <span className="spacer" />
-        <button className="panel-close" onClick={onClose}>
-          ×
-        </button>
+        <button className="panel-close" onClick={onClose} aria-label={t("closePanel")}><X /></button>
       </div>
       {seriesList.length > 0 && (
-        <div className="series-tags">
-          {seriesList.map((s, i) => (
-            <span key={s.id} className="series-tag" style={{ borderColor: PALETTE[i % PALETTE.length] }}>
-              <i style={{ background: PALETTE[i % PALETTE.length] }} />
-              {s.topic}.{s.field}
-              <button onClick={() => removeSeries(s.id)}>×</button>
-            </span>
+        <div className="series-list">
+          {seriesList.map((series) => (
+            <div key={series.id} className={`series-row ${series.visible ? "" : "muted"}`}>
+              <i style={{ background: series.color }} />
+              <span className="series-name">{series.topic}.{series.field}</span>
+              <span className={`series-value ${series.status}`}>
+                {series.status === "ok" ? series.latest?.toPrecision(6) : series.status === "invalid" ? t("invalidField") : t("waitingData")}
+              </span>
+              <button onClick={() => toggleSeries(series.id)} title={series.visible ? t("hide") : t("show")} aria-label={series.visible ? t("hide") : t("show")}>
+                {series.visible ? <Eye /> : <EyeOff />}
+              </button>
+              <button onClick={() => removeSeries(series.id)} title={t("delete")} aria-label={t("delete")}><Trash2 /></button>
+            </div>
           ))}
         </div>
       )}

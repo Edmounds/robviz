@@ -1,5 +1,6 @@
 /** TF 树：child→parent 映射转成缩进树；点击节点一键视角跟踪该 frame */
 import { useMemo } from "react";
+import { useI18n } from "../app/i18n";
 
 export function TfTreeSection({
   tree,
@@ -10,6 +11,7 @@ export function TfTreeSection({
   followFrame?: string;
   onFollow?: (frame: string) => void;
 }) {
+  const { t } = useI18n();
   const lines = useMemo(() => {
     if (tree.size === 0) return [];
     const children = new Map<string, string[]>();
@@ -37,7 +39,7 @@ export function TfTreeSection({
 
   return (
     <div className="side-section">
-      <h2>TF 树</h2>
+      <h2>{t("tfTree")}</h2>
       <div className="tf-tree">
         {lines.map(({ name, depth }) => (
           <button
@@ -45,7 +47,7 @@ export function TfTreeSection({
             className={`tf-node ${followFrame === name ? "following" : ""}`}
             style={{ paddingLeft: 12 + depth * 14 }}
             onClick={() => onFollow?.(name)}
-            title={followFrame === name ? "取消跟踪" : "视角跟踪该 frame"}
+            title={followFrame === name ? t("cancelFollow") : t("followFrame")}
           >
             {depth > 0 && <span className="tf-branch">└ </span>}
             {name}

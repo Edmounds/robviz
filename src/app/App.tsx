@@ -1,22 +1,31 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Moon, Settings, SquareTerminal, Sun } from "lucide-react";
+import { Group, Panel, Separator, useGroupRef } from "react-resizable-panels";
 import * as THREE from "three";
 
 import { startAgentChannel } from "../agent/uiChannel";
 import { WorkerBridge } from "../bridge/WorkerBridge";
 import type { ConnectionState, ServiceInfo, TopicInfo } from "../core/FoxgloveConnection";
-import type { LayoutConfig } from "../core/layoutConfig";
-import { parseLayout, serializeLayout } from "../core/layoutConfig";
+import type { LayoutConfig, PointCloudSettings } from "../core/layoutConfig";
+import {
+  DEFAULT_APP_SETTINGS,
+  DEFAULT_POINT_CLOUD_SETTINGS,
+  DEFAULT_WORKSPACE_LAYOUT,
+  parseLayout,
+  serializeLayout,
+} from "../core/layoutConfig";
 import { TfBuffer } from "../core/TfBuffer";
 import type { TFMessage } from "../core/types";
 import { toSec } from "../core/types";
+import { applyPanelLayout, buildPanelLayout, layoutPercent } from "../core/workspaceLayout";
 import { ImagePanel } from "../panels/ImagePanel";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { MapEditorPanel } from "../panels/MapEditorPanel";
 import { PlotPanel } from "../panels/PlotPanel";
+import { PointCloudSettingsPanel } from "../panels/PointCloudSettingsPanel";
 import { ServiceSection } from "../panels/ServiceSection";
 import { TeleopSection } from "../panels/TeleopSection";
 import { TfTreeSection } from "../panels/TfTreeSection";
-import { UrdfSection } from "../panels/UrdfSection";
 import { EditableCloudRenderer } from "../renderers/EditableCloudRenderer";
 import { GridRenderer } from "../renderers/GridRenderer";
 import { LaserScanRenderer } from "../renderers/LaserScanRenderer";
@@ -27,15 +36,20 @@ import type { Display, SceneStats } from "../renderers/SceneManager";
 import { SceneManager } from "../renderers/SceneManager";
 import type { Theme } from "../renderers/sceneTheme";
 import { setSceneTheme } from "../renderers/sceneTheme";
-import { pluginDisplays, pluginPanels, pluginSections } from "../plugins/registry";
+import { plugins, resolvePlugins } from "../plugins/registry";
 import type { PluginContext } from "../plugins/types";
 import type { PcdWorkerResponse } from "../worker/pcd.worker";
 import type { MessagePayload, StreamStats } from "../worker/protocol";
+import { I18nProvider, translate } from "./i18n";
+import { SettingsPage } from "./SettingsPage";
 
 const DEFAULT_URL = "ws://localhost:8765";
 const PCD_KEY = "__pcd__";
 const THEME_KEY = "robviz.theme";
 const LAYOUT_KEY = "robviz.layout";
+const TERMINAL_HEIGHT_KEY = "robviz.terminal.height";
+const UrdfEditorPage = lazy(() => import("../panels/UrdfEditorPage"));
+const TerminalPanel = lazy(() => import("../panels/TerminalPanel"));
 
 const BUILTIN_DISPLAY_FACTORIES: Record<string, () => Display> = {
   "sensor_msgs/msg/LaserScan": () => new LaserScanRenderer(),
@@ -43,12 +57,6 @@ const BUILTIN_DISPLAY_FACTORIES: Record<string, () => Display> = {
   "nav_msgs/msg/OccupancyGrid": () => new GridRenderer(),
   "nav_msgs/msg/Path": () => new PathRenderer(),
   "visualization_msgs/msg/MarkerArray": () => new MarkerRenderer(),
-};
-
-/** 内置 + 插件显示器（内置优先） */
-const DISPLAY_FACTORIES: Record<string, () => Display> = {
-  ...pluginDisplays,
-  ...BUILTIN_DISPLAY_FACTORIES,
 };
 
 const TF_TOPICS = new Set(["/tf", "/tf_static"]);
@@ -69,12 +77,13 @@ interface DockPanel {
   kind: string;
   /** 面板自定义状态快照（配置保存/恢复用） */
   state?: unknown;
+  sizePercent?: number;
 }
 
 /** 想要显示的话题（话题未上报时挂起，出现后自动订阅） */
 interface DesiredTopic {
   schemaName: string;
-  accumulate?: boolean;
+  pointCloud?: PointCloudSettings;
 }
 
 function downloadBlob(blob: Blob, name: string): void {
@@ -94,7 +103,29 @@ function yawQuat(yaw: number): { x: number; y: number; z: number; w: number } {
   return { x: 0, y: 0, z: Math.sin(yaw / 2), w: Math.cos(yaw / 2) };
 }
 
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, [query]);
+  return matches;
+}
+
+function readStoredLayout(): LayoutConfig | undefined {
+  try {
+    const saved = localStorage.getItem(LAYOUT_KEY);
+    return saved ? parseLayout(saved) : undefined;
+  } catch (error) {
+    console.warn("[layout] 本地配置损坏，忽略:", error);
+    return undefined;
+  }
+}
+
 export default function App() {
+  const initialLayoutRef = useRef<LayoutConfig | undefined>(readStoredLayout());
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const bridgeRef = useRef<WorkerBridge>(null);
   const tfRef = useRef<TfBuffer>(null);
@@ -109,13 +140,27 @@ export default function App() {
   const navStartRef = useRef<[number, number]>(null); // 地面坐标
   const nextPanelId = useRef(1);
   const connectedUrlRef = useRef(DEFAULT_URL);
+  const mainGroupRef = useGroupRef();
+  const centerGroupRef = useGroupRef();
+  const dockGroupRef = useGroupRef();
+  const isMobile = useMediaQuery("(max-width: 680px)");
 
   const [ready, setReady] = useState(false);
-  const [mode, setMode] = useState<"3d" | "map">("3d");
+  const [mode, setMode] = useState<"3d" | "map" | "urdf" | "settings">("3d");
+  const [settingsTab, setSettingsTab] = useState<"general" | "3d" | "plugins">("general");
   const [theme, setTheme] = useState<Theme>(() =>
-    localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark",
+    initialLayoutRef.current?.theme ?? (localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark"),
+  );
+  const [settings, setSettings] = useState<LayoutConfig["settings"]>(
+    initialLayoutRef.current?.settings ?? { ...DEFAULT_APP_SETTINGS, disabledPluginIds: [] },
+  );
+  const [workspace, setWorkspace] = useState<LayoutConfig["workspace"]>(
+    initialLayoutRef.current?.workspace ?? { ...DEFAULT_WORKSPACE_LAYOUT },
   );
   const [url, setUrl] = useState(DEFAULT_URL);
+  const [activeBridgeUrl, setActiveBridgeUrl] = useState(
+    initialLayoutRef.current?.url ?? DEFAULT_URL,
+  );
   const [connState, setConnState] = useState<ConnectionState>("closed");
   const [topics, setTopics] = useState<TopicInfo[]>([]);
   const [services, setServices] = useState<ServiceInfo[]>([]);
@@ -143,6 +188,28 @@ export default function App() {
   const [navTool, setNavTool] = useState<NavTool>();
   const [navPreview, setNavPreview] = useState<{ x: number; y: number; yawDeg: number; len: number }>();
   const [panels, setPanels] = useState<DockPanel[]>([]);
+  const [terminalMounted, setTerminalMounted] = useState(false);
+  const [terminalVisible, setTerminalVisible] = useState(false);
+  const [terminalHeight, setTerminalHeight] = useState(() => {
+    const stored = Number(localStorage.getItem(TERMINAL_HEIGHT_KEY));
+    const maximum = Math.max(160, Math.floor(window.innerHeight * 0.6));
+    const preferred = Number.isFinite(stored) && stored >= 160 ? stored : 280;
+    return Math.min(maximum, preferred);
+  });
+
+  const resolvedPlugins = useMemo(
+    () => resolvePlugins(plugins, settings.disabledPluginIds),
+    [settings.disabledPluginIds],
+  );
+  const displayFactories = useMemo<Record<string, () => Display>>(
+    () => ({ ...resolvedPlugins.displays, ...BUILTIN_DISPLAY_FACTORIES }),
+    [resolvedPlugins.displays],
+  );
+  const t = useMemo(
+    () => (key: Parameters<typeof translate>[1], values?: Record<string, string | number>) =>
+      translate(settings.language, key, values),
+    [settings.language],
+  );
 
   // 配置应用函数的最新引用（初始化效应在其定义前需要调用）
   const applyConfigRef = useRef<(cfg: LayoutConfig, reconnect: boolean) => void>(null);
@@ -195,14 +262,8 @@ export default function App() {
       }
     };
 
-    // 启动恢复：localStorage 里的布局配置（含连接地址）
-    let initial: LayoutConfig | undefined;
-    try {
-      const saved = localStorage.getItem(LAYOUT_KEY);
-      if (saved) initial = parseLayout(saved);
-    } catch (err) {
-      console.warn("[layout] 本地配置损坏，忽略:", err);
-    }
+    // 启动恢复：首屏初始化时已解析 localStorage，避免语言/主题闪烁
+    const initial = initialLayoutRef.current;
     connectedUrlRef.current = initial?.url ?? DEFAULT_URL;
     bridge.connect(connectedUrlRef.current);
     if (initial) applyConfigRef.current?.(initial, false);
@@ -238,9 +299,10 @@ export default function App() {
   // 主题：同步 CSS 令牌、3D 场景配色与持久化
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    document.documentElement.lang = settings.language;
     setSceneTheme(theme);
     localStorage.setItem(THEME_KEY, theme);
-  }, [theme]);
+  }, [theme, settings.language]);
 
   const toggleTheme = useCallback(() => {
     // 切换瞬间挂全局颜色过渡（常态不挂，避免干扰其他 transition）
@@ -262,6 +324,11 @@ export default function App() {
     if (sceneRef.current) sceneRef.current.fixedFrame = fixedFrame;
   }, [fixedFrame]);
 
+  useEffect(() => {
+    sceneRef.current?.setGridVisible(settings.groundVisible);
+    sceneRef.current?.setTfAxesLineWidth(settings.tfAxesLineWidth);
+  }, [settings.groundVisible, settings.tfAxesLineWidth]);
+
   // 视角跟踪目标
   useEffect(() => {
     sceneRef.current?.setFollowFrame(followFrame);
@@ -275,25 +342,52 @@ export default function App() {
   const connect = useCallback(() => {
     setLastError(undefined);
     connectedUrlRef.current = url;
+    setActiveBridgeUrl(url);
     bridgeRef.current?.connect(url);
   }, [url]);
+
+  const toggleTerminal = useCallback(() => {
+    setTerminalMounted(true);
+    setTerminalVisible((current) => !current);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || event.metaKey || event.altKey || event.code !== "Backquote") return;
+      event.preventDefault();
+      toggleTerminal();
+    };
+    window.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [toggleTerminal]);
+
+  useEffect(() => {
+    localStorage.setItem(TERMINAL_HEIGHT_KEY, String(terminalHeight));
+  }, [terminalHeight]);
 
   const toggleTopic = useCallback((topic: string, schemaName: string) => {
     setDesired((prev) => {
       const next = new Map(prev);
       if (next.has(topic)) next.delete(topic);
-      else if (schemaName in DISPLAY_FACTORIES) next.set(topic, { schemaName });
+      else if (schemaName in displayFactories) {
+        next.set(topic, {
+          schemaName,
+          ...(schemaName === "sensor_msgs/msg/PointCloud2"
+            ? { pointCloud: { ...DEFAULT_POINT_CLOUD_SETTINGS } }
+            : {}),
+        });
+      }
       else return prev;
       return next;
     });
-  }, []);
+  }, [displayFactories]);
 
-  const toggleAccumulate = useCallback((topic: string) => {
+  const updatePointCloudSettings = useCallback((topic: string, settings: PointCloudSettings) => {
     setDesired((prev) => {
       const entry = prev.get(topic);
       if (!entry) return prev;
       const next = new Map(prev);
-      next.set(topic, { ...entry, accumulate: !entry.accumulate });
+      next.set(topic, { ...entry, pointCloud: settings });
       return next;
     });
   }, []);
@@ -307,7 +401,8 @@ export default function App() {
     const subs = displaySubsRef.current;
 
     for (const [topic, unsub] of subs) {
-      if (!desired.has(topic)) {
+      const entry = desired.get(topic);
+      if (!entry || !(entry.schemaName in displayFactories)) {
         unsub();
         subs.delete(topic);
         scene.removeDisplay(topic);
@@ -319,24 +414,26 @@ export default function App() {
       const existing = scene.getDisplay(topic);
       if (existing) {
         // 已显示：同步累积开关
-        if (existing instanceof PointCloudRenderer && existing.accumulate !== !!entry.accumulate) {
-          existing.accumulate = !!entry.accumulate;
-          if (!entry.accumulate) existing.clear();
+        if (existing instanceof PointCloudRenderer) {
+          existing.applySettings(entry.pointCloud ?? DEFAULT_POINT_CLOUD_SETTINGS);
+          scene.invalidate();
         }
         continue;
       }
       if (!advertised.has(topic)) continue;
-      const factory = DISPLAY_FACTORIES[entry.schemaName];
+      const factory = displayFactories[entry.schemaName];
       if (!factory) continue;
       const display = factory();
-      if (display instanceof PointCloudRenderer) display.accumulate = !!entry.accumulate;
+      if (display instanceof PointCloudRenderer) {
+        display.applySettings(entry.pointCloud ?? DEFAULT_POINT_CLOUD_SETTINGS);
+      }
       scene.addDisplay(topic, display);
       subs.set(
         topic,
         bridge.subscribe(topic, (payload) => display.update(payload)),
       );
     }
-  }, [ready, desired, topics]);
+  }, [ready, desired, topics, displayFactories]);
 
   // ---- 配置保存/加载（rviz 式布局文件） ----
 
@@ -346,17 +443,19 @@ export default function App() {
       url,
       fixedFrame,
       theme,
+      settings,
+      workspace,
       pcdVoxel,
       followFrame,
       activeTopics: [...desired].map(([topic, e]) => ({
         topic,
         schemaName: e.schemaName,
-        ...(e.accumulate ? { accumulate: true } : {}),
+        ...(e.pointCloud ? { pointCloud: e.pointCloud } : {}),
       })),
-      panels: panels.map(({ kind, state }) => ({ kind, state })),
+      panels: panels.map(({ kind, state, sizePercent }) => ({ kind, state, sizePercent })),
       camera: sceneRef.current?.getCameraState(),
     }),
-    [url, fixedFrame, theme, pcdVoxel, followFrame, desired, panels],
+    [url, fixedFrame, theme, settings, workspace, pcdVoxel, followFrame, desired, panels],
   );
 
   const buildConfigRef = useRef(buildConfig);
@@ -366,9 +465,12 @@ export default function App() {
     setUrl(cfg.url);
     if (reconnect && cfg.url !== connectedUrlRef.current) {
       connectedUrlRef.current = cfg.url;
+      setActiveBridgeUrl(cfg.url);
       bridgeRef.current?.connect(cfg.url);
     }
     setTheme(cfg.theme);
+    setSettings(cfg.settings);
+    setWorkspace(cfg.workspace);
     setPcdVoxel(cfg.pcdVoxel);
     setFixedFrame(cfg.fixedFrame);
     setFollowFrame(cfg.followFrame);
@@ -376,11 +478,27 @@ export default function App() {
       new Map(
         cfg.activeTopics.map((t) => [
           t.topic,
-          { schemaName: t.schemaName, accumulate: t.accumulate },
+          {
+            schemaName: t.schemaName,
+            ...(t.schemaName === "sensor_msgs/msg/PointCloud2"
+              ? {
+                  pointCloud:
+                    t.pointCloud ?? {
+                      ...DEFAULT_POINT_CLOUD_SETTINGS,
+                      accumulate: t.accumulate ?? false,
+                    },
+                }
+              : {}),
+          },
         ]),
       ),
     );
-    setPanels(cfg.panels.map((p) => ({ id: nextPanelId.current++, kind: p.kind, state: p.state })));
+    setPanels(cfg.panels.map((p) => ({
+      id: nextPanelId.current++,
+      kind: p.kind,
+      state: p.state,
+      sizePercent: p.sizePercent,
+    })));
     if (cfg.camera) sceneRef.current?.setCameraState(cfg.camera);
   }, []);
   applyConfigRef.current = applyConfig;
@@ -443,7 +561,7 @@ export default function App() {
     async (file: File) => {
       closePcd();
       setLastError(undefined);
-      setPcdBusy("读取文件…");
+    setPcdBusy(t("readingFile"));
       const buffer = await file.arrayBuffer();
       const worker = new Worker(new URL("../worker/pcd.worker.ts", import.meta.url), {
         type: "module",
@@ -451,11 +569,11 @@ export default function App() {
       worker.onmessage = (ev: MessageEvent<PcdWorkerResponse>) => {
         const msg = ev.data;
         if (msg.type === "progress") {
-          setPcdBusy(`${msg.stage}…`);
+          setPcdBusy(t(msg.stage));
         } else if (msg.type === "error") {
           worker.terminate();
           setPcdBusy(undefined);
-          setLastError(`PCD 解析失败: ${msg.message}`);
+          setLastError(t("pcdParseFailed", { message: msg.message }));
         } else {
           worker.terminate();
           const scene = sceneRef.current!;
@@ -479,7 +597,7 @@ export default function App() {
       };
       worker.postMessage({ type: "parse", buffer, voxel: pcdVoxel }, [buffer]);
     },
-    [closePcd, pcdVoxel],
+    [closePcd, pcdVoxel, t],
   );
 
   const refreshPcdInfo = useCallback(() => {
@@ -655,9 +773,54 @@ export default function App() {
     setPanels((prev) => prev.map((p) => (p.id === id ? { ...p, state } : p)));
   }, []);
 
+  const togglePlugin = useCallback((pluginId: string, enabled: boolean) => {
+    setSettings((current) => ({
+      ...current,
+      disabledPluginIds: enabled
+        ? current.disabledPluginIds.filter((id) => id !== pluginId)
+        : [...new Set([...current.disabledPluginIds, pluginId])],
+    }));
+  }, []);
+
+  const resetWorkspaceLayout = useCallback(() => {
+    setWorkspace({ ...DEFAULT_WORKSPACE_LAYOUT });
+    setPanels((current) => current.map((panel) => ({ ...panel, sizePercent: undefined })));
+  }, []);
+
   const dataTopics = topics
     .filter((t) => !TF_TOPICS.has(t.topic))
     .sort((a, b) => a.topic.localeCompare(b.topic));
+
+  const allPluginPanelKinds = useMemo(
+    () => new Set(plugins.flatMap((plugin) => (plugin.panels ?? []).map((panel) => `${plugin.id}:${panel.kind}`))),
+    [],
+  );
+  const activePluginPanelKinds = useMemo(
+    () => new Set(resolvedPlugins.panels.map((panel) => panel.kind)),
+    [resolvedPlugins.panels],
+  );
+  const visiblePanels = panels.filter((panel) =>
+    panel.kind === "image" || panel.kind === "plot" || !allPluginPanelKinds.has(panel.kind) || activePluginPanelKinds.has(panel.kind),
+  );
+  const dockDefaultLayout = useMemo(() => buildPanelLayout(visiblePanels), [visiblePanels]);
+
+  const updateDockLayout = useCallback((layout: Record<string, number>) => {
+    setPanels((current) => applyPanelLayout(current, layout));
+  }, []);
+
+  useEffect(() => {
+    mainGroupRef.current?.setLayout({
+      center: 100 - workspace.sidebarPercent,
+      sidebar: workspace.sidebarPercent,
+    });
+    if (visiblePanels.length > 0) {
+      centerGroupRef.current?.setLayout({
+        viewport: 100 - workspace.dockPercent,
+        dock: workspace.dockPercent,
+      });
+      dockGroupRef.current?.setLayout(dockDefaultLayout);
+    }
+  }, [workspace, visiblePanels.length, dockDefaultLayout, mainGroupRef, centerGroupRef, dockGroupRef]);
 
   // 插件上下文（ready 后 refs 一定已就绪）
   const pluginCtx = useMemo<PluginContext | undefined>(() => {
@@ -668,19 +831,24 @@ export default function App() {
       tf: tfRef.current!,
       fixedFrame,
       theme,
+      locale: settings.language,
     };
-  }, [ready, topics, fixedFrame, theme]);
+  }, [ready, topics, fixedFrame, theme, settings.language]);
 
   return (
+    <I18nProvider locale={settings.language}>
     <div className="app">
       <header className="topbar">
         <span className="brand">RobViz</span>
         <nav className="mode-tabs">
           <button className={mode === "3d" ? "active" : ""} onClick={() => setMode("3d")}>
-            3D 视图
+            {t("view3d")}
           </button>
           <button className={mode === "map" ? "active" : ""} onClick={() => setMode("map")}>
-            地图编辑
+            {t("mapEditor")}
+          </button>
+          <button className={mode === "urdf" ? "active" : ""} onClick={() => setMode("urdf")}>
+            {t("urdfEditor")}
           </button>
         </nav>
         <input
@@ -689,17 +857,17 @@ export default function App() {
           onKeyDown={(e) => e.key === "Enter" && connect()}
           spellCheck={false}
         />
-        <button onClick={connect}>连接</button>
+        <button onClick={connect}>{t("connect")}</button>
         <span className={`status ${connState}`}>
           <span className="dot" />
-          {connState === "open" ? "已连接" : connState === "connecting" ? "连接中" : "未连接"}
+          {connState === "open" ? t("connected") : connState === "connecting" ? t("connecting") : t("disconnected")}
         </span>
         <span className="spacer" />
-        <button onClick={saveConfig} title="导出当前布局为 robviz.json">
-          保存配置
+        <button onClick={saveConfig} title={t("saveConfigHint")}>
+          {t("saveConfig")}
         </button>
-        <button onClick={() => configFileRef.current?.click()} title="从 JSON 文件恢复布局">
-          加载配置
+        <button onClick={() => configFileRef.current?.click()} title={t("loadConfigHint")}>
+          {t("loadConfig")}
         </button>
         <input
           ref={configFileRef}
@@ -715,15 +883,15 @@ export default function App() {
         {mode === "3d" && (
           <>
             <label className="field">
-              降采样
+              {t("downsample")}
               <select value={pcdVoxel} onChange={(e) => setPcdVoxel(Number(e.target.value))}>
-                <option value={0}>原始</option>
+                <option value={0}>{t("original")}</option>
                 <option value={0.05}>0.05 m</option>
                 <option value={0.1}>0.1 m</option>
                 <option value={0.2}>0.2 m</option>
               </select>
             </label>
-            <button onClick={() => pcdFileRef.current?.click()}>打开 PCD</button>
+            <button onClick={() => pcdFileRef.current?.click()}>{t("openPcd")}</button>
             <input
               ref={pcdFileRef}
               type="file"
@@ -737,37 +905,78 @@ export default function App() {
             />
           </>
         )}
-        <label className="field">
-          Fixed Frame
-          <select value={fixedFrame} onChange={(e) => setFixedFrame(e.target.value)}>
-            {(frames.length > 0 ? frames : [fixedFrame]).map((f) => (
-              <option key={f} value={f}>
-                {f}
-              </option>
-            ))}
-          </select>
-        </label>
+        {mode === "3d" && (
+          <label className="field">
+            Fixed Frame
+            <select value={fixedFrame} onChange={(e) => setFixedFrame(e.target.value)}>
+              {(frames.length > 0 ? frames : [fixedFrame]).map((f) => (
+                <option key={f} value={f}>{f}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        <button
+          className={`icon-btn ${terminalVisible ? "active" : ""}`}
+          onClick={toggleTerminal}
+          title={t("terminal")}
+          aria-label={t("terminal")}
+          aria-pressed={terminalVisible}
+        >
+          <SquareTerminal />
+        </button>
         <button
           className="icon-btn"
           onClick={toggleTheme}
-          title={theme === "dark" ? "切换到亮色" : "切换到深色"}
-          aria-label="切换明暗主题"
+          title={theme === "dark" ? t("switchLight") : t("switchDark")}
+          aria-label={t("switchTheme")}
         >
-          {theme === "dark" ? (
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <circle cx="12" cy="12" r="4.2" />
-              <path d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5.1 5.1l1.9 1.9M17 17l1.9 1.9M18.9 5.1L17 7M7 17l-1.9 1.9" />
-            </svg>
-          ) : (
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <path d="M20.5 14.1A8.5 8.5 0 1 1 9.9 3.5a7 7 0 0 0 10.6 10.6z" />
-            </svg>
-          )}
+          {theme === "dark" ? <Sun /> : <Moon />}
+        </button>
+        <button
+          className={`icon-btn ${mode === "settings" ? "active" : ""}`}
+          onClick={() => setMode("settings")}
+          title={t("settings")}
+          aria-label={t("settings")}
+        >
+          <Settings />
         </button>
       </header>
 
-      <main className="main" style={mode === "map" ? { gridTemplateColumns: "1fr" } : undefined}>
-        <div className="center" style={mode === "map" ? { display: "none" } : undefined}>
+      <main className={`main mode-${mode}`}>
+        <div className="workspace-3d" style={mode !== "3d" ? { display: "none" } : undefined}>
+          <Group
+            id="main-workspace"
+            groupRef={mainGroupRef}
+            className="main-resizable-group"
+            orientation={isMobile ? "vertical" : "horizontal"}
+            disabled={isMobile}
+            defaultLayout={{ center: 100 - workspace.sidebarPercent, sidebar: workspace.sidebarPercent }}
+            resizeTargetMinimumSize={{ fine: 6, coarse: 20 }}
+            onLayoutChanged={(layout, meta) => {
+              if (meta.isUserInteraction) setWorkspace((current) => ({
+                ...current,
+                sidebarPercent: layoutPercent(layout, "sidebar"),
+              }));
+            }}
+          >
+          <Panel id="center" minSize={isMobile ? 0 : 420}>
+          <div className="center">
+          <Group
+            id="center-workspace"
+            groupRef={centerGroupRef}
+            className="center-resizable-group"
+            orientation="vertical"
+            disabled={isMobile || visiblePanels.length === 0}
+            defaultLayout={{ viewport: 100 - workspace.dockPercent, dock: workspace.dockPercent }}
+            resizeTargetMinimumSize={{ fine: 6, coarse: 20 }}
+            onLayoutChanged={(layout, meta) => {
+              if (meta.isUserInteraction && "dock" in layout) setWorkspace((current) => ({
+                ...current,
+                dockPercent: layoutPercent(layout, "dock"),
+              }));
+            }}
+          >
+          <Panel id="viewport" minSize={isMobile ? 0 : 260}>
           <div className="viewport" onDoubleClick={onViewportDoubleClick}>
             <canvas ref={canvasRef} />
             {/* Nav 工具条 */}
@@ -776,24 +985,24 @@ export default function App() {
                 className={navTool === "goal" ? "active" : ""}
                 onClick={() => setNavTool(navTool === "goal" ? undefined : "goal")}
               >
-                导航目标
+                {t("navigationGoal")}
               </button>
               <button
                 className={navTool === "initialpose" ? "active" : ""}
                 onClick={() => setNavTool(navTool === "initialpose" ? undefined : "initialpose")}
               >
-                初始位姿
+                {t("initialPose")}
               </button>
-              <button onClick={() => sceneRef.current?.resetView()} title="相机飞回默认机位">
-                复位视角
+              <button onClick={() => sceneRef.current?.resetView()} title={t("resetViewHint")}>
+                {t("resetView")}
               </button>
               <label className={`field follow-field ${followFrame ? "following" : ""}`}>
-                跟踪
+                {t("follow")}
                 <select
                   value={followFrame ?? ""}
                   onChange={(e) => setFollowFrame(e.target.value || undefined)}
                 >
-                  <option value="">关</option>
+                  <option value="">{t("off")}</option>
                   {frames.map((f) => (
                     <option key={f} value={f}>
                       {f}
@@ -801,7 +1010,7 @@ export default function App() {
                   ))}
                 </select>
               </label>
-              {navTool && <span className="nav-hint">点击定位置，拖动定朝向</span>}
+              {navTool && <span className="nav-hint">{t("navHint")}</span>}
             </div>
             {(pcd || pcdBusy) && (
               <div className="pcd-toolbar">
@@ -811,33 +1020,33 @@ export default function App() {
                   pcd && (
                     <>
                       <span className="pcd-status">
-                        {pcd.name} · {(pcd.count / 1e6).toFixed(2)}M 点
+                        {pcd.name} · {t("pointsMillions", { count: (pcd.count / 1e6).toFixed(2) })}
                         {pcd.rawCount !== pcd.count &&
-                          `（原始 ${(pcd.rawCount / 1e6).toFixed(2)}M）`}
+                          t("originalPoints", { count: (pcd.rawCount / 1e6).toFixed(2) })}
                       </span>
                       <button
                         className={pcdTool === "orbit" ? "active" : ""}
                         onClick={() => setPcdTool("orbit")}
                       >
-                        浏览
+                        {t("browsing")}
                       </button>
                       <button
                         className={pcdTool === "delete" ? "active" : ""}
                         onClick={() => setPcdTool("delete")}
                       >
-                        框删
+                        {t("boxDelete")}
                       </button>
                       <button
                         className={pcdTool === "keep" ? "active" : ""}
                         onClick={() => setPcdTool("keep")}
                       >
-                        框留
+                        {t("boxKeep")}
                       </button>
                       <button onClick={pcdUndo} disabled={pcd.undoDepth === 0}>
-                        撤销 ({pcd.undoDepth})
+                        {t("undoCount", { count: pcd.undoDepth })}
                       </button>
-                      <button onClick={pcdExport}>导出</button>
-                      <button onClick={closePcd}>关闭</button>
+                      <button onClick={pcdExport}>{t("export")}</button>
+                      <button onClick={closePcd}>{t("close")}</button>
                     </>
                   )
                 )}
@@ -885,39 +1094,56 @@ export default function App() {
             )}
             <div className="hud">
               {sceneStats.brokenFrames.length > 0 && (
-                <div className="warn">TF 断链: {sceneStats.brokenFrames.join(", ")}</div>
+                <div className="warn">{t("tfBroken", { frames: sceneStats.brokenFrames.join(", ") })}</div>
               )}
               {streamStats && streamStats.lagMs > 200 && (
-                <div className="warn">网络滞后 +{streamStats.lagMs} ms</div>
+                <div className="warn">{t("networkLag", { ms: streamStats.lagMs })}</div>
               )}
               {streamStats && streamStats.totalHz > 0 && (
                 <div>
                   {(streamStats.totalKbps / 1024).toFixed(1)} MB/s ·{" "}
                   {Math.round(streamStats.totalHz)} msg/s
                   {streamStats.totalDropsPerSec > 0 &&
-                    ` · 丢弃 ${Math.round(streamStats.totalDropsPerSec)}/s`}
-                  {` · 滞后 ${streamStats.lagMs} ms`}
+                    ` · ${t("dropped", { count: Math.round(streamStats.totalDropsPerSec) })}`}
+                  {` · ${t("lagStat", { ms: streamStats.lagMs })}`}
                 </div>
               )}
               <div>
-                render {sceneStats.renderHz}/s · tf平滑 {sceneStats.tfDelayMs} ms
+                render {sceneStats.renderHz}/s · {t("tfSmoothing", { ms: sceneStats.tfDelayMs })}
               </div>
             </div>
           </div>
+          </Panel>
 
           {/* 面板坞：图像 / 曲线 */}
-          {panels.length > 0 && ready && (
-            <div className="dock">
-              {panels.map((p) => {
-                const pluginPanel = pluginPanels.find((pp) => pp.kind === p.kind);
+          {visiblePanels.length > 0 && ready && (
+            <>
+            <Separator className="resize-handle horizontal" />
+            <Panel id="dock" minSize={isMobile ? 0 : 180} maxSize="70%">
+            <div className="dock-scroll">
+            <Group
+              id="dock-workspace"
+              groupRef={dockGroupRef}
+              className="dock"
+              defaultLayout={dockDefaultLayout}
+              resizeTargetMinimumSize={{ fine: 6, coarse: 20 }}
+              disabled={isMobile}
+              onLayoutChanged={(layout, meta) => meta.isUserInteraction && updateDockLayout(layout)}
+              style={{ minWidth: `${Math.max(1, visiblePanels.length) * 220}px` }}
+            >
+              {visiblePanels.map((p, index) => {
+                const pluginPanel = resolvedPlugins.panels.find((pp) => pp.kind === p.kind);
                 const name =
                   p.kind === "image"
-                    ? "图像面板"
+                    ? t("imagePanel")
                     : p.kind === "plot"
-                      ? "曲线面板"
+                      ? t("plotPanel")
                       : (pluginPanel?.title ?? p.kind);
                 return (
-                  <ErrorBoundary key={p.id} name={name} onReset={() => removePanel(p.id)}>
+                  <Fragment key={p.id}>
+                  {index > 0 && <Separator className="resize-handle vertical" />}
+                  <Panel id={`dock-${p.id}`} minSize={180} defaultSize={`${p.sizePercent ?? 100 / visiblePanels.length}%`}>
+                  <ErrorBoundary name={name} onReset={() => removePanel(p.id)}>
                     {p.kind === "image" ? (
                       <ImagePanel
                         bridge={bridgeRef.current!}
@@ -951,7 +1177,7 @@ export default function App() {
                     ) : (
                       <div className="panel">
                         <div className="panel-header">
-                          <span className="panel-meta">未知面板类型: {p.kind}（插件未安装?）</span>
+                          <span className="panel-meta">{t("unknownPanel", { kind: p.kind })}</span>
                           <span className="spacer" />
                           <button className="panel-close" onClick={() => removePanel(p.id)}>
                             ×
@@ -960,24 +1186,32 @@ export default function App() {
                       </div>
                     )}
                   </ErrorBoundary>
+                  </Panel>
+                  </Fragment>
                 );
               })}
+            </Group>
             </div>
+            </Panel>
+            </>
           )}
+          </Group>
         </div>
+        </Panel>
 
-        {mode === "3d" && (
+          <Separator className="resize-handle vertical" />
+          <Panel id="sidebar" minSize={isMobile ? 0 : 220} maxSize="50%">
           <aside className="sidebar">
             <div className="side-section">
-              <h2>话题</h2>
+              <h2>{t("topics")}</h2>
               {dataTopics.length === 0 && (
                 <p className="empty-hint">
-                  暂无话题。启动模拟器：<br />
+                  {t("noTopics")}<br />
                   <code>npm run mock</code>
                 </p>
               )}
               {dataTopics.map(({ topic, schemaName }) => {
-                const displayable = schemaName in DISPLAY_FACTORIES;
+                const displayable = schemaName in displayFactories;
                 const isActive = desired.has(topic);
                 const shortSchema = schemaName.split("/").pop();
                 const topicStat = streamStats?.topics[topic];
@@ -994,16 +1228,22 @@ export default function App() {
                         {topicStat ? `${topicStat.hz.toFixed(0)} Hz` : shortSchema}
                       </span>
                     </button>
-                    {isActive && schemaName === "sensor_msgs/msg/PointCloud2" && (
-                      <label className="sub-option">
-                        <input
-                          type="checkbox"
-                          checked={desired.get(topic)?.accumulate ?? false}
-                          onChange={() => toggleAccumulate(topic)}
+                    {isActive && schemaName === "sensor_msgs/msg/PointCloud2" && (() => {
+                      const renderer = sceneRef.current?.getDisplay(topic);
+                      const pointCloudRenderer = renderer instanceof PointCloudRenderer ? renderer : undefined;
+                      return (
+                        <PointCloudSettingsPanel
+                          settings={desired.get(topic)?.pointCloud ?? DEFAULT_POINT_CLOUD_SETTINGS}
+                          colorField={pointCloudRenderer?.colorField}
+                          autoRange={pointCloudRenderer?.autoRange ?? [0, 1]}
+                          onChange={(settings) => updatePointCloudSettings(topic, settings)}
+                          onClear={() => {
+                            pointCloudRenderer?.clear();
+                            sceneRef.current?.invalidate();
+                          }}
                         />
-                        累积（仅世界系点云，如 cloud_registered）
-                      </label>
-                    )}
+                      );
+                    })()}
                   </div>
                 );
               })}
@@ -1011,34 +1251,29 @@ export default function App() {
             </div>
 
             <div className="side-section">
-              <h2>面板</h2>
+              <h2>{t("panelsSection")}</h2>
               <div className="side-row">
-                <button onClick={() => addPanel("image")}>+ 图像</button>
-                <button onClick={() => addPanel("plot")}>+ 曲线</button>
-                {pluginPanels.map((pp) => (
+                <button onClick={() => addPanel("image")}>{t("addImage")}</button>
+                <button onClick={() => addPanel("plot")}>{t("addPlot")}</button>
+                {resolvedPlugins.panels.map((pp) => (
                   <button key={pp.kind} onClick={() => addPanel(pp.kind)}>
-                    + {pp.title}
+                    {t("addPluginPanel", { title: pp.title })}
                   </button>
                 ))}
               </div>
             </div>
 
             {ready && (
-              <ErrorBoundary name="遥控">
+              <ErrorBoundary name={t("teleop")}>
                 <TeleopSection bridge={bridgeRef.current!} />
               </ErrorBoundary>
             )}
             {ready && (
-              <ErrorBoundary name="服务">
+              <ErrorBoundary name={t("services")}>
                 <ServiceSection bridge={bridgeRef.current!} services={services} />
               </ErrorBoundary>
             )}
-            {ready && sceneRef.current && (
-              <ErrorBoundary name="URDF">
-                <UrdfSection bridge={bridgeRef.current!} scene={sceneRef.current} frames={frames} />
-              </ErrorBoundary>
-            )}
-            <ErrorBoundary name="TF 树">
+            <ErrorBoundary name={t("tfTree")}>
               <TfTreeSection
                 tree={tfTree}
                 followFrame={followFrame}
@@ -1047,7 +1282,7 @@ export default function App() {
             </ErrorBoundary>
             {/* 插件侧栏区块（各自隔离，崩溃不影响主体） */}
             {pluginCtx &&
-              pluginSections.map((s) => (
+              resolvedPlugins.sections.map((s) => (
                 <ErrorBoundary key={s.id} name={s.title}>
                   <div className="side-section">
                     <h2>{s.title}</h2>
@@ -1056,14 +1291,58 @@ export default function App() {
                 </ErrorBoundary>
               ))}
           </aside>
-        )}
+          </Panel>
+          </Group>
+        </div>
 
         {mode === "map" && ready && (
-          <ErrorBoundary name="地图编辑">
+          <ErrorBoundary name={t("mapEditor")}>
             <MapEditorPanel bridge={bridgeRef.current!} theme={theme} />
           </ErrorBoundary>
         )}
+        {mode === "urdf" && ready && (
+          <ErrorBoundary name={t("urdfEditor")}>
+            <Suspense fallback={<div className="page-loading">{t("loadingUrdf")}</div>}>
+              <UrdfEditorPage bridge={bridgeRef.current!} theme={theme} inspectorPercent={workspace.urdfInspectorPercent} isMobile={isMobile} onInspectorPercentChange={(urdfInspectorPercent: number) => setWorkspace((current) => ({ ...current, urdfInspectorPercent }))} />
+            </Suspense>
+          </ErrorBoundary>
+        )}
+        {mode === "settings" && (
+          <SettingsPage
+            tab={settingsTab}
+            settings={settings}
+            theme={theme}
+            plugins={plugins}
+            onTabChange={setSettingsTab}
+            onSettingsChange={setSettings}
+            onThemeChange={setTheme}
+            onPluginToggle={togglePlugin}
+            onResetLayout={resetWorkspaceLayout}
+          />
+        )}
       </main>
+      {terminalMounted && (
+        <Suspense
+          fallback={
+            <div
+              className={`terminal-drawer terminal-loading ${terminalVisible ? "visible" : "hidden"}`}
+              style={terminalVisible ? { height: terminalHeight } : undefined}
+            >
+              {t("terminalConnecting")}
+            </div>
+          }
+        >
+          <TerminalPanel
+            bridgeUrl={activeBridgeUrl}
+            theme={theme}
+            visible={terminalVisible}
+            height={terminalHeight}
+            onHeightChange={setTerminalHeight}
+            onHide={() => setTerminalVisible(false)}
+          />
+        </Suspense>
+      )}
     </div>
+    </I18nProvider>
   );
 }

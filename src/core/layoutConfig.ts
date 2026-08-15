@@ -7,11 +7,79 @@ import { z } from "zod";
 
 const vec3 = z.tuple([z.number(), z.number(), z.number()]);
 
+export const DEFAULT_APP_SETTINGS = {
+  language: "zh-CN" as const,
+  groundVisible: true,
+  tfAxesLineWidth: 1.5,
+  disabledPluginIds: [] as string[],
+};
+
+export const DEFAULT_WORKSPACE_LAYOUT = {
+  sidebarPercent: 22,
+  dockPercent: 35,
+  urdfInspectorPercent: 35,
+};
+
+const appSettingsSchema = z
+  .object({
+    language: z.enum(["zh-CN", "en"]).default(DEFAULT_APP_SETTINGS.language),
+    groundVisible: z.boolean().default(DEFAULT_APP_SETTINGS.groundVisible),
+    tfAxesLineWidth: z.number().min(1).max(6).default(DEFAULT_APP_SETTINGS.tfAxesLineWidth),
+    disabledPluginIds: z.array(z.string()).default([]),
+  })
+  .default(DEFAULT_APP_SETTINGS);
+
+const workspaceLayoutSchema = z
+  .object({
+    sidebarPercent: z.number().gt(0).lte(100).default(DEFAULT_WORKSPACE_LAYOUT.sidebarPercent),
+    dockPercent: z.number().gt(0).lte(100).default(DEFAULT_WORKSPACE_LAYOUT.dockPercent),
+    urdfInspectorPercent: z
+      .number()
+      .gt(0)
+      .lte(100)
+      .default(DEFAULT_WORKSPACE_LAYOUT.urdfInspectorPercent),
+  })
+  .default(DEFAULT_WORKSPACE_LAYOUT);
+
+export const pointCloudSettingsSchema = z
+  .object({
+    pointSize: z.number().min(1).max(10).default(2),
+    opacity: z.number().min(0.1).max(1).default(1),
+    colorMode: z.enum(["field", "height", "flat"]).default("field"),
+    flatColor: z.string().regex(/^#[0-9a-fA-F]{6}$/).default("#4ea1ff"),
+    rangeMode: z.enum(["auto", "manual"]).default("auto"),
+    rangeMin: z.number().optional(),
+    rangeMax: z.number().optional(),
+    accumulate: z.boolean().default(false),
+  })
+  .superRefine((value, context) => {
+    if (value.rangeMode !== "manual") return;
+    if (value.rangeMin == null) {
+      context.addIssue({ code: "custom", path: ["rangeMin"], message: "手动色域需要最小值" });
+    }
+    if (value.rangeMax == null || (value.rangeMin != null && value.rangeMax <= value.rangeMin)) {
+      context.addIssue({ code: "custom", path: ["rangeMax"], message: "最大值必须大于最小值" });
+    }
+  });
+
+export type PointCloudSettings = z.infer<typeof pointCloudSettingsSchema>;
+
+export const DEFAULT_POINT_CLOUD_SETTINGS: PointCloudSettings = {
+  pointSize: 2,
+  opacity: 1,
+  colorMode: "field",
+  flatColor: "#4ea1ff",
+  rangeMode: "auto",
+  accumulate: false,
+};
+
 export const layoutConfigSchema = z.object({
   version: z.literal(1),
   url: z.string(),
   fixedFrame: z.string(),
   theme: z.enum(["dark", "light"]).default("dark"),
+  settings: appSettingsSchema,
+  workspace: workspaceLayoutSchema,
   pcdVoxel: z.number().nonnegative().default(0.1),
   followFrame: z.string().optional(),
   activeTopics: z
@@ -19,7 +87,9 @@ export const layoutConfigSchema = z.object({
       z.object({
         topic: z.string(),
         schemaName: z.string(),
+        /** 旧配置兼容；新配置使用 pointCloud.accumulate。 */
         accumulate: z.boolean().optional(),
+        pointCloud: pointCloudSettingsSchema.optional(),
       }),
     )
     .default([]),
@@ -29,6 +99,7 @@ export const layoutConfigSchema = z.object({
       z.object({
         kind: z.string(),
         state: z.unknown().optional(),
+        sizePercent: z.number().gt(0).lte(100).optional(),
       }),
     )
     .default([]),

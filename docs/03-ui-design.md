@@ -19,15 +19,16 @@
 --canvas: #000000;            /* 亮色主题 #ffffff，次优先级支持 */
 --foreground: #f5f5f5;
 --foreground-soft: rgba(245, 245, 245, 0.90);
---text-muted: color-mix(in srgb, var(--foreground) 68%, transparent);
---text-faint: color-mix(in srgb, var(--foreground) 46%, transparent);
---border-soft: color-mix(in srgb, var(--foreground) 14%, transparent);
---border-strong: color-mix(in srgb, var(--foreground) 24%, transparent);
---surface-soft: color-mix(in srgb, var(--canvas) 95.5%, var(--foreground) 4.5%);
---focus-ring: color-mix(in srgb, var(--foreground) 30%, transparent);
+--text-muted: color-mix(in srgb, var(--foreground) 74%, transparent);
+--text-faint: color-mix(in srgb, var(--foreground) 58%, transparent);
+--border-soft: color-mix(in srgb, var(--foreground) 20%, transparent);
+--border-strong: color-mix(in srgb, var(--foreground) 46%, transparent);
+--surface-soft: color-mix(in srgb, var(--canvas) 93%, var(--foreground) 7%);
+--focus-ring: color-mix(in srgb, var(--foreground) 70%, transparent);
 ```
 
-- 层级强度约定不变：68% 次要文本、24% 强边框、14% 发丝线、4.5% 静默填充。
+- 层级强度以工具可辨识度为先：74% 次要文本、58% 辅助文本、46% 控件边界、20% 结构分隔线、7% 静默填充。
+- `--border-strong` 用于输入框、下拉和按钮等交互边界；`--border-soft` 只用于面板、行和区块分隔。
 - hover 向 `--foreground` 移动一级，不换色相；选中态可反色（前景底 + 画布字）。
 - 无阴影、无渐变、无玻璃拟态。悬浮菜单允许一层克制阴影用于与 3D 内容分离。
 
@@ -46,31 +47,48 @@
 
 ## 3. 字体
 
-Biotif 字体文件不在本项目内，使用回退栈（保持与 blog 的中文回退一致）：
+Biotif 字体文件不在本项目内，使用回退栈。拉丁字符优先走系统 UI 字体
+（度量与字重渲染优于中文字体自带的拉丁字形），中文回退 PingFang/雅黑：
 
 ```css
-font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans SC", -apple-system, sans-serif;
+--sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+  "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
 /* 数值/代码/topic 名 */
-font-family: ui-monospace, "SF Mono", Menlo, monospace;
-font-variant-numeric: tabular-nums;
+--mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
 ```
 
-- topic 名、frame 名、数值一律等宽 + tabular-nums（对齐抖动是数据 UI 大忌）。
-- 字号比博客缩一档：面板标题 13px/500，正文 13px，辅助 11.5px。工具 UI 不用 clamp 流式字号。
+- `font-variant-numeric: tabular-nums` 在 body 上全局开启：topic 名、frame 名、
+  数值刷新时不抖动（对齐抖动是数据 UI 大忌）。
+- 字阶三级制，全部走令牌，禁止 0.5px 碎片字号：
+
+| 令牌 | 值 | 用途 |
+| --- | --- | --- |
+| `--fs-body` | 13px | 正文、面板标题（500 字重）、空状态提示 |
+| `--fs-ui` | 12px | 按钮、输入框、下拉、数据行（topic/TF 树） |
+| `--fs-meta` | 11px | 辅助说明、HUD 角标、图例、区块小标题 |
+
+- 正文 `line-height: 1.5`。工具 UI 不用 clamp 流式字号。
+
+### 工效学约定
+
+- 控件最小热区 `--ctl-min-h: 24px`（顶栏 28px），圆角统一 `--radius-ctl: 6px`。
+- 图标按钮方形热区 ≥ 24px（如面板关闭按钮 24px 宽），避免误触相邻控件。
 
 ## 4. 布局与组件
 
-- 顶栏（高 40px，底部 1px 发丝线）：连接地址与状态点、fixed frame 选择、布局切换、主题切换。
-- 主区：M0-M2 为 3D 视口 + 右侧可折叠设置栏（宽 280px，1px 发丝线分隔）；M2 起引入 react-mosaic 多面板，分隔条 1px 发丝线，拖拽热区 6px。
+- 顶栏（高 40px，底部 1px 发丝线）：连接地址与状态点、fixed frame 选择、模式切换、主题快捷按钮与设置入口。
+- 主区使用 `react-resizable-panels`：3D 视口/右侧栏、3D 视口/底部面板坞、底部各面板和 URDF 视口/检查器均可调整；分隔线 1px、鼠标热区 6px。小于 680px 时停用分隔条并纵向堆叠。
 - 面板标题栏：28px 高，muted 文本 + 图标按钮（Lucide，2rem 方形热区）。
+- 远程终端：全局底部抽屉，默认高 280px、范围 160px 至视口 60%；顶边提供 6px 拖动热区，
+  隐藏后保持会话，3D/地图/URDF/设置页共用同一个终端实例。
 - 控件：圆角 ≤ 6px；输入框透明底 + `--border-strong`；按钮透明底细边框，主操作反色。
 - 复选/下拉尽量换成"行级点击切换 + 对勾"，减少表单感。
 - 动效：180-260ms ease；面板增删用透明度，不做弹跳；`prefers-reduced-motion` 下全部瞬时。
 
 ## 5. 3D 视口内的视觉
 
-- 地面网格：1px 线，主格 `--foreground` 10%、次格 6%，1m 间距（对齐文档网格背景的"技术图纸"气质）。
-- TF 轴：RGB = XYZ 是机器人行业惯例，**保留**（属数据色）；轴线细（1.5px），frame 名标签 11px 等宽、muted。
+- 地面网格：1m 次格使用 1.5px / 14%，5m 主格使用 2.25px / 30%；采用屏幕空间线宽，避免高 DPI 下退化成不可辨认的发丝线。
+- TF 轴：RGB = XYZ 是机器人行业惯例，**保留**（属数据色）；轴线 3px，frame 名标签使用高对比等宽字并带反色细描边。
 - 选中/悬停高亮：白色描边，不用彩色高光。
 - 视口角标（fps、点数、渲染耗时）：右下角 11px 等宽 faint 文本，无底板。
 
@@ -78,4 +96,5 @@ font-variant-numeric: tabular-nums;
 
 - 焦点环 2px + 3px 偏移，全键盘可达。
 - 状态不单靠颜色：连接状态同时有文字，TF 断链同时在列表打标。
+- 辅助文本对画布对比度不低于 4.5:1，关键控件边界不低于 3:1。
 - 亮色主题为次优先级，但令牌体系保证可切换；不允许任何组件硬编码深色值。

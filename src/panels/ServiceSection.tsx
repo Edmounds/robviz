@@ -1,83 +1,256 @@
-/** 服务调用：列出 bridge 广播的服务，JSON 请求体（按 schema 预填），显示响应 */
-import { useCallback, useState } from "react";
+import { ChevronDown, ChevronRight, Minus, Plus } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
 import type { ServiceInfo } from "../core/FoxgloveConnection";
 import { defaultsFromSchema } from "../core/msgDefaults";
+import {
+  defaultServiceFieldValue,
+  describeServiceSchema,
+  setServiceValue,
+  type ServiceField,
+} from "../core/serviceSchema";
+import { useI18n } from "../app/i18n";
 
-export function ServiceSection({
-  bridge,
-  services,
+type ValuePath = readonly (string | number)[];
+
+function valueAt(root: unknown, path: ValuePath): unknown {
+  let current = root;
+  for (const key of path) {
+    if (current == null || typeof current !== "object") return undefined;
+    current = (current as Record<string | number, unknown>)[key];
+  }
+  return current;
+}
+
+function ScalarInput({
+  field,
+  value,
+  disabled,
+  onChange,
 }: {
-  bridge: WorkerBridge;
-  services: ServiceInfo[];
+  field: ServiceField;
+  value: unknown;
+  disabled: boolean;
+  onChange: (value: unknown) => void;
 }) {
-  const [selected, setSelected] = useState<string>();
-  const [reqText, setReqText] = useState("{}");
-  const [result, setResult] = useState<string>();
-  const [busy, setBusy] = useState(false);
-
-  const pick = useCallback(
-    (name: string) => {
-      if (selected === name) {
-        setSelected(undefined);
-        return;
+  if (field.kind === "boolean") {
+    return (
+      <input
+        type="checkbox"
+        checked={Boolean(value)}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+      />
+    );
+  }
+  return (
+    <input
+      type={field.kind === "number" ? "number" : "text"}
+      value={field.kind === "number" ? Number(value ?? 0) : String(value ?? "")}
+      disabled={disabled}
+      step={field.kind === "number" ? "any" : undefined}
+      onChange={(event) =>
+        onChange(field.kind === "number" ? Number(event.target.value) : event.target.value)
       }
-      setSelected(name);
-      setResult(undefined);
-      const svc = services.find((s) => s.name === name);
+    />
+  );
+}
+
+function ServiceFieldEditor({
+  field,
+  path,
+  request,
+  disabled,
+  onChange,
+}: {
+  field: ServiceField;
+  path: ValuePath;
+  request: Record<string, unknown>;
+  disabled: boolean;
+  onChange: (path: ValuePath, value: unknown) => void;
+}) {
+  const { t } = useI18n();
+  const value = valueAt(request, path);
+  if (field.array !== "none") {
+    const items = Array.isArray(value) ? value : [];
+    return (
+      <fieldset className="service-group">
+        <legend>{field.name} <span>{field.type}[]</span></legend>
+        {items.map((item, index) => {
+          const itemPath = [...path, index];
+          return (
+            <div className="service-array-row" key={index}>
+              <span className="service-index">{index}</span>
+              {field.kind === "message" ? (
+                <div className="service-nested">
+                  {(field.children ?? []).map((child) => (
+                    <ServiceFieldEditor
+                      key={child.name}
+                      field={child}
+                      path={[...itemPath, child.name]}
+                      request={request}
+                      disabled={disabled}
+                      onChange={onChange}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <ScalarInput field={field} value={item} disabled={disabled} onChange={(next) => onChange(itemPath, next)} />
+              )}
+              {field.array === "dynamic" && (
+                <button
+                  className="icon-action"
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => onChange(path, items.filter((_, itemIndex) => itemIndex !== index))}
+                  title={t("deleteArrayItem")}
+                  aria-label={t("deleteArrayItemLabel", { name: field.name, index: index + 1 })}
+                ><Minus /></button>
+              )}
+            </div>
+          );
+        })}
+        {field.array === "dynamic" && (
+          <button
+            className="service-add-item"
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              const single = { ...field, array: "none" as const };
+              onChange(path, [...items, defaultServiceFieldValue(single)]);
+            }}
+          ><Plus /> {t("addItem")}</button>
+        )}
+      </fieldset>
+    );
+  }
+
+  if (field.kind === "message") {
+    return (
+      <fieldset className="service-group">
+        <legend>{field.name} <span>{field.type}</span></legend>
+        {(field.children ?? []).map((child) => (
+          <ServiceFieldEditor
+            key={child.name}
+            field={child}
+            path={[...path, child.name]}
+            request={request}
+            disabled={disabled}
+            onChange={onChange}
+          />
+        ))}
+      </fieldset>
+    );
+  }
+
+  return (
+    <label className="service-field">
+      <span>{field.name}<small>{field.type}</small></span>
+      <ScalarInput field={field} value={value} disabled={disabled} onChange={(next) => onChange(path, next)} />
+    </label>
+  );
+}
+
+function ResultValue({ name, value }: { name?: string; value: unknown }) {
+  const { t } = useI18n();
+  if (value != null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    return (
+      <details className="service-result-group" open>
+        <summary>{name ?? t("response")} <span>{Array.isArray(value) ? t("itemCount", { count: entries.length }) : ""}</span></summary>
+        {entries.map(([key, child]) => <ResultValue key={key} name={key} value={child} />)}
+      </details>
+    );
+  }
+  return (
+    <div className="service-result-row">
+      <span>{name}</span>
+      <strong className={typeof value === "boolean" ? (value ? "success" : "failure") : ""}>
+        {typeof value === "boolean" ? (value ? t("yes") : t("no")) : String(value ?? "null")}
+      </strong>
+    </div>
+  );
+}
+
+export function ServiceSection({ bridge, services }: { bridge: WorkerBridge; services: ServiceInfo[] }) {
+  const { t } = useI18n();
+  const [selected, setSelected] = useState<string>();
+  const [request, setRequest] = useState<Record<string, unknown>>({});
+  const [result, setResult] = useState<unknown>();
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const service = services.find((item) => item.name === selected);
+  const schema = useMemo(
+    () => {
       try {
-        setReqText(JSON.stringify(defaultsFromSchema(svc?.requestSchema ?? ""), null, 1));
+        return { fields: describeServiceSchema(service?.requestSchema ?? "") };
       } catch {
-        setReqText("{}");
+        return { fields: [] as ServiceField[], error: t("serviceSchemaError") };
       }
     },
-    [selected, services],
+    [service?.requestSchema, t],
   );
+  const fields = schema.fields;
+
+  const pick = useCallback((item: ServiceInfo) => {
+    if (selected === item.name) {
+      setSelected(undefined);
+      return;
+    }
+    setSelected(item.name);
+    setResult(undefined);
+    setError(undefined);
+    try {
+      setRequest(defaultsFromSchema(item.requestSchema));
+    } catch {
+      setRequest({});
+    }
+  }, [selected]);
 
   const call = useCallback(async () => {
-    if (!selected) return;
+    if (!selected || busy) return;
     setBusy(true);
     setResult(undefined);
+    setError(undefined);
     try {
-      const req = JSON.parse(reqText) as unknown;
-      const res = await bridge.callService(selected, req);
-      setResult(JSON.stringify(res, null, 1));
-    } catch (err) {
-      setResult(`错误: ${err instanceof Error ? err.message : String(err)}`);
+      setResult(await bridge.callService(selected, request));
+    } catch (callError) {
+      setError(callError instanceof Error ? callError.message : String(callError));
     } finally {
       setBusy(false);
     }
-  }, [bridge, selected, reqText]);
+  }, [bridge, busy, request, selected]);
 
   if (services.length === 0) return null;
 
   return (
     <div className="side-section">
-      <h2>服务</h2>
-      {services.map((s) => (
-        <div key={s.name}>
-          <button
-            className={`topic-row ${selected === s.name ? "active" : ""}`}
-            onClick={() => pick(s.name)}
-          >
-            <span className="check">{selected === s.name ? "▾" : "▸"}</span>
-            <span className="name">{s.name}</span>
-            <span className="schema">{s.type.split("/").pop()}</span>
+      <h2>{t("services")}</h2>
+      {services.map((item) => (
+        <div key={item.name}>
+          <button className={`topic-row ${selected === item.name ? "active" : ""}`} onClick={() => pick(item)}>
+            <span className="check">{selected === item.name ? <ChevronDown /> : <ChevronRight />}</span>
+            <span className="name">{item.name}</span>
+            <span className="schema">{item.type.split("/").pop()}</span>
           </button>
-          {selected === s.name && (
-            <div className="service-form">
-              <textarea
-                value={reqText}
-                onChange={(e) => setReqText(e.target.value)}
-                rows={Math.min(6, reqText.split("\n").length)}
-                spellCheck={false}
-              />
-              <button onClick={call} disabled={busy}>
-                {busy ? "调用中…" : "调用"}
-              </button>
-              {result && <pre className="service-result">{result}</pre>}
-            </div>
+          {selected === item.name && (
+            <form className="service-form" onSubmit={(event) => { event.preventDefault(); void call(); }}>
+              {fields.length === 0 ? <p className="service-empty">{t("noParameters")}</p> : fields.map((field) => (
+                <ServiceFieldEditor
+                  key={field.name}
+                  field={field}
+                  path={[field.name]}
+                  request={request}
+                  disabled={busy}
+                  onChange={(path, value) => setRequest((current) => setServiceValue(current, path, value))}
+                />
+              ))}
+              <button type="submit" disabled={busy || Boolean(schema.error)}>{busy ? t("calling") : t("call")}</button>
+              {schema.error && <p className="service-error" role="alert">{schema.error}</p>}
+              {error && <p className="service-error" role="alert">{error}</p>}
+              {result !== undefined && <div className="service-result"><ResultValue value={result} /></div>}
+            </form>
           )}
         </div>
       ))}

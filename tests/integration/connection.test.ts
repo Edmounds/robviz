@@ -118,6 +118,9 @@ describe("mock bridge ↔ core 全链路", () => {
     const parsed = parsePointCloud2(cloud);
     expect(parsed.count).toBe(cloud.width);
     expect(parsed.colorField).toBe("intensity");
+    expect(parsed.zMin).toBeLessThan(parsed.zMax);
+    expect(parsed.positions[2]).toBeGreaterThanOrEqual(parsed.zMin);
+    expect(parsed.positions[2]).toBeLessThanOrEqual(parsed.zMax);
     // 与真值首点比对
     const truth = scene.cloudAt(toSec(cloud.header.stamp));
     expect(parsed.positions[0]).toBeCloseTo(truth.buffer[0], 4);

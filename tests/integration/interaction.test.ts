@@ -138,6 +138,6 @@ describe("双向交互", () => {
       () => true,
     );
     const types = ma.markers.map((m) => m.type).sort((a, b) => a - b);
-    expect(types).toEqual([0, 1, 2, 4, 9]);
+    expect(types).toEqual([0, 1, 2, 4]);
   });
 });

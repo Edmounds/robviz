@@ -39,7 +39,9 @@ function Section({ ctx }: PluginSectionProps) {
 
   return (
     <div className="side-row">
-      <span className="side-label">{latest ?? "等待消息…"}</span>
+      <span className="side-label">
+        {latest ?? (ctx.locale === "en" ? "Waiting for messages..." : "等待消息...")}
+      </span>
     </div>
   );
 }

@@ -511,10 +511,9 @@ export async function startMockServer(
     });
   };
 
-  // ---- Marker（覆盖箭头/立方体/球/线条/文字，混合 frame） ----
+  // ---- Marker（覆盖箭头/立方体/球/线条，混合 frame） ----
 
   const publishMarkers = (t: number) => {
-    const p = poseAt(t);
     const common = {
       action: 0,
       lifetime: { sec: 0, nanosec: 0 },
@@ -582,17 +581,6 @@ export async function startMockServer(
           scale: { x: 0.04, y: 0, z: 0 },
           color: { r: 0.3, g: 0.6, b: 1, a: 0.8 },
           points: circlePts,
-        },
-        {
-          ...common,
-          header: { stamp: stamp(t), frame_id: "map" },
-          ns: "label",
-          id: 4,
-          type: 9, // TEXT_VIEW_FACING
-          pose: { position: { x: p.x, y: p.y, z: 1.6 }, orientation: IDENTITY_Q },
-          scale: { x: 0, y: 0, z: 0.4 },
-          color: { r: 1, g: 1, b: 1, a: 1 },
-          text: motorEnabled ? (manual ? "MANUAL" : "AUTO") : "STOPPED",
         },
       ],
     });

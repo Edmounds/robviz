@@ -4,6 +4,8 @@
  */
 import { Component } from "react";
 import type { ReactNode } from "react";
+import type { Translate } from "./i18n";
+import { useI18n } from "./i18n";
 
 interface Props {
   /** 模块名（错误提示用） */
@@ -13,11 +15,15 @@ interface Props {
   onReset?: () => void;
 }
 
+interface InnerProps extends Props {
+  t: Translate;
+}
+
 interface State {
   error?: Error;
 }
 
-export class ErrorBoundary extends Component<Props, State> {
+class ErrorBoundaryImpl extends Component<InnerProps, State> {
   state: State = {};
 
   static getDerivedStateFromError(error: Error): State {
@@ -32,7 +38,7 @@ export class ErrorBoundary extends Component<Props, State> {
     if (this.state.error) {
       return (
         <div className="module-error">
-          <div className="module-error-title">{this.props.name} 出错（已隔离）</div>
+          <div className="module-error-title">{this.props.t("moduleError", { name: this.props.name })}</div>
           <div className="module-error-msg">{this.state.error.message}</div>
           <button
             onClick={() => {
@@ -40,11 +46,16 @@ export class ErrorBoundary extends Component<Props, State> {
               this.setState({ error: undefined });
             }}
           >
-            重置
+            {this.props.t("reset")}
           </button>
         </div>
       );
     }
     return this.props.children;
   }
+}
+
+export function ErrorBoundary(props: Props) {
+  const { t } = useI18n();
+  return <ErrorBoundaryImpl {...props} t={t} />;
 }

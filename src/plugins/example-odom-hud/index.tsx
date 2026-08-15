@@ -42,7 +42,7 @@ function OdomHud({ ctx }: PluginSectionProps) {
         <span className="side-label">
           {speed
             ? `${speed.linear.toFixed(2)} m/s · ${((speed.angular * 180) / Math.PI).toFixed(0)} °/s`
-            : "等待消息…"}
+            : ctx.locale === "en" ? "Waiting for messages..." : "等待消息..."}
         </span>
       </div>
     </>

@@ -16,6 +16,11 @@ export function collectPlugins(modules: Record<string, unknown>): RobvizPlugin[]
       console.warn(`[plugins] ${path} 缺少 default 导出的 RobvizPlugin（含 id），已跳过`);
       continue;
     }
+    const folder = path.match(/^\.\/([^/]+)\/index\.tsx$/)?.[1];
+    if (folder && plugin.id !== folder) {
+      console.warn(`[plugins] 插件 id "${plugin.id}" 与目录名 "${folder}" 不一致，已跳过`);
+      continue;
+    }
     if (seen.has(plugin.id)) {
       console.warn(`[plugins] 重复插件 id "${plugin.id}"（${path}），已跳过`);
       continue;
@@ -35,38 +40,63 @@ export interface PluginPanelDef {
   kind: string;
   title: string;
   component: ComponentType<PluginPanelProps>;
+  pluginId: string;
 }
 
 export interface PluginSectionDef {
   id: string;
   title: string;
   component: ComponentType<PluginSectionProps>;
+  pluginId: string;
 }
 
-export const pluginPanels: PluginPanelDef[] = plugins.flatMap((p) =>
-  (p.panels ?? []).map((panel) => ({
-    kind: `${p.id}:${panel.kind}`,
-    title: panel.title,
-    component: panel.component,
-  })),
-);
+export interface ResolvedPlugins {
+  activePlugins: RobvizPlugin[];
+  panels: PluginPanelDef[];
+  sections: PluginSectionDef[];
+  displays: Record<string, () => Display>;
+}
 
-export const pluginSections: PluginSectionDef[] = plugins.flatMap((p) =>
-  (p.sections ?? []).map((s) => ({
-    id: `${p.id}:${s.id}`,
-    title: s.title,
-    component: s.component,
-  })),
-);
-
-/** 插件 3D 显示器（内置类型优先，不允许覆盖） */
-export const pluginDisplays: Record<string, () => Display> = {};
-for (const p of plugins) {
-  for (const d of p.displays ?? []) {
-    if (d.schema in pluginDisplays) {
-      console.warn(`[plugins] schema "${d.schema}" 已被其他插件注册，"${p.id}" 的显示器被跳过`);
-      continue;
+/** 先固定 display schema 的首个所有者，再过滤启用状态，避免运行时切换导致接管。 */
+export function resolvePlugins(
+  allPlugins: RobvizPlugin[],
+  disabledPluginIds: Iterable<string>,
+): ResolvedPlugins {
+  const disabled = new Set(disabledPluginIds);
+  const displayOwners = new Map<string, RobvizPlugin>();
+  for (const plugin of allPlugins) {
+    for (const display of plugin.displays ?? []) {
+      if (!displayOwners.has(display.schema)) displayOwners.set(display.schema, plugin);
     }
-    pluginDisplays[d.schema] = d.create;
   }
+
+  const activePlugins = allPlugins.filter((plugin) => !disabled.has(plugin.id));
+  const panels = activePlugins.flatMap((plugin) =>
+    (plugin.panels ?? []).map((panel) => ({
+      kind: `${plugin.id}:${panel.kind}`,
+      title: panel.title,
+      component: panel.component,
+      pluginId: plugin.id,
+    })),
+  );
+  const sections = activePlugins.flatMap((plugin) =>
+    (plugin.sections ?? []).map((section) => ({
+      id: `${plugin.id}:${section.id}`,
+      title: section.title,
+      component: section.component,
+      pluginId: plugin.id,
+    })),
+  );
+  const displays: Record<string, () => Display> = {};
+  for (const [schema, owner] of displayOwners) {
+    if (disabled.has(owner.id)) continue;
+    const display = owner.displays?.find((candidate) => candidate.schema === schema);
+    if (display) displays[schema] = display.create;
+  }
+  return { activePlugins, panels, sections, displays };
 }
+
+const resolved = resolvePlugins(plugins, []);
+export const pluginPanels = resolved.panels;
+export const pluginSections = resolved.sections;
+export const pluginDisplays = resolved.displays;

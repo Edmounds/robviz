@@ -1,6 +1,8 @@
 import * as THREE from "three";
 
 import type { MessagePayload } from "../worker/protocol";
+import type { PointCloudSettings } from "../core/layoutConfig";
+import { DEFAULT_POINT_CLOUD_SETTINGS } from "../core/layoutConfig";
 import { POINTS_FRAGMENT, POINTS_VERTEX } from "./pointsShader";
 import type { Display } from "./SceneManager";
 import { onSceneTheme, sceneColors } from "./sceneTheme";
@@ -30,6 +32,10 @@ export class PointCloudRenderer implements Display {
   #writeOffset = 0;
   #total = 0;
   #offSceneTheme: () => void;
+  #settings: PointCloudSettings = { ...DEFAULT_POINT_CLOUD_SETTINGS };
+  #autoFieldRange: [number, number] = [0, 1];
+  #autoZRange: [number, number] = [0, 1];
+  #colorField?: string;
 
   constructor(accumulate = false) {
     this.accumulate = accumulate;
@@ -41,18 +47,68 @@ export class PointCloudRenderer implements Display {
       uniforms: {
         uMin: { value: 0 },
         uMax: { value: 1 },
-        uSize: { value: 2.2 },
+        uZMin: { value: 0 },
+        uZMax: { value: 1 },
+        uSize: { value: 2 },
+        uFixedSize: { value: 1 },
+        uColorMode: { value: 1 },
         uHasValue: { value: 0 },
         uOpacity: { value: 1 },
         uFlatColor: { value: new THREE.Color(sceneColors().flatPoint) },
       },
     });
     this.#offSceneTheme = onSceneTheme(() => {
-      (this.#material.uniforms.uFlatColor.value as THREE.Color).setHex(sceneColors().flatPoint);
+      (this.#material.uniforms.uFlatColor.value as THREE.Color).set(this.#settings.flatColor);
     });
     this.#points = new THREE.Points(this.#geometry, this.#material);
     this.#points.frustumCulled = false;
     this.root.add(this.#points);
+  }
+
+  get settings(): PointCloudSettings {
+    return { ...this.#settings };
+  }
+
+  get colorField(): string | undefined {
+    return this.#colorField;
+  }
+
+  get autoRange(): [number, number] {
+    return this.#settings.colorMode === "height" ? [...this.#autoZRange] : [...this.#autoFieldRange];
+  }
+
+  applySettings(settings: PointCloudSettings): void {
+    const accumulationChanged = this.accumulate !== settings.accumulate;
+    if (settings.accumulate && this.#capacity < ACCUMULATE_CAPACITY) {
+      this.#allocate(ACCUMULATE_CAPACITY);
+    } else if (accumulationChanged) {
+      this.clear();
+    }
+    this.#settings = { ...settings };
+    this.accumulate = settings.accumulate;
+    const uniforms = this.#material.uniforms;
+    uniforms.uSize.value = settings.pointSize;
+    uniforms.uOpacity.value = settings.opacity;
+    uniforms.uColorMode.value = settings.colorMode === "flat" ? 0 : settings.colorMode === "field" ? 1 : 2;
+    (uniforms.uFlatColor.value as THREE.Color).set(settings.flatColor);
+    this.#material.transparent = settings.opacity < 1;
+    this.#material.depthWrite = settings.opacity >= 1;
+    this.#material.needsUpdate = true;
+    this.#applyRange();
+  }
+
+  #applyRange(): void {
+    const range =
+      this.#settings.rangeMode === "manual"
+        ? [this.#settings.rangeMin ?? 0, this.#settings.rangeMax ?? 1]
+        : this.autoRange;
+    if (this.#settings.colorMode === "height") {
+      this.#material.uniforms.uZMin.value = range[0];
+      this.#material.uniforms.uZMax.value = range[1];
+    } else {
+      this.#material.uniforms.uMin.value = range[0];
+      this.#material.uniforms.uMax.value = range[1];
+    }
   }
 
   #allocate(capacity: number): void {
@@ -71,6 +127,7 @@ export class PointCloudRenderer implements Display {
     if (payload.kind !== "cloud") return;
     const { header, cloud } = payload;
     this.frameId = header.frame_id;
+    this.#colorField = cloud.colorField;
 
     if (!this.accumulate && cloud.count > this.#capacity) {
       this.#allocate(Math.max(cloud.count, this.#capacity * 2));
@@ -111,11 +168,14 @@ export class PointCloudRenderer implements Display {
 
     const u = this.#material.uniforms;
     u.uHasValue.value = cloud.colorValues ? 1 : 0;
+    this.#autoZRange = [cloud.zMin, cloud.zMax];
     if (cloud.colorValues) {
       // 平滑跟随数据范围，避免帧间闪烁
       u.uMin.value = u.uMin.value * 0.9 + cloud.colorMin * 0.1;
       u.uMax.value = u.uMax.value * 0.9 + cloud.colorMax * 0.1;
+      this.#autoFieldRange = [u.uMin.value, u.uMax.value];
     }
+    this.#applyRange();
   }
 
   /** 清空累积缓冲 */

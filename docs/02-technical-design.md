@@ -274,6 +274,19 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 验收方式：临时注入三种崩溃（面板 render 抛错 / 渲染器 update 抛错 / Worker 未捕获异常），
 浏览器实测隔离与自愈后移除注入代码（`rg 故障注入` 确认无残留）。
 
+## 8.9 远程终端
+
+- UI 懒加载 `@xterm/xterm`，底部抽屉横跨工作区；隐藏只改变布局，不卸载组件或断开会话。
+- 操作电脑运行 `terminal/server.ts`，只监听 `127.0.0.1:8767`。网关验证环境变量 Token 后，
+  从客户端给出的 Foxglove `ws://`/`wss://` URL 中解析 hostname，并用 `node-pty` 启动
+  `ssh user@host`；不接受独立 SSH host，也不经过 shell 字符串拼接。
+- 协议只有 open/input/resize/close 与 ready/output/exit/error，边界统一用 Zod 校验；每个
+  WebSocket 只允许一个 PTY，全局最多四个，连接断开和进程退出都会释放资源。
+- 用户名保存在 localStorage，网关 Token 只在 sessionStorage；SSH 密码和 host key 交互由
+  OpenSSH 在终端内处理。机器人侧仍只有 foxglove_bridge 与标准 SSH 服务。
+- loopback 明文 WebSocket 只适用于浏览器与网关同机；跨设备或 HTTPS 页面需要外部 WSS
+  反向代理，首版不提供公网部署能力。
+
 ## 9. 决策记录（只增不删）
 
 | # | 决策 | 理由 |
@@ -301,3 +314,4 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 | D21 | MCP 截图走反向 WS 命令通道（MCP 开服务、UI 连入） | UI 在浏览器沙箱里无法开端口；反向连接让 agent 与 UI 解耦，UI 不在也不影响数据面工具 |
 | D22 | 模拟器仿真真机行为（cmd_vel 积分驱动、服务改状态、marker 状态字） | 交互功能的验收需要闭环：发出去的指令必须影响回传数据才算通 |
 | D23 | 四层故障舱壁（ErrorBoundary / 逐 handler 隔离 / 逐显示器隔离 / Worker 自愈），用故障注入验收 | 一个功能崩溃不能拖垮整体；隔离逻辑不注入真实崩溃测过等于没写 |
+| D24 | 终端网关在操作电脑用系统 SSH，不在机器人部署 Web Shell | 保留机器人侧零自研服务；复用 OpenSSH 的 known_hosts、密码/密钥交互与加密链路 |

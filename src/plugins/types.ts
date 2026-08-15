@@ -12,6 +12,7 @@ import type { TopicInfo } from "../core/FoxgloveConnection";
 import type { TfBuffer } from "../core/TfBuffer";
 import type { Display } from "../renderers/SceneManager";
 import type { Theme } from "../renderers/sceneTheme";
+import type { Locale } from "../app/i18n";
 
 /** 插件可用的宿主能力（每次渲染更新，topics/fixedFrame/theme 是最新值） */
 export interface PluginContext {
@@ -25,6 +26,8 @@ export interface PluginContext {
   fixedFrame: string;
   /** 当前明暗主题（UI chrome 请用 CSS 令牌，此值供画布类内容用） */
   theme: Theme;
+  /** 当前宿主语言；插件自行负责自己的翻译文案 */
+  locale: Locale;
 }
 
 /** 面板坞面板 props */

@@ -12,6 +12,8 @@ export interface ParsedCloud {
   colorField?: string;
   colorMin: number;
   colorMax: number;
+  zMin: number;
+  zMax: number;
 }
 
 function readerFor(datatype: number): (view: DataView, offset: number) => number {
@@ -89,6 +91,19 @@ export function parsePointCloud2(
     }
   }
 
+  let zMin = Infinity;
+  let zMax = -Infinity;
+  for (let i = 2; i < positions.length; i += 3) {
+    const z = positions[i];
+    if (!Number.isFinite(z)) continue;
+    zMin = Math.min(zMin, z);
+    zMax = Math.max(zMax, z);
+  }
+  if (!Number.isFinite(zMin) || zMin === zMax) {
+    zMin = 0;
+    zMax = 1;
+  }
+
   // 着色字段
   const wanted = colorField
     ? [colorField, ...COLOR_FIELD_PRIORITY]
@@ -125,5 +140,5 @@ export function parsePointCloud2(
     }
   }
 
-  return { count, positions, colorValues, colorField: cf?.name, colorMin, colorMax };
+  return { count, positions, colorValues, colorField: cf?.name, colorMin, colorMax, zMin, zMax };
 }

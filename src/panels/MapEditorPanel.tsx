@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
+import { useI18n } from "../app/i18n";
 import type { EditableMap } from "../core/mapio";
 import { parseMapYaml, parsePgm, serializeMapYaml, serializePgm } from "../core/mapio";
 import type { Quaternion } from "../core/types";
@@ -40,6 +41,7 @@ function download(data: ArrayBuffer | string, name: string): void {
 }
 
 export function MapEditorPanel({ bridge, theme }: { bridge: WorkerBridge; theme?: string }) {
+  const { t } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const mapRef = useRef<EditableMap>(null);
   const offscreenRef = useRef<HTMLCanvasElement>(null);
@@ -314,7 +316,7 @@ export function MapEditorPanel({ bridge, theme }: { bridge: WorkerBridge; theme?
         }
       }
       if (!pgmFile) {
-        setHint("请选择 .pgm 文件（可同时选中 .yaml 读取元信息）");
+        setHint(t("choosePgm"));
         return;
       }
       meta ??= {
@@ -327,14 +329,15 @@ export function MapEditorPanel({ bridge, theme }: { bridge: WorkerBridge; theme?
       try {
         setMap(parsePgm(await pgmFile.arrayBuffer(), meta), name);
       } catch (err) {
-        setHint(`解析失败: ${err instanceof Error ? err.message : err}`);
+        setHint(t("parseFailed", { message: err instanceof Error ? err.message : String(err) }));
       }
     },
-    [setMap],
+    [setMap, t],
   );
 
   const importFromTopic = useCallback(() => {
-    setHint("等待 /map 消息…");
+    const waiting = t("waitingMap");
+    setHint(waiting);
     const unsub = bridge.subscribe("/map", (payload) => {
       if (payload.kind !== "grid") return;
       unsub();
@@ -362,9 +365,9 @@ export function MapEditorPanel({ bridge, theme }: { bridge: WorkerBridge; theme?
     // 10s 没等到就放弃
     setTimeout(() => {
       unsub();
-      setHint((h) => (h === "等待 /map 消息…" ? "/map 超时，确认已连接且话题存在" : h));
+      setHint((h) => (h === waiting ? t("mapTimeout") : h));
     }, 10_000);
-  }, [bridge, setMap]);
+  }, [bridge, setMap, t]);
 
   const exportMap = useCallback(() => {
     const map = mapRef.current;
@@ -394,7 +397,7 @@ export function MapEditorPanel({ bridge, theme }: { bridge: WorkerBridge; theme?
   return (
     <div className="map-editor">
       <div className="map-toolbar">
-        <button onClick={() => fileRef.current?.click()}>打开 PGM+YAML</button>
+        <button onClick={() => fileRef.current?.click()}>{t("openMapFiles")}</button>
         <input
           ref={fileRef}
           type="file"
@@ -403,14 +406,14 @@ export function MapEditorPanel({ bridge, theme }: { bridge: WorkerBridge; theme?
           style={{ display: "none" }}
           onChange={(e) => e.target.files && openFiles(e.target.files)}
         />
-        <button onClick={importFromTopic}>从 /map 抓取</button>
+        <button onClick={importFromTopic}>{t("captureMap")}</button>
         <span className="divider" />
-        <span className="group-label">值</span>
+        <span className="group-label">{t("value")}</span>
         {(
           [
-            [0, "自由"],
-            [100, "占用"],
-            [-1, "未知"],
+            [0, t("free")],
+            [100, t("occupied")],
+            [-1, t("unknown")],
           ] as [CellValue, string][]
         ).map(([v, label]) => (
           <button key={v} className={value === v ? "active" : ""} onClick={() => setValue(v)}>
@@ -418,15 +421,15 @@ export function MapEditorPanel({ bridge, theme }: { bridge: WorkerBridge; theme?
           </button>
         ))}
         <span className="divider" />
-        <span className="group-label">工具</span>
+        <span className="group-label">{t("tools")}</span>
         <button className={tool === "paint" ? "active" : ""} onClick={() => setTool("paint")}>
-          画笔
+          {t("brush")}
         </button>
         <button className={tool === "rect" ? "active" : ""} onClick={() => setTool("rect")}>
-          矩形
+          {t("rectangle")}
         </button>
         <label className="brush-size">
-          笔宽 {brush}
+          {t("brushSize", { size: brush })}
           <input
             type="range"
             min={1}
@@ -437,10 +440,10 @@ export function MapEditorPanel({ bridge, theme }: { bridge: WorkerBridge; theme?
         </label>
         <span className="divider" />
         <button onClick={undo} disabled={undoDepth === 0}>
-          撤销 ({undoDepth})
+          {t("undoCount", { count: undoDepth })}
         </button>
         <button onClick={exportMap} disabled={!mapInfo}>
-          导出 PGM+YAML
+          {t("exportMap")}
         </button>
         <span className="spacer" />
         {mapInfo && (
@@ -460,7 +463,7 @@ export function MapEditorPanel({ bridge, theme }: { bridge: WorkerBridge; theme?
         />
         {!mapInfo && (
           <div className="map-empty">
-            {hint ?? "打开 PGM+YAML 地图文件，或连接后从 /map 话题抓取。左键绘制 · 右键平移 · 滚轮缩放"}
+            {hint ?? t("mapEmpty")}
           </div>
         )}
         {mapInfo && hint && <div className="map-empty">{hint}</div>}

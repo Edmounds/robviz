@@ -47,6 +47,7 @@ interface PluginContext {
   tf: TfBuffer;           // TF 查询
   fixedFrame: string;     // 当前 fixed frame
   theme: "dark" | "light";
+  locale: "zh-CN" | "en"; // 当前宿主语言；插件自行翻译自己的名称和文案
 }
 ```
 
@@ -90,6 +91,16 @@ function MyPanel({ ctx, state, onStateChange, onClose }: PluginPanelProps) {
 ```
 
 state 必须是可 JSON 序列化的普通对象。
+
+### 运行时启停
+
+用户可在“设置 → 插件”中立即启用或停用已打包插件。停用会卸载该插件的面板和侧栏区块，
+并销毁其 3D display；重新启用后，宿主会恢复已保存的面板状态、尺寸和 display 目标话题。
+插件仍由 Vite 在构建期发现，设置页不负责安装、删除或运行时扫描文件夹。
+
+插件模块顶层代码会在应用加载时执行，无法通过启停撤销，因此不要在模块顶层创建订阅、定时器、
+WebSocket 或 DOM 监听。把副作用放进 React `useEffect` 或 display 生命周期，并在 cleanup / `dispose()`
+中完整释放。插件文案可根据 `ctx.locale` 在 `"zh-CN"` 与 `"en"` 之间切换。
 
 ## 2. 三类扩展点示例
 
@@ -140,9 +151,10 @@ const plugin: RobvizPlugin = {
   和设计令牌（`var(--foreground)` 等，见 [03-ui-design.md](03-ui-design.md)）；
   数据内容（曲线、点云颜色）可以有彩色。深浅主题都要可读——不要硬编码黑白。
 - **订阅必须清理**：`useEffect` 返回 `unsub`，否则关面板后还在收消息。
+- **顶层不得产生副作用**：运行时开关只卸载扩展点，无法撤销模块求值时创建的资源。
 - **错误隔离**：三类扩展点都套在 ErrorBoundary/显示器隔离里，插件崩溃不会拖垮主体，
   但仍应自己处理可预期的错误（话题不存在、字段缺失）。
-- id 与目录名一致；面板 kind 会自动带上 `<id>:` 前缀写入配置文件。
+- id 与目录名必须一致，否则 registry 会跳过该插件；面板 kind 会自动带上 `<id>:` 前缀写入配置文件。
 
 ## 4. 验证清单
 

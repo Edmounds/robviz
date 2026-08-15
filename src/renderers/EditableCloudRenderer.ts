@@ -56,7 +56,11 @@ export class EditableCloudRenderer implements Display {
       uniforms: {
         uMin: { value: min },
         uMax: { value: max },
+        uZMin: { value: 0 },
+        uZMax: { value: 1 },
         uSize: { value: 1.6 },
+        uFixedSize: { value: 0 },
+        uColorMode: { value: cloud.intensity ? 1 : 0 },
         uHasValue: { value: cloud.intensity ? 1 : 0 },
         uOpacity: { value: 1 },
         uFlatColor: { value: new THREE.Color(sceneColors().flatPoint) },

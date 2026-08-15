@@ -17,6 +17,8 @@ export interface ServiceInfo {
   type: string;
   /** 请求 schema 文本（供 UI 生成默认请求体） */
   requestSchema: string;
+  /** 响应 schema 文本（供 UI 结构化展示） */
+  responseSchema: string;
 }
 
 export type MessageHandler = (message: unknown, channel: Channel) => void;
@@ -128,6 +130,7 @@ export class FoxgloveConnection {
       name: s.name,
       type: s.type,
       requestSchema: s.request?.schema ?? s.requestSchema ?? "",
+      responseSchema: s.response?.schema ?? s.responseSchema ?? "",
     }));
   }
 

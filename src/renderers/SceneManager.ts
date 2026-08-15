@@ -1,5 +1,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
+import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
+import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 
 import { LATEST, TfBuffer } from "../core/TfBuffer";
 import type { TimeSec } from "../core/types";
@@ -73,7 +76,11 @@ export class SceneManager {
   #lastTfStamp = 0;
 
   #fixedFrame = "map";
-  #gridMaterials: THREE.LineBasicMaterial[] = [];
+  #grid: THREE.Object3D;
+  #gridMaterials: LineMaterial[] = [];
+  #hemisphereLight: THREE.HemisphereLight;
+  #directionalLight: THREE.DirectionalLight;
+  #resizeObserver: ResizeObserver;
   #offSceneTheme: () => void;
   #flight?: CameraFlight;
   #followFrame?: string;
@@ -113,15 +120,17 @@ export class SceneManager {
       this.#flight = undefined;
     });
 
-    this.#scene.add(this.#buildGrid());
+    this.#grid = this.#buildGrid();
+    this.#scene.add(this.#grid);
     this.#tfAxes = new TfAxesRenderer();
     this.#scene.add(this.#tfAxes.root);
 
     // URDF/Marker 等实体网格需要光照（点云/线条用无光材质不受影响）
-    this.#scene.add(new THREE.HemisphereLight(0xffffff, 0x333333, 1.2));
-    const dir = new THREE.DirectionalLight(0xffffff, 1.0);
-    dir.position.set(5, -3, 8);
-    this.#scene.add(dir);
+    this.#hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x333333, 1.2);
+    this.#scene.add(this.#hemisphereLight);
+    this.#directionalLight = new THREE.DirectionalLight(0xffffff, 1.0);
+    this.#directionalLight.position.set(5, -3, 8);
+    this.#scene.add(this.#directionalLight);
 
     const resize = () => {
       const el = canvas.parentElement;
@@ -134,7 +143,8 @@ export class SceneManager {
       this.#dirty = true;
     };
     resize();
-    new ResizeObserver(resize).observe(canvas.parentElement!);
+    this.#resizeObserver = new ResizeObserver(resize);
+    this.#resizeObserver.observe(canvas.parentElement!);
 
     const loop = () => {
       if (!this.#running) return;
@@ -156,6 +166,28 @@ export class SceneManager {
   /** 框选工具激活时关闭轨道控制 */
   setControlsEnabled(enabled: boolean): void {
     this.#controls.enabled = enabled;
+  }
+
+  setGridVisible(visible: boolean): void {
+    this.#grid.visible = visible;
+    this.#dirty = true;
+  }
+
+  setTfAxesLineWidth(lineWidth: number): void {
+    this.#tfAxes.setLineWidth(lineWidth);
+    this.#dirty = true;
+  }
+
+  setLightingVisible(visible: boolean): void {
+    this.#hemisphereLight.visible = visible;
+    this.#directionalLight.visible = visible;
+    this.#dirty = true;
+  }
+
+  setShadowsEnabled(enabled: boolean): void {
+    this.#renderer.shadowMap.enabled = enabled;
+    this.#directionalLight.castShadow = enabled;
+    this.#dirty = true;
   }
 
   set fixedFrame(frame: string) {
@@ -306,10 +338,16 @@ export class SceneManager {
 
   dispose(): void {
     this.#running = false;
+    this.#resizeObserver.disconnect();
     this.#offSceneTheme();
     this.#tfAxes.dispose();
     for (const topic of [...this.#displays.keys()]) this.removeDisplay(topic);
     this.#controls.dispose();
+    this.#grid.traverse((object) => {
+      const geometry = (object as THREE.LineSegments).geometry;
+      geometry?.dispose();
+    });
+    for (const material of this.#gridMaterials) material.dispose();
     this.#renderer.dispose();
   }
 
@@ -435,29 +473,32 @@ export class SceneManager {
     }
   }
 
-  /** 地面网格：1m 间距细线 + 5m 主线，对齐"技术图纸"气质 */
+  /** 地面网格：1m 次格 + 5m 主格，使用屏幕空间线宽保证不同 DPI 下可辨识。 */
   #buildGrid(): THREE.Object3D {
     const group = new THREE.Group();
-    const make = (step: number, half: number, opacity: number) => {
+    const make = (step: number, half: number, linewidth: number, opacity: number, minor: boolean) => {
       const positions: number[] = [];
       for (let v = -half; v <= half; v += step) {
+        if (minor && v % 5 === 0) continue;
         positions.push(-half, v, 0, half, v, 0);
         positions.push(v, -half, 0, v, half, 0);
       }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-      const mat = new THREE.LineBasicMaterial({
+      const geo = new LineSegmentsGeometry();
+      geo.setPositions(positions);
+      const mat = new LineMaterial({
         color: sceneColors().foreground,
         transparent: true,
         opacity,
+        linewidth,
         depthWrite: false,
       });
       this.#gridMaterials.push(mat);
-      return new THREE.LineSegments(geo, mat);
+      const lines = new LineSegments2(geo, mat);
+      lines.renderOrder = -1;
+      return lines;
     };
-    group.add(make(1, 25, 0.06));
-    group.add(make(5, 25, 0.1));
-    group.renderOrder = -1;
+    group.add(make(1, 25, 1.5, 0.14, true));
+    group.add(make(5, 25, 2.25, 0.3, false));
     return group;
   }
 }

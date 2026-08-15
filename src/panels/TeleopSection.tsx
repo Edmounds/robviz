@@ -5,8 +5,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
+import { useI18n } from "../app/i18n";
 
 export function TeleopSection({ bridge }: { bridge: WorkerBridge }) {
+  const { t } = useI18n();
   const [enabled, setEnabled] = useState(false);
   const [topic, setTopic] = useState("/cmd_vel");
   const [maxLin, setMaxLin] = useState(0.5);
@@ -87,7 +89,7 @@ export function TeleopSection({ bridge }: { bridge: WorkerBridge }) {
 
   return (
     <div className="side-section">
-      <h2>遥控 Teleop</h2>
+      <h2>{t("teleopTitle")}</h2>
       <div className="side-row">
         <input
           className="topic-input"
@@ -96,7 +98,7 @@ export function TeleopSection({ bridge }: { bridge: WorkerBridge }) {
           spellCheck={false}
         />
         <button className={`toggle ${enabled ? "on" : ""}`} onClick={() => setEnabled(!enabled)}>
-          {enabled ? "已启用" : "启用"}
+          {enabled ? t("enabled") : t("enable")}
         </button>
       </div>
       {enabled && (
@@ -119,7 +121,7 @@ export function TeleopSection({ bridge }: { bridge: WorkerBridge }) {
           </div>
           <div className="side-row slider-row">
             <label>
-              线速 {maxLin.toFixed(1)} m/s
+              {t("linearSpeed")} {maxLin.toFixed(1)} m/s
               <input
                 type="range"
                 min={0.1}
@@ -130,7 +132,7 @@ export function TeleopSection({ bridge }: { bridge: WorkerBridge }) {
               />
             </label>
             <label>
-              角速 {maxAng.toFixed(1)} rad/s
+              {t("angularSpeed")} {maxAng.toFixed(1)} rad/s
               <input
                 type="range"
                 min={0.2}
@@ -141,7 +143,7 @@ export function TeleopSection({ bridge }: { bridge: WorkerBridge }) {
               />
             </label>
           </div>
-          <p className="side-hint">WASD / 方向键，或按住方向按钮</p>
+          <p className="side-hint">{t("wasdHint")}</p>
         </>
       )}
     </div>

@@ -12,7 +12,7 @@ export type PcdWorkerRequest = {
 };
 
 export type PcdWorkerResponse =
-  | { type: "progress"; stage: string }
+  | { type: "progress"; stage: "parsing" | "downsampling" }
   | {
       type: "result";
       count: number;
@@ -31,11 +31,11 @@ self.onmessage = (ev: MessageEvent<PcdWorkerRequest>) => {
   const { buffer, voxel } = ev.data;
   try {
     const t0 = performance.now();
-    post({ type: "progress", stage: "解析中" });
+    post({ type: "progress", stage: "parsing" });
     const raw = parsePcd(buffer);
     let cloud = raw;
     if (voxel > 0) {
-      post({ type: "progress", stage: "降采样中" });
+      post({ type: "progress", stage: "downsampling" });
       cloud = voxelDownsample(raw, voxel);
     }
     const transfer: Transferable[] = [cloud.positions.buffer];
