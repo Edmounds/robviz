@@ -19,12 +19,12 @@ describe("EchoTopicSection", () => {
       </I18nProvider>,
     );
 
-    expect(html).toContain("Echo Topic");
+    expect(html).toContain("话题输出");
     expect(html.match(/<select/g)?.length).toBe(1);
     expect(html).toContain("选择要 Echo 的话题...");
     expect(html).toContain("/odom (Odometry)");
     expect(html).toContain("/scan (LaserScan)");
     expect(html).toContain("选择话题后等待数据");
-    expect(html).toContain("收起Echo Topic");
+    expect(html).toContain("收起话题输出");
   });
 });

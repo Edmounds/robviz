@@ -22,7 +22,7 @@ import type {
 } from "./protocol";
 
 const FLUSH_WINDOW_MS = 4;
-const STATS_INTERVAL_MS = 500;
+const STATS_INTERVAL_MS = 1000;
 const POOL_MAX_BUFFERS = 24;
 const POOL_MAX_BYTES = 128 * 1024 * 1024;
 
@@ -115,8 +115,10 @@ function preparePayload(schemaName: string, message: unknown): {
       step: number;
       data: Uint8Array;
     };
-    const data = new Uint8Array(poolAlloc(msg.data.byteLength), 0, msg.data.length);
-    data.set(msg.data);
+    const data = msg.data;
+    if (!(data.buffer instanceof ArrayBuffer)) {
+      throw new Error("image data is not backed by a transferable ArrayBuffer");
+    }
     return {
       payload: {
         kind: "image",
@@ -136,8 +138,10 @@ function preparePayload(schemaName: string, message: unknown): {
       format: string;
       data: Uint8Array;
     };
-    const data = new Uint8Array(poolAlloc(msg.data.byteLength), 0, msg.data.length);
-    data.set(msg.data);
+    const data = msg.data;
+    if (!(data.buffer instanceof ArrayBuffer)) {
+      throw new Error("compressed image data is not backed by a transferable ArrayBuffer");
+    }
     return {
       payload: { kind: "compressed_image", header: msg.header, format: msg.format, data },
       transfer: [data.buffer],

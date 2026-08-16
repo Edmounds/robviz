@@ -13,6 +13,7 @@ import {
 } from "../core/appConfig";
 import type { ConnectionState, ServiceInfo, TopicInfo } from "../core/FoxgloveConnection";
 import type { LayoutConfig, PointCloudSettings } from "../core/layoutConfig";
+import { connectionTargetLabel } from "../core/connectionTarget";
 import {
   DEFAULT_POINT_CLOUD_SETTINGS,
   DEFAULT_WORKSPACE_LAYOUT,
@@ -23,8 +24,6 @@ import { toSec } from "../core/types";
 import { canAddPanel, createPanelId, type WorkspacePanel } from "../core/workspacePanels";
 import { ImagePanel } from "../panels/ImagePanel";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { MapEditorPanel } from "../panels/MapEditorPanel";
-import { PlotPanel } from "../panels/PlotPanel";
 import { PointCloudSettingsPanel } from "../panels/PointCloudSettingsPanel";
 import { EchoTopicSection } from "../panels/EchoTopicSection";
 import { ServiceSection } from "../panels/ServiceSection";
@@ -56,6 +55,12 @@ const LAYOUT_KEY = "robviz.layout";
 const TERMINAL_HEIGHT_KEY = "robviz.terminal.height";
 const UrdfEditorPage = lazy(() => import("../panels/UrdfEditorPage"));
 const TerminalPanel = lazy(() => import("../panels/TerminalPanel"));
+const MapEditorPanel = lazy(() =>
+  import("../panels/MapEditorPanel").then((module) => ({ default: module.MapEditorPanel })),
+);
+const PlotPanel = lazy(() =>
+  import("../panels/PlotPanel").then((module) => ({ default: module.PlotPanel })),
+);
 
 const BUILTIN_DISPLAY_FACTORIES: Record<string, () => Display> = {
   "sensor_msgs/msg/LaserScan": () => new LaserScanRenderer(),
@@ -184,6 +189,7 @@ function RobotSessionApp({
   const navStartRef = useRef<[number, number]>(null); // 地面坐标
   const connectedUrlRef = useRef(DEFAULT_URL);
   const initialUrlRef = useRef(session.url);
+  const initialActiveRef = useRef(active);
   const savedCameraRef = useRef(session.camera);
   const isMobile = useMediaQuery("(max-width: 680px)");
 
@@ -287,7 +293,7 @@ function RobotSessionApp({
   // 初始化每台机器独立的 TF 缓冲、Worker 桥与连接。
   useEffect(() => {
     const tf = new TfBuffer();
-    const bridge = new WorkerBridge();
+    const bridge = new WorkerBridge(initialActiveRef.current);
     const topicSubscriptions = unsubsRef.current;
     const displaySubscriptions = displaySubsRef.current;
     tfRef.current = tf;
@@ -459,6 +465,7 @@ function RobotSessionApp({
 
   useEffect(() => {
     sceneRef.current?.setActive(active);
+    bridgeRef.current?.setStreamingActive(active);
     if (!active) {
       setTerminalVisible(false);
       setTerminalMounted(false);
@@ -1109,28 +1116,36 @@ function RobotSessionApp({
       );
     }
     if (panel.kind === "image" && ready) {
+      const imageState = storedPanel.state as
+        | { topic?: string; preferRaw?: boolean }
+        | undefined;
       return (
         <ImagePanel
           embedded
           bridge={bridgeRef.current!}
           topics={topics}
-          initialTopic={(storedPanel.state as { topic?: string } | undefined)?.topic}
-          onTopicChange={(topic) => updatePanelState(panel.id, { topic })}
+          initialTopic={imageState?.topic}
+          initialPreferRaw={imageState?.preferRaw}
+          onTopicChange={(topic, preferRaw) =>
+            updatePanelState(panel.id, { topic, preferRaw })
+          }
           onClose={() => removePanel(panel.id)}
         />
       );
     }
     if (panel.kind === "plot" && ready) {
       return (
-        <PlotPanel
-          embedded
-          bridge={bridgeRef.current!}
-          topics={topics}
-          theme={theme}
-          initialSeries={(storedPanel.state as { series?: Array<{ topic: string; field: string }> } | undefined)?.series}
-          onSeriesChange={(series) => updatePanelState(panel.id, { series })}
-          onClose={() => removePanel(panel.id)}
-        />
+        <Suspense fallback={null}>
+          <PlotPanel
+            embedded
+            bridge={bridgeRef.current!}
+            topics={topics}
+            theme={theme}
+            initialSeries={(storedPanel.state as { series?: Array<{ topic: string; field: string }> } | undefined)?.series}
+            onSeriesChange={(series) => updatePanelState(panel.id, { series })}
+            onClose={() => removePanel(panel.id)}
+          />
+        </Suspense>
       );
     }
     if (panel.kind.startsWith("plugin-section:") && pluginCtx) {
@@ -1324,7 +1339,9 @@ function RobotSessionApp({
 
         {mode === "map" && ready && (
           <ErrorBoundary name={t("mapEditor")}>
-            <MapEditorPanel bridge={bridgeRef.current!} theme={theme} />
+            <Suspense fallback={null}>
+              <MapEditorPanel bridge={bridgeRef.current!} theme={theme} />
+            </Suspense>
           </ErrorBoundary>
         )}
         {mode === "urdf" && ready && (
@@ -1380,8 +1397,6 @@ export default function App() {
   configRef.current = config;
   const [connectionStates, setConnectionStates] = useState<Record<string, ConnectionState>>({});
   const [runtimeGeneration, setRuntimeGeneration] = useState(0);
-  const [renamingId, setRenamingId] = useState<string>();
-  const [renameValue, setRenameValue] = useState("");
   const [configError, setConfigError] = useState<string>();
   const t = useMemo(
     () => (key: Parameters<typeof translate>[1], values?: Record<string, string | number>) =>
@@ -1452,17 +1467,6 @@ export default function App() {
     });
   }, []);
 
-  const commitRename = useCallback(() => {
-    const name = renameValue.trim();
-    if (renamingId && name) {
-      setConfig((current) => ({
-        ...current,
-        sessions: current.sessions.map((session) => session.id === renamingId ? { ...session, name } : session),
-      }));
-    }
-    setRenamingId(undefined);
-  }, [renameValue, renamingId]);
-
   const saveAll = useCallback((currentSession: RobotSessionConfig) => {
     const current = configRef.current;
     const next = {
@@ -1499,25 +1503,9 @@ export default function App() {
               aria-selected={active}
               tabIndex={active ? 0 : -1}
               onClick={() => setConfig((current) => ({ ...current, activeSessionId: session.id }))}
-              onDoubleClick={() => { setRenamingId(session.id); setRenameValue(session.name); }}
             >
               <span className={`session-status ${state}`} aria-hidden="true" />
-              {renamingId === session.id ? (
-                <input
-                  value={renameValue}
-                  autoFocus
-                  aria-label={t("renameMachine")}
-                  onChange={(event) => setRenameValue(event.target.value)}
-                  onBlur={commitRename}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") commitRename();
-                    if (event.key === "Escape") setRenamingId(undefined);
-                  }}
-                  onClick={(event) => event.stopPropagation()}
-                />
-              ) : (
-                <span className="session-name" title={`${session.name} · ${session.url}`}>{session.name}</span>
-              )}
+              <span className="session-name" title={session.url}>{connectionTargetLabel(session.url)}</span>
               {config.sessions.length > 1 && (
                 <button
                   className="session-close"

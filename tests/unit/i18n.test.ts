@@ -12,4 +12,8 @@ describe("i18n", () => {
     expect(translate("zh-CN", "noTopics")).toBe("暂无话题");
     expect(translate("en", "noTopics")).toBe("No topics");
   });
+
+  it("中文界面将 Echo Topic 显示为话题输出", () => {
+    expect(translate("zh-CN", "echoTopic")).toBe("话题输出");
+  });
 });

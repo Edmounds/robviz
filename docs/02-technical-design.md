@@ -133,8 +133,9 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 
 | 策略 | 说明 |
 | --- | --- |
-| 指数退避重连 | 基数 500ms × 1.7ⁿ，上限 10s，±30% 抖动（防重启惊群）；重连后自动恢复全部订阅 |
-| 半开连接看门狗 | 有订阅但 >5s 无任何服务端消息 → 判定 TCP 半开（Wi-Fi 掉线类），主动断开触发重连 |
+| 指数退避重连 | 基数 500ms × 1.7ⁿ，上限 10s，±30% 抖动（防重启惊群）；连接稳定 15s 后才清零失败次数，重连后自动恢复全部订阅 |
+| 协议心跳 | 服务端支持 parameters 时每 3s 发送只读 sentinel 参数请求，>10s 无任何协议响应才重连；业务话题静默不代表连接失效，不支持心跳的服务端依赖 WebSocket close |
+| 后台会话节流 | 非活动机器保留 WebSocket、话题列表和协议心跳，但退订业务话题并回收待消费帧；切回时按原频率配置恢复订阅 |
 | 滞后估计 | (本地时钟 − 服务端时间戳) 的运行最小值为基线，增量即网络/排队滞后；HUD 常显，>200ms 黄色告警。基线以 ~1ms/s 上浮适应时钟漂移 |
 | TF 抖动缓冲 | 渲染时间 = 最新 TF − 自适应延迟（2×抖动EWMA + 0.5×周期EWMA，钳 20~300ms）。理想网络 ≈20ms；抖动网络自动加大，运动保持平滑不跳变 |
 | 服务端丢帧容忍 | 真实 foxglove_bridge 在 send_buffer_limit（默认 10MB）满时服务端丢消息；客户端设计为无序号依赖：TF 靠插值、传感器流靠 latest-wins，天然容忍缺口 |
@@ -285,8 +286,9 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 - 每个 `RobotSessionApp` 独占 `WorkerBridge`、`TfBuffer`、Dockview 布局和面板状态。顶层只保存
   `activeSessionId` 与全局主题/语言/插件开关；关闭标签通过 React 卸载完整释放 Worker、订阅、
   WebGL 和终端资源。
-- 非活动会话保持 WebSocket 与订阅，但停止会话的大帧消费循环和 SceneManager 动画。
-  `WorkerBridge` 的 per-topic latest 槽继续覆盖旧帧，切回标签后的首帧立即消费最新值。
+- 非活动会话保持 WebSocket、话题列表和协议心跳，但暂停业务订阅、清空并回收 per-topic latest
+  槽，同时停止 SceneManager 动画；切回标签后按原频率配置恢复订阅，避免后台机器持续消耗机器人
+  带宽、Worker 解码和主线程传输。
 - SceneManager 跟随 3D canvas 挂载：关闭 3D 即释放 WebGL、3D 显示订阅和临时 PCD；重新添加时
   从会话快照恢复相机、fixed/follow frame、显示话题和地面设置。大帧消费不依赖 3D，因此纯图像
   工作区仍持续更新。
@@ -320,4 +322,4 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 | D23 | 四层故障舱壁（ErrorBoundary / 逐 handler 隔离 / 逐显示器隔离 / Worker 自愈），用故障注入验收 | 一个功能崩溃不能拖垮整体；隔离逻辑不注入真实崩溃测过等于没写 |
 | D24 | 终端网关在操作电脑用系统 SSH，不在机器人部署 Web Shell | 保留机器人侧零自研服务；复用 OpenSSH 的 known_hosts、密码/密钥交互与加密链路 |
 | D25 | 主工作区使用 Dockview 无重叠分割停靠，不实现桌面式浮窗 | 对齐 Foxglove 的高密度多视图工作流，同时避免遮挡和窗口层级管理 |
-| D26 | 每台机器独立 Worker/布局/场景，非活动机器 latest-only | 保持快速切换与状态隔离，同时限制后台 3D 和大帧主线程成本 |
+| D26 | 每台机器独立 Worker/布局/场景，非活动机器保持连接但暂停业务订阅 | 保持快速切换与状态隔离，同时消除后台机器的传感器带宽、解码和主线程传输成本 |

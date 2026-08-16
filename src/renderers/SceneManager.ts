@@ -389,7 +389,7 @@ export class SceneManager {
       this.#renderCount++;
     }
 
-    if (now - this.#lastStatsAt >= 500) {
+    if (now - this.#lastStatsAt >= 1000) {
       const renderHz = Math.round((this.#renderCount * 1000) / (now - this.#lastStatsAt));
       this.#renderCount = 0;
       this.#lastStatsAt = now;

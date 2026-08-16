@@ -1,0 +1,8 @@
+robviz_image_compressor:
+  ros__parameters:
+    streams: ["color"]
+
+    streams.color.input_topic: "/camera/camera/color/image_raw"
+    streams.color.output_base_topic: "/camera/camera/color/image_raw"
+    streams.color.max_fps: 10.0
+    streams.color.jpeg_quality: 70

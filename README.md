@@ -169,6 +169,56 @@ ros2 launch foxglove_bridge foxglove_bridge_launch.xml
 
 Web UI 连接 `ws://<robot-ip>:8765`。
 
+### 机器人侧图像压缩
+
+对于高分辨率 `sensor_msgs/msg/Image`，浏览器侧限帧只能减少解码和渲染负载，不能减少
+Foxglove WebSocket 已经收到的 raw 字节。仓库内的 ROS 2 Humble 功能包
+[`robviz_image_compressor`](ros2/robviz_image_compressor) 会先在机器人侧按 latest-wins 限帧，
+再通过官方 `compressed_image_transport` 发布 JPEG；只有压缩 topic 有订阅者时才执行编码。
+
+安装依赖，并把功能包放入任意 ROS 2 工作区的 `src` 目录：
+
+```bash
+sudo apt install ros-humble-image-transport ros-humble-compressed-image-transport
+mkdir -p ~/robviz_ws/src
+cp -r /path/to/robviz/ros2/robviz_image_compressor ~/robviz_ws/src/
+cd ~/robviz_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-select robviz_image_compressor
+source install/setup.bash
+ros2 launch robviz_image_compressor compress_images.launch.py
+```
+
+默认配置在
+[`ros2/robviz_image_compressor/config/images.yaml`](ros2/robviz_image_compressor/config/images.yaml)，
+将 `/camera/camera/color/image_raw` 以 JPEG 质量 70、最高 10 FPS 发布为：
+
+```text
+/camera/camera/color/image_raw/compressed
+```
+
+消息类型为 `sensor_msgs/msg/CompressedImage`。配置多路图像时，在 `streams` 中增加唯一 ID，
+再为每个 ID 配置 `input_topic`、`output_base_topic`、`max_fps` 和 `jpeg_quality`。使用其他配置文件：
+
+```bash
+ros2 launch robviz_image_compressor compress_images.launch.py \
+  config:=/absolute/path/to/images.yaml
+```
+
+参数在节点启动时读取；修改 `max_fps` 或 `jpeg_quality` 后需要重启该压缩节点。
+
+启动后可直接检查输出类型、帧率和带宽；这些命令会订阅压缩 topic 并触发按需编码：
+
+```bash
+ros2 topic info /camera/camera/color/image_raw/compressed
+ros2 topic hz /camera/camera/color/image_raw/compressed
+ros2 topic bw /camera/camera/color/image_raw/compressed
+```
+
+RobViz 图像面板发现 raw 与对应的 `/compressed` 后会优先选择压缩流，仍可手动切回 raw。
+该功能包首版只用于彩色或普通灰度图像。`16UC1`、`32FC1` 等深度图不能使用普通 JPEG；
+它们需要 `compressedDepth` 等保留深度数值的传输格式，目前不在此功能包范围内。
+
 ## 测试
 
 ```bash

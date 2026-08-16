@@ -1,6 +1,6 @@
 import { parse } from "@foxglove/rosmsg";
 import { MessageReader, MessageWriter } from "@foxglove/rosmsg2-serialization";
-import { FoxgloveClient } from "@foxglove/ws-protocol";
+import { FoxgloveClient, ServerCapability } from "@foxglove/ws-protocol";
 import type { Channel, IWebSocket, Service } from "@foxglove/ws-protocol";
 
 import { isFrameDue } from "./frameThrottle";
@@ -47,10 +47,12 @@ export interface FoxgloveConnectionOptions {
   /** 重连退避基数（ms），0 表示不重连。实际间隔按 1.7 倍指数增长至 10s，带 ±30% 抖动 */
   reconnectMs?: number;
   /**
-   * 看门狗：连接打开且有订阅时，超过该时长收不到任何服务端消息则判定
-   * 半开/卡死连接，强制断开重连。0 关闭。
+   * 协议心跳间隔（ms），0 关闭。仅在服务端声明支持 parameters 时启用，
+   * 通过只读参数请求验证连接，不依赖业务话题是否有数据。
    */
-  staleTimeoutMs?: number;
+  heartbeatIntervalMs?: number;
+  /** 心跳发出后收不到任何服务端响应的超时（ms）。 */
+  heartbeatTimeoutMs?: number;
   onStateChange?: (state: ConnectionState) => void;
   onChannels?: (topics: TopicInfo[]) => void;
   onServices?: (services: ServiceInfo[]) => void;
@@ -62,6 +64,10 @@ export interface FoxgloveConnectionOptions {
 const BACKOFF_FACTOR = 1.7;
 const BACKOFF_MAX_MS = 10_000;
 const BACKOFF_JITTER = 0.3;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 3_000;
+const DEFAULT_HEARTBEAT_TIMEOUT_MS = 10_000;
+const STABLE_CONNECTION_MS = 15_000;
+const HEARTBEAT_PARAMETER = "/__robviz_heartbeat__:probe";
 
 interface HandlerRegistration {
   handler: MessageHandler;
@@ -79,14 +85,17 @@ export class FoxgloveConnection {
   #client: FoxgloveClient | undefined;
   #closed = false;
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-  #watchdogTimer: ReturnType<typeof setInterval> | undefined;
+  #heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  #stableTimer: ReturnType<typeof setTimeout> | undefined;
   #reconnectAttempt = 0;
-  #lastTrafficAt = 0;
+  #heartbeatSentAt: number | undefined;
+  #heartbeatSequence = 0;
 
   #channelsByTopic = new Map<string, Channel>();
   #readers = new Map<number, MessageReader>(); // channelId → reader
   /** 期望订阅集合（与服务端实际 advertise 解耦，重连后自动恢复） */
   #handlers = new Map<string, Map<MessageHandler, HandlerRegistration>>();
+  #readyRegistrations: HandlerRegistration[] = [];
   #subscriptions = new Map<number, string>(); // subscriptionId → topic
   #subscriptionIdByTopic = new Map<string, number>();
 
@@ -202,7 +211,7 @@ export class FoxgloveConnection {
   close(): void {
     this.#closed = true;
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
-    if (this.#watchdogTimer) clearInterval(this.#watchdogTimer);
+    this.#clearConnectionTimers();
     this.#client?.close();
   }
 
@@ -217,22 +226,26 @@ export class FoxgloveConnection {
     this.#client = client;
 
     client.on("open", () => {
-      this.#reconnectAttempt = 0;
-      this.#lastTrafficAt = Date.now();
-      this.#startWatchdog();
+      this.#markInboundTraffic();
+      this.#stableTimer = setTimeout(() => {
+        this.#reconnectAttempt = 0;
+      }, STABLE_CONNECTION_MS);
       this.#opts.onStateChange?.("open");
     });
 
-    client.on("serverInfo", () => {
-      this.#lastTrafficAt = Date.now();
+    client.on("serverInfo", (info) => {
+      this.#markInboundTraffic();
+      if (info.capabilities.includes(ServerCapability.parameters)) {
+        this.#startHeartbeat();
+      }
     });
 
     client.on("time", () => {
-      this.#lastTrafficAt = Date.now();
+      this.#markInboundTraffic();
     });
 
     client.on("advertise", (channels) => {
-      this.#lastTrafficAt = Date.now();
+      this.#markInboundTraffic();
       for (const ch of channels) {
         this.#channelsByTopic.set(ch.topic, ch);
         if (this.#handlers.has(ch.topic)) this.#ensureSubscribed(ch.topic);
@@ -241,11 +254,13 @@ export class FoxgloveConnection {
     });
 
     client.on("advertiseServices", (services) => {
+      this.#markInboundTraffic();
       for (const s of services) this.#services.set(s.name, s);
       this.#opts.onServices?.(this.services);
     });
 
     client.on("unadvertiseServices", (serviceIds) => {
+      this.#markInboundTraffic();
       for (const [name, s] of this.#services) {
         if (serviceIds.includes(s.id)) this.#services.delete(name);
       }
@@ -253,6 +268,7 @@ export class FoxgloveConnection {
     });
 
     client.on("serviceCallResponse", (res) => {
+      this.#markInboundTraffic();
       const pending = this.#pendingCalls.get(res.callId);
       if (!pending) return;
       this.#pendingCalls.delete(res.callId);
@@ -273,6 +289,7 @@ export class FoxgloveConnection {
     });
 
     client.on("serviceCallFailure", (res) => {
+      this.#markInboundTraffic();
       const pending = this.#pendingCalls.get(res.callId);
       if (!pending) return;
       this.#pendingCalls.delete(res.callId);
@@ -280,6 +297,7 @@ export class FoxgloveConnection {
     });
 
     client.on("unadvertise", (channelIds) => {
+      this.#markInboundTraffic();
       for (const [topic, ch] of this.#channelsByTopic) {
         if (channelIds.includes(ch.id)) {
           this.#channelsByTopic.delete(topic);
@@ -295,16 +313,20 @@ export class FoxgloveConnection {
     });
 
     client.on("message", ({ subscriptionId, timestamp, data }) => {
-      this.#lastTrafficAt = Date.now();
+      this.#markInboundTraffic();
       const topic = this.#subscriptions.get(subscriptionId);
       if (topic === undefined) return;
       const channel = this.#channelsByTopic.get(topic);
       const registrations = this.#handlers.get(topic);
       if (!channel || !registrations) return;
       const now = performance.now();
-      const ready = [...registrations.values()].filter((registration) =>
-        isFrameDue(registration.lastDeliveredAt, now, registration.maxFrequency),
-      );
+      const ready = this.#readyRegistrations;
+      ready.length = 0;
+      for (const registration of registrations.values()) {
+        if (isFrameDue(registration.lastDeliveredAt, now, registration.maxFrequency)) {
+          ready.push(registration);
+        }
+      }
       if (ready.length === 0) {
         this.#opts.onMessageMeta?.({
           topic,
@@ -331,6 +353,7 @@ export class FoxgloveConnection {
         this.#opts.onError?.(
           new Error(`decode failed on ${topic} (${channel.schemaName}): ${String(err)}`),
         );
+        ready.length = 0;
         return;
       }
       this.#opts.onMessageMeta?.({
@@ -351,17 +374,25 @@ export class FoxgloveConnection {
           );
         }
       }
+      ready.length = 0;
     });
 
     client.on("error", (err) => {
       this.#opts.onError?.(err);
     });
 
+    client.on("status", () => this.#markInboundTraffic());
+    client.on("removeStatus", () => this.#markInboundTraffic());
+    client.on("parameterValues", () => this.#markInboundTraffic());
+    client.on("connectionGraphUpdate", () => this.#markInboundTraffic());
+    client.on("fetchAssetResponse", () => this.#markInboundTraffic());
+
     client.on("close", () => {
-      if (this.#watchdogTimer) clearInterval(this.#watchdogTimer);
-      this.#watchdogTimer = undefined;
+      this.#clearConnectionTimers();
+      if (this.#client === client) this.#client = undefined;
       this.#channelsByTopic.clear();
       this.#readers.clear();
+      this.#readyRegistrations.length = 0;
       this.#subscriptions.clear();
       this.#subscriptionIdByTopic.clear();
       this.#pubChannels.clear(); // 重连后首次发布时重新 advertise
@@ -385,24 +416,48 @@ export class FoxgloveConnection {
     });
   }
 
-  /**
-   * 半开连接看门狗：TCP 断链（如 Wi-Fi 掉线、网线拔出）时本端可能长时间
-   * 收不到 close 事件。有订阅却长期无任何服务端消息时主动断开触发重连。
-   */
-  #startWatchdog(): void {
-    const timeout = this.#opts.staleTimeoutMs ?? 5000;
-    if (timeout <= 0) return;
-    if (this.#watchdogTimer) clearInterval(this.#watchdogTimer);
-    this.#watchdogTimer = setInterval(() => {
-      if (this.#subscriptionIdByTopic.size === 0) {
-        this.#lastTrafficAt = Date.now(); // 无订阅时无预期流量，不判卡死
+  #markInboundTraffic(): void {
+    this.#heartbeatSentAt = undefined;
+  }
+
+  #startHeartbeat(): void {
+    const interval = this.#opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+    if (interval <= 0 || this.#heartbeatTimer) return;
+    const timeout = this.#opts.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
+    this.#heartbeatTimer = setInterval(() => {
+      const now = Date.now();
+      if (this.#heartbeatSentAt !== undefined) {
+        if (now - this.#heartbeatSentAt >= timeout) {
+          this.#opts.onError?.(
+            new Error(`connection heartbeat timed out (>${timeout}ms), reconnecting`),
+          );
+          if (this.#heartbeatTimer) clearInterval(this.#heartbeatTimer);
+          this.#heartbeatTimer = undefined;
+          this.#client?.close();
+        }
         return;
       }
-      if (Date.now() - this.#lastTrafficAt > timeout) {
-        this.#opts.onError?.(new Error(`connection stale (>${timeout}ms silent), reconnecting`));
+      this.#heartbeatSentAt = now;
+      try {
+        this.#client?.getParameters(
+          [HEARTBEAT_PARAMETER],
+          `robviz-heartbeat-${++this.#heartbeatSequence}`,
+        );
+      } catch (err) {
+        this.#opts.onError?.(
+          err instanceof Error ? err : new Error(`heartbeat send failed: ${String(err)}`),
+        );
         this.#client?.close();
       }
-    }, 1000);
+    }, interval);
+  }
+
+  #clearConnectionTimers(): void {
+    if (this.#heartbeatTimer) clearInterval(this.#heartbeatTimer);
+    if (this.#stableTimer) clearTimeout(this.#stableTimer);
+    this.#heartbeatTimer = undefined;
+    this.#stableTimer = undefined;
+    this.#heartbeatSentAt = undefined;
   }
 
   #ensureSubscribed(topic: string): void {

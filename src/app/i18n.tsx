@@ -9,7 +9,6 @@ const zh = {
   machines: "机器标签",
   addMachine: "添加机器",
   closeMachine: "关闭机器标签",
-  renameMachine: "重命名机器",
   general: "通用",
   threeD: "3D",
   plugins: "插件",
@@ -74,7 +73,7 @@ const zh = {
   unknownPanel: "未知面板类型: {kind}（插件未安装?）",
   topics: "话题",
   noTopics: "暂无话题",
-  echoTopic: "Echo Topic",
+  echoTopic: "话题输出",
   chooseEchoTopic: "选择要 Echo 的话题...",
   echoChooseHint: "选择话题后等待数据",
   echoNoFields: "消息中没有可显示的字段",
@@ -226,7 +225,7 @@ const zh = {
 type MessageKey = keyof typeof zh;
 
 const en: Record<MessageKey, string> = {
-  settings: "Settings", machines: "Machine tabs", addMachine: "Add machine", closeMachine: "Close machine tab", renameMachine: "Rename machine", general: "General", threeD: "3D", plugins: "Plugins",
+  settings: "Settings", machines: "Machine tabs", addMachine: "Add machine", closeMachine: "Close machine tab", general: "General", threeD: "3D", plugins: "Plugins",
   language: "Language", appearance: "Appearance", theme: "Theme", dark: "Dark", light: "Light",
   scene: "Scene", ground: "Ground grid", groundHint: "Show the ground reference grid in the main 3D view",
   axesWidth: "TF axes width", layout: "Layout", resetLayout: "Reset layout",

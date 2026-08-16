@@ -137,16 +137,6 @@ body,
   white-space: nowrap;
 }
 
-.session-tab input {
-  min-width: 0;
-  height: 24px;
-  flex: 1;
-  border: 1px solid var(--border-strong);
-  background: var(--canvas);
-  color: var(--foreground);
-  font: var(--fs-ui) var(--sans);
-}
-
 .session-close,
 .session-add {
   display: inline-flex;

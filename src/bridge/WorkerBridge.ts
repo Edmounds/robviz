@@ -27,7 +27,7 @@ function payloadBuffers(payload: MessagePayload): ArrayBuffer[] {
     if (payload.cloud.colorValues) buffers.push(payload.cloud.colorValues.buffer as ArrayBuffer);
     return buffers;
   }
-  if (payload.kind === "grid" || payload.kind === "image" || payload.kind === "compressed_image") {
+  if (payload.kind === "grid") {
     return [payload.data.buffer as ArrayBuffer];
   }
   return [];
@@ -41,6 +41,7 @@ export class WorkerBridge {
   #frameLatest = new Map<string, { payload: MessagePayload; schemaName: string }>();
   #url: string | undefined;
   #disposed = false;
+  #streamingActive: boolean;
   #lastWorkerRestartAt = 0;
   /** 每 topic 的 handler 错误限流（避免 30Hz 消息把错误刷屏） */
   #handlerErrorAt = new Map<string, number>();
@@ -64,7 +65,8 @@ export class WorkerBridge {
     { resolve: (v: unknown) => void; reject: (e: Error) => void }
   >();
 
-  constructor() {
+  constructor(streamingActive = true) {
+    this.#streamingActive = streamingActive;
     this.#spawnWorker();
   }
 
@@ -115,7 +117,7 @@ export class WorkerBridge {
       switch (msg.type) {
         case "state":
           this.state = msg.state;
-          if (msg.state === "open") {
+          if (msg.state === "open" && this.#streamingActive) {
             // 重连后恢复全部订阅
             for (const topic of this.#handlers.keys()) {
               this.#post({ type: "subscribe", topic, ...this.#subscriptionOptions.get(topic) });
@@ -148,6 +150,10 @@ export class WorkerBridge {
           this.onStats?.(msg.stats);
           break;
         case "batch": {
+          if (!this.#streamingActive) {
+            for (const item of msg.items) this.#recycle(payloadBuffers(item.payload));
+            break;
+          }
           let hadRaw = false;
           for (const item of msg.items) {
             if (item.payload.kind === "raw") {
@@ -215,7 +221,7 @@ export class WorkerBridge {
       set = new Set();
       this.#handlers.set(topic, set);
       this.#subscriptionOptions.set(topic, options);
-      this.#post({ type: "subscribe", topic, ...options });
+      if (this.#streamingActive) this.#post({ type: "subscribe", topic, ...options });
     }
     set.add(handler);
     return () => {
@@ -225,9 +231,28 @@ export class WorkerBridge {
       if (s.size === 0) {
         this.#handlers.delete(topic);
         this.#subscriptionOptions.delete(topic);
-        this.#post({ type: "unsubscribe", topic });
+        if (this.#streamingActive) this.#post({ type: "unsubscribe", topic });
       }
     };
+  }
+
+  /** 保持 WebSocket 在线，仅暂停非活动机器的业务订阅和帧传输。 */
+  setStreamingActive(active: boolean): void {
+    if (this.#streamingActive === active) return;
+    this.#streamingActive = active;
+    for (const topic of this.#handlers.keys()) {
+      this.#post(
+        active
+          ? { type: "subscribe", topic, ...this.#subscriptionOptions.get(topic) }
+          : { type: "unsubscribe", topic },
+      );
+    }
+    if (!active) {
+      for (const { payload } of this.#frameLatest.values()) {
+        this.#recycle(payloadBuffers(payload));
+      }
+      this.#frameLatest.clear();
+    }
   }
 
   dispose(): void {

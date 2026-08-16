@@ -7,13 +7,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
 import type { TopicInfo } from "../core/FoxgloveConnection";
+import { preferredImageTopic, sortedImageTopics } from "../core/imageTopics";
 import { turbo } from "../renderers/colormap";
 import type { MessagePayload } from "../worker/protocol";
 import { CollapsiblePanel } from "../app/CollapsiblePanel";
 import { useI18n } from "../app/i18n";
 
-const IMAGE_SCHEMAS = new Set(["sensor_msgs/msg/Image", "sensor_msgs/msg/CompressedImage"]);
-const IMAGE_MAX_FREQUENCY = 5;
+const IMAGE_MAX_FREQUENCY = 10;
 
 interface HoverInfo {
   x: number;
@@ -129,6 +129,7 @@ export function ImagePanel({
   bridge,
   topics,
   initialTopic,
+  initialPreferRaw = false,
   onTopicChange,
   onClose,
 }: {
@@ -137,25 +138,38 @@ export function ImagePanel({
   topics: TopicInfo[];
   /** 配置恢复：初始选中的话题 */
   initialTopic?: string;
+  /** 配置恢复：用户是否明确选择保留 raw 传输 */
+  initialPreferRaw?: boolean;
   /** 配置保存：话题选择变化时上报 */
-  onTopicChange?: (topic: string) => void;
+  onTopicChange?: (topic: string, preferRaw: boolean) => void;
   onClose: () => void;
 }) {
   const { t } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<RawFrame>(null);
+  const preferRawRef = useRef(initialPreferRaw);
   const [topic, setTopic] = useState(initialTopic ?? "");
   const [collapsed, setCollapsed] = useState(false);
   const [hover, setHover] = useState<HoverInfo>();
   const [meta, setMeta] = useState<string>("");
 
   useEffect(() => {
-    onTopicChange?.(topic);
+    onTopicChange?.(topic, preferRawRef.current);
     // onTopicChange 是 App 侧的快照记录回调，身份变化不需重跑
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topic]);
 
-  const imageTopics = topics.filter((t) => IMAGE_SCHEMAS.has(t.schemaName));
+  const imageTopics = sortedImageTopics(topics);
+
+  useEffect(() => {
+    const preferred = preferredImageTopic(
+      topics,
+      topic,
+      initialTopic,
+      preferRawRef.current,
+    );
+    if (preferred !== topic) setTopic(preferred);
+  }, [initialTopic, topic, topics]);
 
   useEffect(() => {
     if (!topic || collapsed) return;
@@ -164,10 +178,8 @@ export function ImagePanel({
 
     const unsub = bridge.subscribe(topic, (payload: MessagePayload) => {
       if (payload.kind === "compressed_image") {
-        // 缓冲会被回收：立即拷贝再异步解码
-        const bytes = new Uint8Array(payload.data);
         frameRef.current = null; // 压缩图不支持逐像素取值
-        void createImageBitmap(new Blob([bytes as unknown as BlobPart])).then((bmp) => {
+        void createImageBitmap(new Blob([payload.data as unknown as BlobPart])).then((bmp) => {
           canvas.width = bmp.width;
           canvas.height = bmp.height;
           ctx.drawImage(bmp, 0, 0);
@@ -225,7 +237,17 @@ export function ImagePanel({
 
   const header = (
     <>
-        <select value={topic} onChange={(e) => setTopic(e.target.value)}>
+        <select
+          value={topic}
+          onChange={(e) => {
+            preferRawRef.current = topics.some(
+              (candidate) =>
+                candidate.topic === e.target.value &&
+                candidate.schemaName === "sensor_msgs/msg/Image",
+            );
+            setTopic(e.target.value);
+          }}
+        >
           <option value="">{t("chooseImageTopic")}</option>
           {imageTopics.map((t) => (
             <option key={t.topic} value={t.topic}>
