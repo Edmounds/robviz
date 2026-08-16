@@ -36,7 +36,7 @@ CLI（agent 直接查询/操作机器人）。
   </tr>
 </table>
 
-截图使用仓库内置 mock 数据生成，界面与功能均来自当前 Web 应用。
+截图来自当前 Web 应用。
 
 ## 文档
 
@@ -45,37 +45,29 @@ CLI（agent 直接查询/操作机器人）。
 - [UI 规范](docs/03-ui-design.md) — 单色系统设计令牌
 - [插件指南](docs/04-plugin-guide.md) — 三类扩展点、PluginContext、示例与验证清单
 
-## 快速开始（无 ROS 环境，模拟模式）
+## 快速开始
 
 ```bash
 npm install
-npm run mock   # 终端 1：启动模拟 foxglove_bridge（ws://localhost:8765）
-npm run dev    # 终端 2：启动 Web UI
+npm run dev
 ```
 
-模拟器旋钮：
-
-```bash
-CLOUD_SCALE=40 npm run mock   # 点云压测（30 万点/帧 × 5Hz）
-CHAOS=1 npm run mock          # 混沌网络：抖动 + 周期停顿 + 每 20s 强制断连
-```
-
-浏览器打开 dev server 地址，连接 `ws://localhost:8765`。
+浏览器打开 dev server 地址，连接机器人上的 `foxglove_bridge`，例如
+`ws://<robot-ip>:8765`。机器人侧启动方式见[连接真机](#连接真机)。
 
 ## 远程终端
 
 终端网关运行在打开 RobViz 的操作电脑上，再通过系统 SSH 连接当前 Foxglove 地址中的
-机器人 IP；机器人无需安装 RobViz 服务。先生成 Token 并保持网关运行：
+机器人 IP；机器人无需安装 RobViz 服务。启动本机网关并保持运行：
 
 ```bash
-export ROBVIZ_TERMINAL_TOKEN="$(openssl rand -hex 32)"
 npm run terminal
 ```
 
-在 RobViz 中按 Ctrl+反引号或点击顶栏终端图标，首次输入机器人 SSH 用户与上述 Token；
-SSH 密码、密钥口令和 host key 确认都直接在终端中完成，不会保存。终端网关固定监听
-`127.0.0.1:8767`，浏览器与网关必须在同一台操作电脑。跨设备或公网使用需要另行配置
-WSS/反向代理，不应直接暴露该端口。
+在 RobViz 中按 Ctrl+反引号或点击顶栏终端图标，输入机器人 SSH 用户与密码；用户名和密码
+保存在当前浏览器的本地存储中，SSH 密钥口令和 host key 确认仍直接在终端中完成。终端网关
+固定监听 `127.0.0.1:8767`，只接受本机页面，浏览器与网关必须在同一台操作电脑。跨设备或
+公网使用需要另行配置 WSS/反向代理，不应直接暴露该端口。
 
 ## 大地图工作流
 
@@ -100,6 +92,21 @@ WSS/反向代理，不应直接暴露该端口。
 - **URDF**：顶栏进入"URDF 编辑"，可加载文件/文件夹、查看结构与物理辅助信息、控制关节、
   订阅 `/joint_states`，并在 XML 编辑器中修改、应用和下载 URDF。
 
+### Panda URDF 示例
+
+可用 Franka Emika Panda 的
+[`panda_arm_hand.urdf`](https://github.com/corlab/cogimon-gazebo-models/blob/master/franka/robots/panda_arm_hand.urdf)
+和配套 mesh 直接体验：
+
+```bash
+git clone --depth 1 --filter=blob:none --sparse \
+  https://github.com/corlab/cogimon-gazebo-models.git
+git -C cogimon-gazebo-models sparse-checkout set franka
+```
+
+进入“URDF 编辑”，选择“加载文件夹”，打开 `cogimon-gazebo-models/franka`。RobViz 会从
+`robots/panda_arm_hand.urdf` 加载 Panda 机械臂，并按文件名解析 `meshes/` 中的 DAE/STL。
+
 ## Agent 接入（CLI）
 
 agent（或人）直接跑命令即可查询/操作机器人，零 server 配置：
@@ -116,8 +123,6 @@ npm run cli -- screenshot -o /tmp/shot.png     # 截 3D 视图（需浏览器打
 真机加 `--bridge ws://robot:8765` 或设 `BRIDGE_URL`。`pub` / `call` 支持部分字段
 JSON，缺省字段按 schema 自动补零。仓库内置 `.cursor/skills/robviz-cli`，
 Cursor agent 会自动学会这些命令。
-
-验证：`npx tsx scripts/cli-smoke.ts`（需 mock 在跑）。
 
 ## 布局配置与设置
 
@@ -158,7 +163,7 @@ Web UI 连接 `ws://<robot-ip>:8765`。
 ## 测试
 
 ```bash
-npm test   # vitest：core 单元测试 + 对接模拟服务器的集成测试
+npm test   # vitest：core 单元测试 + 终端网关集成测试
 ```
 
 ## License

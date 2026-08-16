@@ -3,13 +3,13 @@
  * raw Image（rgb8/bgr8/mono8/mono16/16UC1/32FC1，深度图 turbo 上色）。
  * 悬停显示像素坐标 + 值（深度显示米数），视觉调参用。
  */
-import { X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
 import type { TopicInfo } from "../core/FoxgloveConnection";
 import { turbo } from "../renderers/colormap";
 import type { MessagePayload } from "../worker/protocol";
+import { CollapsiblePanel } from "../app/CollapsiblePanel";
 import { useI18n } from "../app/i18n";
 
 const IMAGE_SCHEMAS = new Set(["sensor_msgs/msg/Image", "sensor_msgs/msg/CompressedImage"]);
@@ -220,8 +220,11 @@ export function ImagePanel({
   }, []);
 
   return (
-    <div className="panel">
-      <div className="panel-header">
+    <CollapsiblePanel
+      title={t("imagePanel")}
+      onClose={onClose}
+      header={
+        <>
         <select value={topic} onChange={(e) => setTopic(e.target.value)}>
           <option value="">{t("chooseImageTopic")}</option>
           {imageTopics.map((t) => (
@@ -231,9 +234,9 @@ export function ImagePanel({
           ))}
         </select>
         <span className="panel-meta">{meta}</span>
-        <span className="spacer" />
-        <button className="panel-close" onClick={onClose} title={t("closePanel")} aria-label={t("closePanel")}><X /></button>
-      </div>
+        </>
+      }
+    >
       <div className="panel-body image-body">
         <canvas ref={canvasRef} onMouseMove={onMove} onMouseLeave={() => setHover(undefined)} />
         {hover && (
@@ -242,6 +245,6 @@ export function ImagePanel({
           </div>
         )}
       </div>
-    </div>
+    </CollapsiblePanel>
   );
 }

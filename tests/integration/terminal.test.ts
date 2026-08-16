@@ -10,7 +10,7 @@ import {
 } from "../../terminal/server";
 import type { TerminalServerMessage } from "../../src/core/terminalProtocol";
 
-const TOKEN = "0123456789abcdef0123456789abcdef";
+const PASSWORD = "s3cret";
 
 class FakePty implements PtyProcessLike {
   readonly writes: string[] = [];
@@ -76,10 +76,9 @@ afterEach(async () => {
 });
 
 describe("terminal gateway", () => {
-  it("rejects an invalid token before spawning SSH", async () => {
+  it("rejects non-local browser origins before spawning SSH", async () => {
     const spawned: FakePty[] = [];
     handle = await startTerminalGateway({
-      token: TOKEN,
       port: 0,
       spawnPty: () => {
         const pty = new FakePty();
@@ -87,34 +86,58 @@ describe("terminal gateway", () => {
         return pty;
       },
     });
+    const ws = new WebSocket(handle.url, { headers: { Origin: "https://evil.example" } });
+    await new Promise<void>((resolve) => ws.once("close", () => resolve()));
+    expect(spawned).toHaveLength(0);
+  });
+
+  it("opens SSH with a password without requiring a gateway token", async () => {
+    const pty = new FakePty();
+    handle = await startTerminalGateway({ port: 0, spawnPty: () => pty });
     const ws = await connect(handle);
     ws.send(
       JSON.stringify({
         type: "open",
-        token: "wrong",
         bridgeUrl: "ws://robot.local:8765",
         username: "robot",
+        password: PASSWORD,
         cols: 80,
         rows: 24,
       }),
     );
 
-    expect(await nextMessage(ws)).toMatchObject({ type: "error", code: "AUTH_FAILED" });
-    expect(spawned).toHaveLength(0);
+    expect(await nextMessage(ws)).toEqual({
+      type: "ready",
+      host: "robot.local",
+      username: "robot",
+    });
+    const firstPromptChunk = nextMessage(ws);
+    pty.emitData("robot@robot.local's pass");
+    expect(await firstPromptChunk).toEqual({
+      type: "output",
+      data: "robot@robot.local's pass",
+    });
+    const secondPromptChunk = nextMessage(ws);
+    pty.emitData("word: ");
+    expect(await secondPromptChunk).toEqual({
+      type: "output",
+      data: "word: ",
+    });
+    await vi.waitFor(() => expect(pty.writes).toEqual([`${PASSWORD}\r`]));
   });
 
   it("forwards terminal data, resize, exit, and explicit close", async () => {
     const pty = new FakePty();
     const second = new FakePty();
     const ptys = [pty, second];
-    handle = await startTerminalGateway({ token: TOKEN, port: 0, spawnPty: () => ptys.shift()! });
+    handle = await startTerminalGateway({ port: 0, spawnPty: () => ptys.shift()! });
     const ws = await connect(handle);
     ws.send(
       JSON.stringify({
         type: "open",
-        token: TOKEN,
         bridgeUrl: "ws://192.168.1.42:8765",
         username: "robot",
+        password: PASSWORD,
         cols: 100,
         rows: 30,
       }),
@@ -142,9 +165,9 @@ describe("terminal gateway", () => {
     ws.send(
       JSON.stringify({
         type: "open",
-        token: TOKEN,
         bridgeUrl: "wss://robot.local/bridge",
         username: "robot",
+        password: PASSWORD,
         cols: 80,
         rows: 24,
       }),
@@ -158,14 +181,14 @@ describe("terminal gateway", () => {
 
   it("kills the PTY when the browser disconnects", async () => {
     const pty = new FakePty();
-    handle = await startTerminalGateway({ token: TOKEN, port: 0, spawnPty: () => pty });
+    handle = await startTerminalGateway({ port: 0, spawnPty: () => pty });
     const ws = await connect(handle);
     ws.send(
       JSON.stringify({
         type: "open",
-        token: TOKEN,
         bridgeUrl: "ws://robot.local:8765",
         username: "robot",
+        password: PASSWORD,
         cols: 80,
         rows: 24,
       }),
@@ -177,7 +200,7 @@ describe("terminal gateway", () => {
   });
 
   it("limits the gateway to four concurrent SSH sessions", async () => {
-    handle = await startTerminalGateway({ token: TOKEN, port: 0, spawnPty: () => new FakePty() });
+    handle = await startTerminalGateway({ port: 0, spawnPty: () => new FakePty() });
     const sockets: WebSocket[] = [];
     for (let index = 0; index < 5; index += 1) {
       const ws = await connect(handle);
@@ -185,9 +208,9 @@ describe("terminal gateway", () => {
       ws.send(
         JSON.stringify({
           type: "open",
-          token: TOKEN,
           bridgeUrl: "ws://robot.local:8765",
           username: "robot",
+          password: PASSWORD,
           cols: 80,
           rows: 24,
         }),

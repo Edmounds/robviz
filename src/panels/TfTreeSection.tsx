@@ -1,5 +1,6 @@
 /** TF 树：child→parent 映射转成缩进树；点击节点一键视角跟踪该 frame */
 import { useMemo } from "react";
+import { CollapsibleSection } from "../app/CollapsibleSection";
 import { useI18n } from "../app/i18n";
 
 export function TfTreeSection({
@@ -38,8 +39,7 @@ export function TfTreeSection({
   if (lines.length === 0) return null;
 
   return (
-    <div className="side-section">
-      <h2>{t("tfTree")}</h2>
+    <CollapsibleSection title={t("tfTree")}>
       <div className="tf-tree">
         {lines.map(({ name, depth }) => (
           <button
@@ -55,6 +55,6 @@ export function TfTreeSection({
           </button>
         ))}
       </div>
-    </div>
+    </CollapsibleSection>
   );
 }

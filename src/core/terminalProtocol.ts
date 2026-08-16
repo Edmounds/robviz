@@ -8,9 +8,12 @@ const terminalSizeSchema = {
 export const terminalClientMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("open"),
-    token: z.string().max(256),
     bridgeUrl: z.string().max(2048),
     username: z.string().max(64),
+    password: z
+      .string()
+      .max(1024)
+      .refine((value) => !/[\r\n]/.test(value), "SSH password cannot contain newlines"),
     ...terminalSizeSchema,
   }),
   z.object({ type: z.literal("input"), data: z.string().max(65_536) }),
@@ -48,4 +51,11 @@ export function validateTerminalUsername(username: string): string {
     throw new Error("Invalid SSH username");
   }
   return value;
+}
+
+export function validateTerminalPassword(password: string): string {
+  if (/[\r\n]/.test(password)) {
+    throw new Error("Invalid SSH password");
+  }
+  return password;
 }

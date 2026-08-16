@@ -1,5 +1,5 @@
-import { ChevronDown, ChevronRight, Minus, Plus } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { Minus, Plus } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
 import type { ServiceInfo } from "../core/FoxgloveConnection";
@@ -10,6 +10,7 @@ import {
   setServiceValue,
   type ServiceField,
 } from "../core/serviceSchema";
+import { CollapsibleSection } from "../app/CollapsibleSection";
 import { useI18n } from "../app/i18n";
 
 type ValuePath = readonly (string | number)[];
@@ -175,12 +176,22 @@ function ResultValue({ name, value }: { name?: string; value: unknown }) {
 
 export function ServiceSection({ bridge, services }: { bridge: WorkerBridge; services: ServiceInfo[] }) {
   const { t } = useI18n();
+  const serviceSelectId = useId();
   const [selected, setSelected] = useState<string>();
   const [request, setRequest] = useState<Record<string, unknown>>({});
   const [result, setResult] = useState<unknown>();
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const service = services.find((item) => item.name === selected);
+
+  useEffect(() => {
+    if (!selected || service) return;
+    setSelected(undefined);
+    setRequest({});
+    setResult(undefined);
+    setError(undefined);
+  }, [selected, service]);
+
   const schema = useMemo(
     () => {
       try {
@@ -193,20 +204,21 @@ export function ServiceSection({ bridge, services }: { bridge: WorkerBridge; ser
   );
   const fields = schema.fields;
 
-  const pick = useCallback((item: ServiceInfo) => {
-    if (selected === item.name) {
-      setSelected(undefined);
-      return;
-    }
-    setSelected(item.name);
+  const selectService = useCallback((name: string) => {
+    const item = services.find((candidate) => candidate.name === name);
+    setSelected(item?.name);
     setResult(undefined);
     setError(undefined);
+    if (!item) {
+      setRequest({});
+      return;
+    }
     try {
       setRequest(defaultsFromSchema(item.requestSchema));
     } catch {
       setRequest({});
     }
-  }, [selected]);
+  }, [services]);
 
   const call = useCallback(async () => {
     if (!selected || busy) return;
@@ -225,35 +237,40 @@ export function ServiceSection({ bridge, services }: { bridge: WorkerBridge; ser
   if (services.length === 0) return null;
 
   return (
-    <div className="side-section">
-      <h2>{t("services")}</h2>
-      {services.map((item) => (
-        <div key={item.name}>
-          <button className={`topic-row ${selected === item.name ? "active" : ""}`} onClick={() => pick(item)}>
-            <span className="check">{selected === item.name ? <ChevronDown /> : <ChevronRight />}</span>
-            <span className="name">{item.name}</span>
-            <span className="schema">{item.type.split("/").pop()}</span>
-          </button>
-          {selected === item.name && (
-            <form className="service-form" onSubmit={(event) => { event.preventDefault(); void call(); }}>
-              {fields.length === 0 ? <p className="service-empty">{t("noParameters")}</p> : fields.map((field) => (
-                <ServiceFieldEditor
-                  key={field.name}
-                  field={field}
-                  path={[field.name]}
-                  request={request}
-                  disabled={busy}
-                  onChange={(path, value) => setRequest((current) => setServiceValue(current, path, value))}
-                />
-              ))}
-              <button type="submit" disabled={busy || Boolean(schema.error)}>{busy ? t("calling") : t("call")}</button>
-              {schema.error && <p className="service-error" role="alert">{schema.error}</p>}
-              {error && <p className="service-error" role="alert">{error}</p>}
-              {result !== undefined && <div className="service-result"><ResultValue value={result} /></div>}
-            </form>
-          )}
-        </div>
-      ))}
-    </div>
+    <CollapsibleSection title={t("services")}>
+      <div className="service-picker">
+        <label htmlFor={serviceSelectId}>{t("services")}</label>
+        <select
+          id={serviceSelectId}
+          value={selected ?? ""}
+          disabled={busy}
+          onChange={(event) => selectService(event.target.value)}
+        >
+          <option value="">{t("chooseService")}</option>
+          {services.map((item) => {
+            const shortType = item.type.split("/").pop() || item.type;
+            return <option key={item.name} value={item.name}>{item.name} ({shortType})</option>;
+          })}
+        </select>
+      </div>
+      {service && (
+        <form className="service-form" onSubmit={(event) => { event.preventDefault(); void call(); }}>
+          {fields.length === 0 ? <p className="service-empty">{t("noParameters")}</p> : fields.map((field) => (
+            <ServiceFieldEditor
+              key={field.name}
+              field={field}
+              path={[field.name]}
+              request={request}
+              disabled={busy}
+              onChange={(path, value) => setRequest((current) => setServiceValue(current, path, value))}
+            />
+          ))}
+          <button type="submit" disabled={busy || Boolean(schema.error)}>{busy ? t("calling") : t("call")}</button>
+          {schema.error && <p className="service-error" role="alert">{schema.error}</p>}
+          {error && <p className="service-error" role="alert">{error}</p>}
+          {result !== undefined && <div className="service-result"><ResultValue value={result} /></div>}
+        </form>
+      )}
+    </CollapsibleSection>
   );
 }

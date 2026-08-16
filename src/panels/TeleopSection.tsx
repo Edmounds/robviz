@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
+import { CollapsibleSection } from "../app/CollapsibleSection";
 import { useI18n } from "../app/i18n";
 
 export function TeleopSection({ bridge }: { bridge: WorkerBridge }) {
@@ -88,8 +89,7 @@ export function TeleopSection({ bridge }: { bridge: WorkerBridge }) {
   });
 
   return (
-    <div className="side-section">
-      <h2>{t("teleopTitle")}</h2>
+    <CollapsibleSection title={t("teleopTitle")}>
       <div className="side-row">
         <input
           className="topic-input"
@@ -146,6 +146,6 @@ export function TeleopSection({ bridge }: { bridge: WorkerBridge }) {
           <p className="side-hint">{t("wasdHint")}</p>
         </>
       )}
-    </div>
+    </CollapsibleSection>
   );
 }

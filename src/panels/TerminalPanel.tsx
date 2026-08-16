@@ -7,13 +7,14 @@ import "@xterm/xterm/css/xterm.css";
 import {
   parseTerminalTarget,
   terminalServerMessageSchema,
+  validateTerminalPassword,
   validateTerminalUsername,
 } from "../core/terminalProtocol";
 import { useI18n } from "../app/i18n";
 
 const GATEWAY_URL = "ws://127.0.0.1:8767";
 const USERNAME_KEY = "robviz.terminal.username";
-const TOKEN_KEY = "robviz.terminal.token";
+const PASSWORD_KEY = "robviz.terminal.password";
 
 type TerminalStatus = "idle" | "connecting" | "open" | "exited" | "error";
 
@@ -45,7 +46,7 @@ export default function TerminalPanel({
   visibleRef.current = visible;
 
   const [username, setUsername] = useState(() => localStorage.getItem(USERNAME_KEY) ?? "");
-  const [token, setToken] = useState(() => sessionStorage.getItem(TOKEN_KEY) ?? "");
+  const [password, setPassword] = useState(() => localStorage.getItem(PASSWORD_KEY) ?? "");
   const [status, setStatus] = useState<TerminalStatus>("idle");
   const [error, setError] = useState<string>();
   const [exitCode, setExitCode] = useState<number>();
@@ -81,16 +82,17 @@ export default function TerminalPanel({
     let cleanUsername: string;
     try {
       cleanUsername = validateTerminalUsername(username);
-      if (!token) throw new Error(t("terminalTokenRequired"));
+      validateTerminalPassword(password);
       if (targetHost === "?") throw new Error(t("terminalInvalidBridge"));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      const message = reason instanceof Error ? reason.message : String(reason);
+      setError(message === "Invalid SSH password" ? t("terminalPasswordInvalid") : message);
       setStatus("error");
       return;
     }
 
     localStorage.setItem(USERNAME_KEY, cleanUsername);
-    sessionStorage.setItem(TOKEN_KEY, token);
+    localStorage.setItem(PASSWORD_KEY, password);
     closeSocket();
     terminalRef.current?.reset();
     setError(undefined);
@@ -107,9 +109,9 @@ export default function TerminalPanel({
       socket.send(
         JSON.stringify({
           type: "open",
-          token,
           bridgeUrl,
           username: cleanUsername,
+          password,
           cols: terminal?.cols ?? 80,
           rows: terminal?.rows ?? 24,
         }),
@@ -168,7 +170,7 @@ export default function TerminalPanel({
         setStatus("error");
       }
     };
-  }, [bridgeUrl, closeSocket, t, targetHost, token, username]);
+  }, [bridgeUrl, closeSocket, password, t, targetHost, username]);
 
   const endSession = useCallback(() => {
     const socket = socketRef.current;
@@ -345,12 +347,12 @@ export default function TerminalPanel({
           />
           <input
             type="password"
-            value={token}
-            onChange={(event) => setToken(event.target.value)}
-            placeholder={t("terminalToken")}
-            aria-label={t("terminalToken")}
-            autoComplete="off"
-            maxLength={256}
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            placeholder={t("terminalPassword")}
+            aria-label={t("terminalPassword")}
+            autoComplete="current-password"
+            maxLength={1024}
           />
           <button type="submit">{t("terminalConnect")}</button>
           {error && <span className="terminal-error" title={error}>{error}</span>}

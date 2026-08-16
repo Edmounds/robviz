@@ -32,9 +32,9 @@ describe("terminal protocol", () => {
     expect(
       terminalClientMessageSchema.safeParse({
         type: "open",
-        token: "token",
         bridgeUrl: "ws://robot.local:8765",
         username: "robot",
+        password: "secret",
         cols: 120,
         rows: 32,
       }).success,
@@ -46,6 +46,16 @@ describe("terminal protocol", () => {
     expect(
       terminalClientMessageSchema.safeParse({ type: "input", data: "x".repeat(65_537) })
         .success,
+    ).toBe(false);
+    expect(
+      terminalClientMessageSchema.safeParse({
+        type: "open",
+        bridgeUrl: "ws://robot.local:8765",
+        username: "robot",
+        password: "line\nbreak",
+        cols: 80,
+        rows: 24,
+      }).success,
     ).toBe(false);
   });
 });

@@ -7,4 +7,9 @@ describe("i18n", () => {
     expect(translate("zh-CN", "undoCount", { count: 3 })).toBe("撤销 (3)");
     expect(translate("en", "undoCount", { count: 3 })).toBe("Undo (3)");
   });
+
+  it("无话题时不提示启动本地服务", () => {
+    expect(translate("zh-CN", "noTopics")).toBe("暂无话题");
+    expect(translate("en", "noTopics")).toBe("No topics");
+  });
 });

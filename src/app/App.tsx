@@ -17,12 +17,19 @@ import {
 import { TfBuffer } from "../core/TfBuffer";
 import type { TFMessage } from "../core/types";
 import { toSec } from "../core/types";
-import { applyPanelLayout, buildPanelLayout, layoutPercent } from "../core/workspaceLayout";
+import {
+  applyPanelLayout,
+  buildPanelLayout,
+  layoutPercent,
+  setGroupLayout,
+  WORKSPACE_PANEL_MIN_SIZE,
+} from "../core/workspaceLayout";
 import { ImagePanel } from "../panels/ImagePanel";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { MapEditorPanel } from "../panels/MapEditorPanel";
 import { PlotPanel } from "../panels/PlotPanel";
 import { PointCloudSettingsPanel } from "../panels/PointCloudSettingsPanel";
+import { EchoTopicSection } from "../panels/EchoTopicSection";
 import { ServiceSection } from "../panels/ServiceSection";
 import { TeleopSection } from "../panels/TeleopSection";
 import { TfTreeSection } from "../panels/TfTreeSection";
@@ -40,6 +47,7 @@ import { plugins, resolvePlugins } from "../plugins/registry";
 import type { PluginContext } from "../plugins/types";
 import type { PcdWorkerResponse } from "../worker/pcd.worker";
 import type { MessagePayload, StreamStats } from "../worker/protocol";
+import { CollapsibleSection } from "./CollapsibleSection";
 import { I18nProvider, translate } from "./i18n";
 import { SettingsPage } from "./SettingsPage";
 
@@ -809,16 +817,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    mainGroupRef.current?.setLayout({
+    setGroupLayout(mainGroupRef.current, {
       center: 100 - workspace.sidebarPercent,
       sidebar: workspace.sidebarPercent,
     });
     if (visiblePanels.length > 0) {
-      centerGroupRef.current?.setLayout({
+      setGroupLayout(centerGroupRef.current, {
         viewport: 100 - workspace.dockPercent,
         dock: workspace.dockPercent,
       });
-      dockGroupRef.current?.setLayout(dockDefaultLayout);
+      setGroupLayout(dockGroupRef.current, dockDefaultLayout);
     }
   }, [workspace, visiblePanels.length, dockDefaultLayout, mainGroupRef, centerGroupRef, dockGroupRef]);
 
@@ -959,7 +967,7 @@ export default function App() {
               }));
             }}
           >
-          <Panel id="center" minSize={isMobile ? 0 : 420}>
+          <Panel id="center" minSize={isMobile ? 0 : WORKSPACE_PANEL_MIN_SIZE.mainCenter}>
           <div className="center">
           <Group
             id="center-workspace"
@@ -976,7 +984,7 @@ export default function App() {
               }));
             }}
           >
-          <Panel id="viewport" minSize={isMobile ? 0 : 260}>
+          <Panel id="viewport" minSize={isMobile ? 0 : WORKSPACE_PANEL_MIN_SIZE.viewport}>
           <div className="viewport" onDoubleClick={onViewportDoubleClick}>
             <canvas ref={canvasRef} />
             {/* Nav 工具条 */}
@@ -1119,7 +1127,7 @@ export default function App() {
           {visiblePanels.length > 0 && ready && (
             <>
             <Separator className="resize-handle horizontal" />
-            <Panel id="dock" minSize={isMobile ? 0 : 180} maxSize="70%">
+            <Panel id="dock" minSize={isMobile ? 0 : WORKSPACE_PANEL_MIN_SIZE.dock} maxSize="70%">
             <div className="dock-scroll">
             <Group
               id="dock-workspace"
@@ -1142,7 +1150,7 @@ export default function App() {
                 return (
                   <Fragment key={p.id}>
                   {index > 0 && <Separator className="resize-handle vertical" />}
-                  <Panel id={`dock-${p.id}`} minSize={180} defaultSize={`${p.sizePercent ?? 100 / visiblePanels.length}%`}>
+                  <Panel id={`dock-${p.id}`} minSize={WORKSPACE_PANEL_MIN_SIZE.dockPanel} defaultSize={`${p.sizePercent ?? 100 / visiblePanels.length}%`}>
                   <ErrorBoundary name={name} onReset={() => removePanel(p.id)}>
                     {p.kind === "image" ? (
                       <ImagePanel
@@ -1200,15 +1208,11 @@ export default function App() {
         </Panel>
 
           <Separator className="resize-handle vertical" />
-          <Panel id="sidebar" minSize={isMobile ? 0 : 220} maxSize="50%">
+          <Panel id="sidebar" minSize={isMobile ? 0 : WORKSPACE_PANEL_MIN_SIZE.sidebar} maxSize="50%">
           <aside className="sidebar">
-            <div className="side-section">
-              <h2>{t("topics")}</h2>
+            <CollapsibleSection title={t("topics")}>
               {dataTopics.length === 0 && (
-                <p className="empty-hint">
-                  {t("noTopics")}<br />
-                  <code>npm run mock</code>
-                </p>
+                <p className="empty-hint">{t("noTopics")}</p>
               )}
               {dataTopics.map(({ topic, schemaName }) => {
                 const displayable = schemaName in displayFactories;
@@ -1248,10 +1252,15 @@ export default function App() {
                 );
               })}
               {lastError && <p className="error-line">{lastError}</p>}
-            </div>
+            </CollapsibleSection>
 
-            <div className="side-section">
-              <h2>{t("panelsSection")}</h2>
+            {ready && (
+              <ErrorBoundary name={t("echoTopic")}>
+                <EchoTopicSection bridge={bridgeRef.current!} topics={topics} />
+              </ErrorBoundary>
+            )}
+
+            <CollapsibleSection title={t("panelsSection")}>
               <div className="side-row">
                 <button onClick={() => addPanel("image")}>{t("addImage")}</button>
                 <button onClick={() => addPanel("plot")}>{t("addPlot")}</button>
@@ -1261,7 +1270,7 @@ export default function App() {
                   </button>
                 ))}
               </div>
-            </div>
+            </CollapsibleSection>
 
             {ready && (
               <ErrorBoundary name={t("teleop")}>
@@ -1284,10 +1293,9 @@ export default function App() {
             {pluginCtx &&
               resolvedPlugins.sections.map((s) => (
                 <ErrorBoundary key={s.id} name={s.title}>
-                  <div className="side-section">
-                    <h2>{s.title}</h2>
+                  <CollapsibleSection title={s.title}>
                     <s.component ctx={pluginCtx} />
-                  </div>
+                  </CollapsibleSection>
                 </ErrorBoundary>
               ))}
           </aside>

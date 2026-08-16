@@ -10,10 +10,10 @@
 │  └─ foxglove_bridge     │◄──ws──►│  ┌───────────┐  postMessage ┌─────────┐ │
 │     (ws://robot:8765)   │  CDR   │  │ React UI   │◄─(Transfer)─│ 连接+解码 │ │
 └─────────────────────────┘ 二进制  │  │ three.js   │             └─────────┘ │
-┌─ 开发机（模拟，无 ROS）────┐        │  │ TF Buffer  │                         │
-│ mock/server.ts (Node)   │◄──ws──►│  └───────────┘                          │
-│  合成 TF/scan/map/cloud  │        └──────────────────────────────────────────┘
-└─────────────────────────┘        ┌─ MCP Server (Node, M4) ─────────────────┐
+                                   │  │ TF Buffer  │                         │
+                                   │  └───────────┘                          │
+                                   └──────────────────────────────────────────┘
+                                   ┌─ MCP Server (Node, M4) ─────────────────┐
                                    │  复用 src/core，bridge 的平级客户端        │
                                    └──────────────────────────────────────────┘
 ```
@@ -21,7 +21,6 @@
 关键点：
 
 - **唯一的机器人侧依赖是 `foxglove_bridge`**（apt 可装，官方维护，多客户端）。
-- 模拟服务器与真实 bridge 实现同一协议（foxglove websocket v1），客户端代码对两者无感知。
 - Web UI 与 MCP server 是 bridge 的两个平级客户端，共享 `src/core` 代码。
 
 ## 2. 目录结构（单包，非 monorepo）
@@ -29,10 +28,6 @@
 ```
 robviz/
 ├── docs/                    # 本文档体系
-├── mock/                    # 模拟 foxglove_bridge（Node，不打包进前端）
-│   ├── server.ts            # ws 服务端 + 场景循环
-│   ├── scene.ts             # 机器人运动学与世界模型（墙壁、射线投射）
-│   └── schemas.ts           # ros2msg 文本 + CDR MessageWriter
 ├── src/
 │   ├── core/                # ★ 零 React / 零 DOM 依赖，Node 与浏览器通用
 │   │   ├── FoxgloveConnection.ts   # ws-protocol 客户端封装、订阅管理、解码
@@ -87,7 +82,7 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 
 ### 3.3 Node 复用
 
-`FoxgloveConnection` 构造时注入 WebSocket 实现（浏览器原生 / Node `ws` 包），核心逻辑一份代码。集成测试与 MCP server 直接在 Node 里实例化，不经过 Worker。
+`FoxgloveConnection` 构造时注入 WebSocket 实现（浏览器原生 / Node `ws` 包），核心逻辑一份代码。CLI 与 MCP server 直接在 Node 里实例化，不经过 Worker。
 
 ## 4. TF 系统
 
@@ -113,14 +108,7 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
   - 累积模式（Point-LIO）：环形写入超大缓冲（默认 4M 点，可配），`drawRange` 控制有效区间。
 - 交互工具（M3）：Nav Goal 通过 raycaster 打到地面平面取点，拖拽定朝向，经 WorkerBridge `clientPublish` 发 `PoseStamped`。
 
-## 6. 模拟服务器（mock/）
-
-- `FoxgloveServer`（`@foxglove/ws-protocol` 服务端类）+ `ws`。
-- `schemas.ts` 内置所需消息的 ros2msg 文本（TFMessage/LaserScan/OccupancyGrid/PointCloud2/Path/Odometry/...），用 `@foxglove/rosmsg2-serialization` 的 `MessageWriter` 做 CDR 编码——与解码同库，天然互检。
-- `scene.ts`：确定性仿真（固定步长，时间为参数），方便测试断言真值（如"t 时刻 base_link 在 map 下的位姿"）。
-- 端口默认 8765（与真实 foxglove_bridge 一致），`npm run mock` 启动。
-
-## 7. MCP Server（M4 摘要）
+## 6. MCP Server（M4 摘要）
 
 - Node 进程，`@modelcontextprotocol/sdk` + `src/core`。
 - 工具：`list_topics` / `echo_topic(topic, n)` / `get_tf(target, source)` / `publish(topic, type, msg)` / `call_service(name, req)` / `query_series(topic, field, duration, maxPoints)` / `screenshot(panel)`。
@@ -160,7 +148,7 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 | 压测（29.8MB/s，30.7 万点/帧 × 5Hz ≈ 150 万点/s） | 滞后 4-5ms 稳定，零丢帧，全部话题满速率 |
 | 混沌网络（0-40ms 抖动 + 周期 1.5s 停顿 + 每 20s 强制断连） | 自动重连 + 订阅自愈，滞后有界 ~40ms 不增长，TF 平滑自适应至 ~50ms，断连期间 render 0/s |
 
-回归方式：`CLOUD_SCALE=N npm run mock` 压测、`CHAOS=1 npm run mock` 混沌网络，HUD 角标常显吞吐/滞后/渲染率。
+回归时连接真机数据流，HUD 角标常显吞吐、滞后与渲染率。
 
 ## 8.5 大地图工作流（M1.75，已实现，2026-08-13 实测）
 
@@ -277,13 +265,14 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 ## 8.9 远程终端
 
 - UI 懒加载 `@xterm/xterm`，底部抽屉横跨工作区；隐藏只改变布局，不卸载组件或断开会话。
-- 操作电脑运行 `terminal/server.ts`，只监听 `127.0.0.1:8767`。网关验证环境变量 Token 后，
-  从客户端给出的 Foxglove `ws://`/`wss://` URL 中解析 hostname，并用 `node-pty` 启动
-  `ssh user@host`；不接受独立 SSH host，也不经过 shell 字符串拼接。
+- 操作电脑运行 `terminal/server.ts`，只监听 `127.0.0.1:8767`，并拒绝非本机页面的
+  WebSocket Origin。从客户端给出的 Foxglove `ws://`/`wss://` URL 中解析 hostname，
+  用 `node-pty` 启动 `ssh user@host`；不接受独立 SSH host，也不经过 shell 字符串拼接。
 - 协议只有 open/input/resize/close 与 ready/output/exit/error，边界统一用 Zod 校验；每个
   WebSocket 只允许一个 PTY，全局最多四个，连接断开和进程退出都会释放资源。
-- 用户名保存在 localStorage，网关 Token 只在 sessionStorage；SSH 密码和 host key 交互由
-  OpenSSH 在终端内处理。机器人侧仍只有 foxglove_bridge 与标准 SSH 服务。
+- 用户名和 SSH 密码保存在 localStorage；网关不再要求用户配置 Token，密码在 OpenSSH
+  的 password prompt 出现时由网关写入 PTY，host key 交互仍由终端内处理。机器人侧仍只有
+  foxglove_bridge 与标准 SSH 服务。
 - loopback 明文 WebSocket 只适用于浏览器与网关同机；跨设备或 HTTPS 页面需要外部 WSS
   反向代理，首版不提供公网部署能力。
 
@@ -297,7 +286,6 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 | D4 | 面板写死枚举，不做插件系统 | Foxglove 复杂度的主要来源；自用工具加面板=加代码 |
 | D5 | URDF 用浏览器拖文件夹（robot_viewer 模式），不做 asset server | 机器人侧零部署；mesh 解析全在前端 |
 | D6 | 解码在 Worker，主线程只消费 TypedArray | 性能生死线；参见 §3.2 |
-| D7 | 模拟服务器与生产同协议同编码库 | 无 ROS 环境下开发测试；真机零切换成本 |
 | D8 | TF 插值自实现，不依赖 three.js | core 需在 Node 跑（测试/MCP）；slerp 数学量很小 |
 | D9 | 丢帧策略放客户端（latest-wins），不做应用层重传 | WebSocket 是 TCP，无真实丢包；风险是队头阻塞与排队膨胀。可视化只需最新帧，丢过期帧使延迟有界；与真实 bridge 的服务端 send_buffer_limit 丢帧行为互补 |
 | D10 | 按需渲染（脏标记）而非固定 60fps 循环 | 空闲主机占用趋近零；渲染率自动跟随数据率，交互时仍满帧 |
@@ -312,6 +300,5 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 | D19 | URDF mesh 按 basename 匹配用户选的文件 | package:// 路径在真实工程千奇百怪；basename 命中率最高且失败可见（报缺哪个文件） |
 | D20 | Display.tick 扩展支持多 frame 显示器 | Marker/URDF 内部含多个 frame，整体变换模型不适用；tick 自管 TF 是最小侵入 |
 | D21 | MCP 截图走反向 WS 命令通道（MCP 开服务、UI 连入） | UI 在浏览器沙箱里无法开端口；反向连接让 agent 与 UI 解耦，UI 不在也不影响数据面工具 |
-| D22 | 模拟器仿真真机行为（cmd_vel 积分驱动、服务改状态、marker 状态字） | 交互功能的验收需要闭环：发出去的指令必须影响回传数据才算通 |
 | D23 | 四层故障舱壁（ErrorBoundary / 逐 handler 隔离 / 逐显示器隔离 / Worker 自愈），用故障注入验收 | 一个功能崩溃不能拖垮整体；隔离逻辑不注入真实崩溃测过等于没写 |
 | D24 | 终端网关在操作电脑用系统 SSH，不在机器人部署 Web Shell | 保留机器人侧零自研服务；复用 OpenSSH 的 known_hosts、密码/密钥交互与加密链路 |

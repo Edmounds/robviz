@@ -1,6 +1,6 @@
 /**
  * ros2msg schema 文本（与 foxglove_bridge 广播格式一致：拼接 .msg 定义，
- * 80 个 '=' + `MSG: <pkg>/<Type>` 分隔）。模拟器编码、客户端发布编码、
+ * 80 个 '=' + `MSG: <pkg>/<Type>` 分隔）。客户端发布编码、
  * CLI 发布共用同一份，保证互检。
  */
 
@@ -61,7 +61,7 @@ function schema(main: string, ...deps: string[]): string {
   return [main, ...deps].join(`\n${SEP}\n`);
 }
 
-// ---- 订阅方向（模拟器发布） ----
+// ---- 订阅方向 ----
 
 export const TF_MESSAGE_SCHEMA = schema(
   `geometry_msgs/TransformStamped[] transforms`,

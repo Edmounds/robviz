@@ -26,6 +26,7 @@ import { Group, Panel, Separator, useGroupRef } from "react-resizable-panels";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
 import { TfBuffer } from "../core/TfBuffer";
+import { WORKSPACE_PANEL_MIN_SIZE } from "../core/workspaceLayout";
 import type { UrdfDisplayOptions, UrdfJointInfo, UrdfModelInfo, UrdfTreeNode } from "../renderers/UrdfRenderer";
 import { UrdfRenderer } from "../renderers/UrdfRenderer";
 import { SceneManager } from "../renderers/SceneManager";
@@ -428,7 +429,7 @@ export default function UrdfEditorPage({
           if (total > 0) onInspectorPercentChange((layout.inspector / total) * 100);
         }}
       >
-        <Panel id="viewport" minSize={isMobile ? 0 : 420}>
+        <Panel id="viewport" minSize={isMobile ? 0 : WORKSPACE_PANEL_MIN_SIZE.urdfViewport}>
         <div className="urdf-viewport">
           <canvas ref={canvasRef} />
           {!model && !busy && (
@@ -445,7 +446,7 @@ export default function UrdfEditorPage({
 
         </Panel>
         <Separator className="resize-handle vertical" />
-        <Panel id="inspector" minSize={isMobile ? 0 : 300} maxSize="55%">
+        <Panel id="inspector" minSize={isMobile ? 0 : WORKSPACE_PANEL_MIN_SIZE.urdfInspector} maxSize="55%">
 
         <aside className="urdf-inspector">
           <nav className="inspector-tabs">

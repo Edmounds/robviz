@@ -9,7 +9,7 @@ description: 用 RobViz CLI 查询和操作机器人：列话题、看消息（e
 
 ## 前置
 
-- 机器人（或 `npm run mock` 模拟器）上的 foxglove_bridge 在运行。
+- 机器人上的 foxglove_bridge 在运行。
 - 默认连 `ws://localhost:8765`；真机加 `--bridge ws://<robot-ip>:8765` 或设 `BRIDGE_URL` 环境变量。
 
 ## 命令
@@ -27,9 +27,3 @@ npm run cli -- screenshot -o /tmp/shot.png     # 截 Web UI 3D 视图（需浏�
 - `pub` / `call` 的 JSON 可以只给部分字段，缺省字段按 schema 自动补零。
   可发布类型见 `npm run cli -- --help`。
 - 长数组（点云等）自动截断到 100 元素。
-
-## 验证链路
-
-```bash
-npx tsx scripts/cli-smoke.ts   # 需 npm run mock 在跑，全子命令冒烟
-```

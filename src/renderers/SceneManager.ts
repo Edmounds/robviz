@@ -41,6 +41,12 @@ const TF_DELAY_MAX_S = 0.3;
 const HOME_POSITION = new THREE.Vector3(8, -8, 8);
 const HOME_TARGET = new THREE.Vector3(0, 0, 0);
 
+export function stopHandledPointerDown(
+  event: Pick<PointerEvent, "defaultPrevented" | "stopImmediatePropagation">,
+): void {
+  if (event.defaultPrevented) event.stopImmediatePropagation();
+}
+
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
 }
@@ -109,6 +115,7 @@ export class SceneManager {
     this.#camera.up.set(0, 0, 1);
     this.#camera.position.copy(HOME_POSITION);
 
+    canvas.addEventListener("pointerdown", stopHandledPointerDown, { capture: true });
     this.#controls = new OrbitControls(this.#camera, canvas);
     this.#controls.enableDamping = true;
     this.#controls.dampingFactor = 0.12;
@@ -342,6 +349,7 @@ export class SceneManager {
     this.#offSceneTheme();
     this.#tfAxes.dispose();
     for (const topic of [...this.#displays.keys()]) this.removeDisplay(topic);
+    this.#renderer.domElement.removeEventListener("pointerdown", stopHandledPointerDown, true);
     this.#controls.dispose();
     this.#grid.traverse((object) => {
       const geometry = (object as THREE.LineSegments).geometry;

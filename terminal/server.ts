@@ -1,4 +1,3 @@
-import { createHash, timingSafeEqual } from "node:crypto";
 import { accessSync, chmodSync, constants } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -40,7 +39,6 @@ export type SpawnPty = (
 ) => PtyProcessLike;
 
 export interface TerminalGatewayOptions {
-  token: string;
   port?: number;
   spawnPty?: SpawnPty;
 }
@@ -50,10 +48,17 @@ export interface TerminalGatewayHandle {
   close(): Promise<void>;
 }
 
-function secureTokenEqual(expected: string, supplied: string): boolean {
-  const expectedHash = createHash("sha256").update(expected).digest();
-  const suppliedHash = createHash("sha256").update(supplied).digest();
-  return timingSafeEqual(expectedHash, suppliedHash);
+function isAllowedOrigin(origin: string | undefined): boolean {
+  if (!origin) return true;
+  try {
+    const parsed = new URL(origin);
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      ["localhost", "127.0.0.1", "::1", "[::1]"].includes(parsed.hostname)
+    );
+  } catch {
+    return false;
+  }
 }
 
 function processEnvironment(): Record<string, string> {
@@ -100,10 +105,6 @@ function send(ws: WebSocket, message: TerminalServerMessage): void {
 export async function startTerminalGateway(
   options: TerminalGatewayOptions,
 ): Promise<TerminalGatewayHandle> {
-  if (options.token.length < 32) {
-    throw new Error("ROBVIZ_TERMINAL_TOKEN must contain at least 32 characters");
-  }
-
   if (!options.spawnPty) ensurePtyHelperExecutable();
   const spawnPty = options.spawnPty ?? spawnSsh;
   const wss = new WebSocketServer({
@@ -113,10 +114,18 @@ export async function startTerminalGateway(
   });
   let activeSessions = 0;
 
-  wss.on("connection", (ws) => {
+  wss.on("connection", (ws, request) => {
+    if (!isAllowedOrigin(request.headers.origin)) {
+      send(ws, { type: "error", code: "ORIGIN_NOT_ALLOWED", message: "终端网关只接受本机页面" });
+      ws.close(1008, "origin not allowed");
+      return;
+    }
+
     let child: PtyProcessLike | undefined;
     let dataSubscription: DisposableLike | undefined;
     let exitSubscription: DisposableLike | undefined;
+    let pendingPassword = "";
+    let promptBuffer = "";
 
     const releaseChild = (kill: boolean): void => {
       const current = child;
@@ -126,6 +135,8 @@ export async function startTerminalGateway(
       exitSubscription?.dispose();
       dataSubscription = undefined;
       exitSubscription = undefined;
+      pendingPassword = "";
+      promptBuffer = "";
       activeSessions -= 1;
       if (kill) {
         try {
@@ -153,19 +164,6 @@ export async function startTerminalGateway(
 
       const message = parsed.data;
       if (message.type === "open") {
-        if (!secureTokenEqual(options.token, message.token)) {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(
-              JSON.stringify({
-                type: "error",
-                code: "AUTH_FAILED",
-                message: "终端网关 Token 不正确",
-              } satisfies TerminalServerMessage),
-              () => ws.close(1008, "authentication failed"),
-            );
-          }
-          return;
-        }
         if (child) {
           send(ws, { type: "error", code: "ALREADY_OPEN", message: "当前连接已有终端会话" });
           return;
@@ -181,7 +179,20 @@ export async function startTerminalGateway(
           const nextChild = spawnPty(host, username, message.cols, message.rows);
           child = nextChild;
           activeSessions += 1;
-          dataSubscription = nextChild.onData((data) => send(ws, { type: "output", data }));
+          pendingPassword = message.password;
+          promptBuffer = "";
+          dataSubscription = nextChild.onData((data) => {
+            if (pendingPassword) {
+              promptBuffer = `${promptBuffer}${data}`.slice(-512);
+              if (/\bpassword\s*:\s*$/i.test(promptBuffer)) {
+                const password = pendingPassword;
+                pendingPassword = "";
+                promptBuffer = "";
+                nextChild.write(`${password}\r`);
+              }
+            }
+            send(ws, { type: "output", data });
+          });
           exitSubscription = nextChild.onExit(({ exitCode, signal = 0 }) => {
             if (child !== nextChild) return;
             releaseChild(false);
@@ -235,8 +246,7 @@ export async function startTerminalGateway(
 }
 
 async function main(): Promise<void> {
-  const token = process.env.ROBVIZ_TERMINAL_TOKEN ?? "";
-  const gateway = await startTerminalGateway({ token });
+  const gateway = await startTerminalGateway({});
   console.log(`RobViz terminal gateway listening on ${gateway.url}`);
 
   const stop = async (): Promise<void> => {

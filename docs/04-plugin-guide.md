@@ -162,5 +162,5 @@ const plugin: RobvizPlugin = {
 npm run lint                # 无新增告警
 npx tsc -b --noEmit        # 类型通过
 npm test                    # registry 测试会确认插件被发现
-npm run mock & npm run dev  # 手动验证功能与深浅主题下的外观
+npm run dev                 # 连接真机，手动验证功能与深浅主题下的外观
 ```

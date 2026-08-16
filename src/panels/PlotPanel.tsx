@@ -1,4 +1,4 @@
-import { Eye, EyeOff, Pause, Play, Trash2, X } from "lucide-react";
+import { Eye, EyeOff, Pause, Play, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
@@ -6,6 +6,7 @@ import "uplot/dist/uPlot.min.css";
 import type { WorkerBridge } from "../bridge/WorkerBridge";
 import type { TopicInfo } from "../core/FoxgloveConnection";
 import { computeSharedRange, relativeArrivalSec, seriesKey } from "../core/plot";
+import { CollapsiblePanel } from "../app/CollapsiblePanel";
 import { useI18n } from "../app/i18n";
 
 const WINDOW_SEC = 60;
@@ -291,8 +292,11 @@ export function PlotPanel({
   );
 
   return (
-    <div className="panel">
-      <div className="panel-header">
+    <CollapsiblePanel
+      title={t("plotPanel")}
+      onClose={onClose}
+      header={
+        <>
         <select value={newTopic} onChange={(event) => setNewTopic(event.target.value)}>
           <option value="">{t("chooseTopic")}</option>
           {plotTopics.map((topic) => (
@@ -336,9 +340,9 @@ export function PlotPanel({
             <Trash2 />
           </button>
         )}
-        <span className="spacer" />
-        <button className="panel-close" onClick={onClose} aria-label={t("closePanel")}><X /></button>
-      </div>
+        </>
+      }
+    >
       {seriesList.length > 0 && (
         <div className="series-list">
           {seriesList.map((series) => (
@@ -357,6 +361,6 @@ export function PlotPanel({
         </div>
       )}
       <div ref={plotRef} className="panel-body plot-body" />
-    </div>
+    </CollapsiblePanel>
   );
 }

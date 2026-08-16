@@ -41,10 +41,9 @@ RobViz 是一个**个人自用**的 Web 上位机，替代 rviz 的日常功能�
 | core/CDR 解码 | 用 bridge 广播的 ros2msg schema 动态生成 MessageReader |
 | core/TF 缓冲 | 带时间窗的 transform 缓冲、二分查找、lerp + slerp 插值、跨 frame 链路求解 |
 | Worker 封装 | 连接与解码跑在 Web Worker，解码结果 Transferable 传主线程 |
-| 模拟服务器 | Node 端模拟 foxglove_bridge，发布合成 TF/scan/map/path/cloud（见 §4） |
 | 3D 视口 | three.js 场景、网格地面、OrbitControls、fixed frame 选择、TF 坐标轴显示 |
 
-**验收**：浏览器连上模拟服务器，选定 fixed frame 后能看到 TF 树各坐标轴实时运动；断线自动重连。
+**验收**：浏览器连上 `foxglove_bridge`，选定 fixed frame 后能看到 TF 树各坐标轴实时运动；断线自动重连。
 
 > ✅ 2026-08-13 通过：14 个 vitest 用例全绿（TF 插值/链路/逆变换与运动学真值比对、
 > CDR 编解码往返）；浏览器实测连接、frame 列表、fixed frame 切换（map/base_link）正常。
@@ -59,7 +58,7 @@ RobViz 是一个**个人自用**的 Web 上位机，替代 rviz 的日常功能�
 | Path / Odometry | 轨迹线渲染 |
 | 话题面板 | 列出 bridge 广播的所有 topic，勾选订阅 |
 
-**验收**：模拟服务器场景下，地图、扫描、点云、轨迹同屏 60fps；100 万累积点不掉帧。
+**验收**：bridge 数据下，地图、扫描、点云、轨迹同屏 60fps；100 万累积点不掉帧。
 
 > ✅ 2026-08-13 通过：/map、/scan、/cloud、/path 四显示同屏 60fps；
 > 累积模式 30s 写入约 115 万点后仍稳定 60fps（2M 点环形缓冲 + GPU 端 turbo 着色）。
@@ -67,8 +66,7 @@ RobViz 是一个**个人自用**的 Web 上位机，替代 rviz 的日常功能�
 ### M1.5 — 性能与网络韧性专项（追加）
 
 Worker 合帧 + latest-wins 丢帧、缓冲池零分配、按需渲染（空闲零占用）、
-指数退避重连 + 半开看门狗、滞后估计 HUD、TF 自适应抖动平滑；
-模拟器新增 `CLOUD_SCALE`（压测）与 `CHAOS=1`（混沌网络）模式。
+指数退避重连 + 半开看门狗、滞后估计 HUD、TF 自适应抖动平滑。
 详见技术方案 §8。
 
 > ✅ 2026-08-13 通过：29.8MB/s（150 万点/s）滞后 4-5ms 零丢帧；
@@ -98,7 +96,7 @@ Worker 合帧 + latest-wins 丢帧、缓冲池零分配、按需渲染（空闲�
 | 悬停取值 | 鼠标位置显示像素坐标 + RGB / 深度米数（16UC1 同时显示毫米原值） |
 | 多图布局 | 底部面板坞多面板并排（放弃 react-mosaic，KISS：flex + 添加/关闭） |
 
-**验收**：模拟服务器发布 RGB + 深度图，悬停读值正确，四图并排不卡。
+**验收**：bridge 发布 RGB + 深度图，悬停读值正确，四图并排不卡。
 
 > ✅ 实测：/camera/depth（32FC1 320×240 5Hz）turbo 上色 + 量程显示，悬停 (159,119) 读值 1.543m
 > 与场景几何一致；/camera/color/compressed（JPEG）解码显示正常；与曲线面板三面板并排流畅。
@@ -118,11 +116,11 @@ Worker 合帧 + latest-wins 丢帧、缓冲池零分配、按需渲染（空闲�
 
 **验收**：日常导航/机械臂开发不再需要打开 rviz 和 rqt。
 
-> ✅ 实测（模拟器仿真真机行为）：
+> ✅ 实测：
 > - **遥控闭环**：启用 Teleop 按住前进，曲线面板实时记录 odom 线速度 1.5（自动巡航）→ 0.5（手动）→ 0（松开），
->   模拟机器人按 cmd_vel 积分驶离圆形轨迹，超时 1s 回到自动。
+>   机器人按 cmd_vel 指令运动，超时 1s 回到自动。
 > - **服务闭环**：enable_motor(false) 请求体按 schema 预填，响应 "motor disabled (pose frozen)"，机器人冻结；reset_pose 复位。
-> - **Nav 工具**：两个工具拖拽发布，模拟器端解码打印 position 正确（视口中心 ≈ 世界原点）。
+> - **Nav 工具**：两个工具拖拽发布，接收端 position 正确（视口中心 ≈ 世界原点）。
 > - **URDF**：真实机器人 T12（urdf-loader 官方测试模型，36 关节 37 STL）网上下载后浏览器加载，
 >   挂 base_link 随机器人移动，/joint_states 驱动六足摆动，36 个关节滑块可手动调。
 > - **Marker**：4 种类型同屏（箭头挂 base_link 验证逐 marker TF、脉动球、旋转半透明方块、圆形路线）。
@@ -165,35 +163,20 @@ Worker 合帧 + latest-wins 丢帧、缓冲池零分配、按需渲染（空闲�
 | --- | --- |
 | 本地终端网关 | 操作电脑上的 loopback WebSocket 网关，用 `node-pty` 启动系统 SSH |
 | 底部终端 | xterm.js 单会话面板，Ctrl+反引号呼出/隐藏，可拖动高度且跨页面可用 |
-| 目标与凭据 | 主机严格跟随当前 Foxglove URL；用户名本地保存，Token 仅存 sessionStorage，SSH 密码不保存 |
+| 目标与凭据 | 主机严格跟随当前 Foxglove URL；用户名和 SSH 密码保存在浏览器本地存储，不需要网关 Token |
 | 生命周期 | 隐藏保持会话；切换机器人、刷新、主动结束或 WebSocket 断开时清理 SSH 子进程 |
 
-**验收**：浏览器通过本机网关进入当前机器人 SSH；网关协议、鉴权、输入输出、resize、退出与断连清理有自动化测试。
+**验收**：浏览器通过本机网关进入当前机器人 SSH；密码自动输入，Origin 限制、输入输出、resize、退出与断连清理有自动化测试。
 
-## 3. 测试策略（无 ROS 环境）
+## 3. 测试策略
 
-开发机是 macOS、无 ROS 2。全部测试基于**模拟 foxglove_bridge 服务器**（`mock/` 目录，Node + `@foxglove/ws-protocol` 服务端 + CDR 编码器）：
+1. **单元测试（vitest）**：TF 缓冲插值/链路求解、PointCloud2 字段解析、环形缓冲、地图与配置逻辑。
+2. **集成测试（vitest，Node 环境）**：验证本地终端网关的 Origin 限制、密码输入、输入输出、会话上限与断连清理。
+3. **浏览器验证**：`npm run dev` 后连接运行 `foxglove_bridge` 的真机，人工检查渲染与交互；性能用 HUD 观测吞吐、滞后与渲染率。
 
-1. **单元测试（vitest）**：TF 缓冲插值/链路求解、CDR 解码、PointCloud2 字段解析、环形缓冲。
-2. **集成测试（vitest，Node 环境）**：拉起模拟服务器 → core 客户端连接 → 断言收到并正确解码各类消息、TF 查询结果与模拟器的真值一致。
-3. **浏览器验证**：`npm run mock` + `npm run dev`，人工/截图检查渲染；性能用 `stats` 面板观测帧率。
-4. **真机验证**（用户侧）：机器人装 `ros-$DISTRO-foxglove-bridge`，浏览器直连。模拟器与真实 bridge 走同一协议，理论上无差异；差异点（消息字段布局、QoS）在真机阶段回归。
-
-## 4. 模拟服务器场景设定
-
-一个在 20m x 20m 带墙壁房间里绕圈行驶的差速机器人：
-
-- `/tf` (30Hz)：`map → odom → base_link → laser / camera_link`
-- `/scan` (10Hz)：360 束射线对墙壁做光线投射，带噪声与强度
-- `/map` (0.2Hz, latched 语义)：OccupancyGrid，墙壁 + 内部障碍
-- `/cloud` (5Hz)：模拟 16 线雷达的 PointCloud2（xyz + intensity + ring）
-- `/path` (1Hz)：历史轨迹
-- `/odom` (30Hz)：Odometry
-- M2 起：`/camera/image_raw`、`/camera/depth`（合成图案）；M3 起：`/joint_states`、service demo
-
-## 5. 文档管理约定
+## 4. 文档管理约定
 
 - `docs/01-execution-plan.md`（本文档）：范围与里程碑，**每个里程碑完成时更新状态与验收结论**。
 - `docs/02-technical-design.md`：架构与模块设计，接口变更时同步更新；重要技术决策记录在其附录"决策记录"中，只增不删。
 - `docs/03-ui-design.md`：视觉规范，UI 相关改动前先对照。
-- `README.md`：快速上手（安装、启动模拟器、启动 UI、连真机）。
+- `README.md`：快速上手（安装、启动 UI、连真机）。
