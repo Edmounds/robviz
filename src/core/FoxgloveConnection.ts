@@ -3,6 +3,7 @@ import { MessageReader, MessageWriter } from "@foxglove/rosmsg2-serialization";
 import { FoxgloveClient } from "@foxglove/ws-protocol";
 import type { Channel, IWebSocket, Service } from "@foxglove/ws-protocol";
 
+import { isFrameDue } from "./frameThrottle";
 import { PUB_SCHEMAS } from "./rosSchemas";
 
 export type ConnectionState = "connecting" | "open" | "closed";
@@ -23,12 +24,19 @@ export interface ServiceInfo {
 
 export type MessageHandler = (message: unknown, channel: Channel) => void;
 
+export interface SubscribeOptions {
+  /** 最大交付频率；只影响本地解码/分发，不改变 WebSocket 线上字节数。 */
+  maxFrequency?: number;
+}
+
 export interface MessageMeta {
   topic: string;
-  /** CDR 负载字节数 */
+  /** 入站 CDR 负载字节数（无论本地是否丢弃） */
   bytes: number;
-  /** 解码耗时（ms） */
+  /** 解码耗时（ms）；未解码的丢弃帧为 0 */
   decodeMs: number;
+  /** 是否完成 CDR 解码并交付给至少一个 handler */
+  decoded: boolean;
   /** 服务端发送时间戳（ns），用于滞后估计 */
   serverTimeNs: bigint;
 }
@@ -55,6 +63,12 @@ const BACKOFF_FACTOR = 1.7;
 const BACKOFF_MAX_MS = 10_000;
 const BACKOFF_JITTER = 0.3;
 
+interface HandlerRegistration {
+  handler: MessageHandler;
+  maxFrequency?: number;
+  lastDeliveredAt: number;
+}
+
 /**
  * ws-protocol 客户端封装：按 topic 订阅、schema 驱动的 CDR 解码、断线重连。
  * 零 DOM 依赖，浏览器（Worker 内）与 Node（测试 / CLI）通用。
@@ -72,7 +86,7 @@ export class FoxgloveConnection {
   #channelsByTopic = new Map<string, Channel>();
   #readers = new Map<number, MessageReader>(); // channelId → reader
   /** 期望订阅集合（与服务端实际 advertise 解耦，重连后自动恢复） */
-  #handlers = new Map<string, Set<MessageHandler>>();
+  #handlers = new Map<string, Map<MessageHandler, HandlerRegistration>>();
   #subscriptions = new Map<number, string>(); // subscriptionId → topic
   #subscriptionIdByTopic = new Map<string, number>();
 
@@ -100,20 +114,24 @@ export class FoxgloveConnection {
   }
 
   /** 订阅 topic。channel 尚未 advertise 时挂起，advertise 后自动生效。返回退订函数。 */
-  subscribe(topic: string, handler: MessageHandler): () => void {
-    let set = this.#handlers.get(topic);
-    if (!set) {
-      set = new Set();
-      this.#handlers.set(topic, set);
+  subscribe(topic: string, handler: MessageHandler, options: SubscribeOptions = {}): () => void {
+    let registrations = this.#handlers.get(topic);
+    if (!registrations) {
+      registrations = new Map();
+      this.#handlers.set(topic, registrations);
     }
-    set.add(handler);
+    registrations.set(handler, {
+      handler,
+      maxFrequency: options.maxFrequency,
+      lastDeliveredAt: -Infinity,
+    });
     this.#ensureSubscribed(topic);
 
     return () => {
-      const s = this.#handlers.get(topic);
-      if (!s) return;
-      s.delete(handler);
-      if (s.size === 0) {
+      const current = this.#handlers.get(topic);
+      if (!current) return;
+      current.delete(handler);
+      if (current.size === 0) {
         this.#handlers.delete(topic);
         const subId = this.#subscriptionIdByTopic.get(topic);
         if (subId !== undefined && this.#client) {
@@ -281,14 +299,35 @@ export class FoxgloveConnection {
       const topic = this.#subscriptions.get(subscriptionId);
       if (topic === undefined) return;
       const channel = this.#channelsByTopic.get(topic);
-      const handlers = this.#handlers.get(topic);
-      if (!channel || !handlers) return;
+      const registrations = this.#handlers.get(topic);
+      if (!channel || !registrations) return;
+      const now = performance.now();
+      const ready = [...registrations.values()].filter((registration) =>
+        isFrameDue(registration.lastDeliveredAt, now, registration.maxFrequency),
+      );
+      if (ready.length === 0) {
+        this.#opts.onMessageMeta?.({
+          topic,
+          bytes: data.byteLength,
+          decodeMs: 0,
+          decoded: false,
+          serverTimeNs: timestamp,
+        });
+        return;
+      }
       const reader = this.#readerFor(channel);
       const t0 = performance.now();
       let message: unknown;
       try {
         message = reader.readMessage(data);
       } catch (err) {
+        this.#opts.onMessageMeta?.({
+          topic,
+          bytes: data.byteLength,
+          decodeMs: performance.now() - t0,
+          decoded: false,
+          serverTimeNs: timestamp,
+        });
         this.#opts.onError?.(
           new Error(`decode failed on ${topic} (${channel.schemaName}): ${String(err)}`),
         );
@@ -298,12 +337,14 @@ export class FoxgloveConnection {
         topic,
         bytes: data.byteLength,
         decodeMs: performance.now() - t0,
+        decoded: true,
         serverTimeNs: timestamp,
       });
       // 单个 handler 抛错不影响其他 handler 与后续消息
-      for (const h of handlers) {
+      for (const registration of ready) {
+        registration.lastDeliveredAt = now;
         try {
-          h(message, channel);
+          registration.handler(message, channel);
         } catch (err) {
           this.#opts.onError?.(
             err instanceof Error ? err : new Error(`handler error on ${topic}: ${String(err)}`),

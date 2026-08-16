@@ -46,7 +46,7 @@ robviz/
 │   │   ├── LaserScanRenderer.ts
 │   │   ├── PointCloudRenderer.ts
 │   │   └── PathRenderer.ts
-│   ├── panels/              # React 面板（枚举写死，不做插件）
+│   ├── panels/              # 内置 React 面板
 │   │   ├── ThreeDPanel/
 │   │   ├── TopicsPanel/
 │   │   └── ...（Image/Plot/Teleop/Urdf/... 按里程碑加）
@@ -265,7 +265,8 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 ## 8.9 远程终端
 
 - UI 懒加载 `@xterm/xterm`，底部抽屉横跨工作区；隐藏只改变布局，不卸载组件或断开会话。
-- 操作电脑运行 `terminal/server.ts`，只监听 `127.0.0.1:8767`，并拒绝非本机页面的
+- 开发模式由 Vite 启动钩子自动运行 `terminal/server.ts`；使用 preview/静态构建时需手动启动。
+  网关只监听 `127.0.0.1:8767`，并拒绝非本机页面的
   WebSocket Origin。从客户端给出的 Foxglove `ws://`/`wss://` URL 中解析 hostname，
   用 `node-pty` 启动 `ssh user@host`；不接受独立 SSH host，也不经过 shell 字符串拼接。
 - 协议只有 open/input/resize/close 与 ready/output/exit/error，边界统一用 Zod 校验；每个
@@ -275,6 +276,22 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
   foxglove_bridge 与标准 SSH 服务。
 - loopback 明文 WebSocket 只适用于浏览器与网关同机；跨设备或 HTTPS 页面需要外部 WSS
   反向代理，首版不提供公网部署能力。
+
+## 8.10 停靠工作区与多机器会话
+
+- 主机器人页面使用 `dockview-react` 的无重叠分割停靠模型。统一注册 3D、图像、曲线、Topics、
+  Echo、Teleop、服务、TF 树和插件面板；图像、曲线、插件 `panels` 可多开，内置工具与插件
+  `sections` 是单实例。Dockview 负责标题、关闭、拖拽、标签合并、最大化和序列化。
+- 每个 `RobotSessionApp` 独占 `WorkerBridge`、`TfBuffer`、Dockview 布局和面板状态。顶层只保存
+  `activeSessionId` 与全局主题/语言/插件开关；关闭标签通过 React 卸载完整释放 Worker、订阅、
+  WebGL 和终端资源。
+- 非活动会话保持 WebSocket 与订阅，但停止会话的大帧消费循环和 SceneManager 动画。
+  `WorkerBridge` 的 per-topic latest 槽继续覆盖旧帧，切回标签后的首帧立即消费最新值。
+- SceneManager 跟随 3D canvas 挂载：关闭 3D 即释放 WebGL、3D 显示订阅和临时 PCD；重新添加时
+  从会话快照恢复相机、fixed/follow frame、显示话题和地面设置。大帧消费不依赖 3D，因此纯图像
+  工作区仍持续更新。
+- 配置 schema 为 v2：顶层保存全部 `sessions[]` 与 active session；v1 在读取时迁移为单标签。
+  Dockview JSON 作为不透明字段保存，恢复失败只重建对应机器默认布局，其他已验证会话字段不丢失。
 
 ## 9. 决策记录（只增不删）
 
@@ -302,3 +319,5 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 | D21 | MCP 截图走反向 WS 命令通道（MCP 开服务、UI 连入） | UI 在浏览器沙箱里无法开端口；反向连接让 agent 与 UI 解耦，UI 不在也不影响数据面工具 |
 | D23 | 四层故障舱壁（ErrorBoundary / 逐 handler 隔离 / 逐显示器隔离 / Worker 自愈），用故障注入验收 | 一个功能崩溃不能拖垮整体；隔离逻辑不注入真实崩溃测过等于没写 |
 | D24 | 终端网关在操作电脑用系统 SSH，不在机器人部署 Web Shell | 保留机器人侧零自研服务；复用 OpenSSH 的 known_hosts、密码/密钥交互与加密链路 |
+| D25 | 主工作区使用 Dockview 无重叠分割停靠，不实现桌面式浮窗 | 对齐 Foxglove 的高密度多视图工作流，同时避免遮挡和窗口层级管理 |
+| D26 | 每台机器独立 Worker/布局/场景，非活动机器 latest-only | 保持快速切换与状态隔离，同时限制后台 3D 和大帧主线程成本 |

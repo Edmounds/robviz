@@ -5,7 +5,7 @@ import type { Header } from "../core/types";
 
 export type MainToWorker =
   | { type: "connect"; url: string }
-  | { type: "subscribe"; topic: string }
+  | { type: "subscribe"; topic: string; maxFrequency?: number }
   | { type: "unsubscribe"; topic: string }
   /** 客户端发布（schemaName 须在 PUB_SCHEMAS 内） */
   | { type: "publish"; topic: string; schemaName: string; message: unknown }
@@ -67,9 +67,11 @@ export interface BatchItem {
 }
 
 export interface TopicStats {
+  /** 入站消息频率（线上收到的消息，而非本地解码频率） */
   hz: number;
+  /** 入站 CDR 负载速率（线上收到的字节，而非本地解码字节） */
   kbps: number;
-  /** 因合并（latest-wins）被丢弃的过期帧速率 */
+  /** 本地丢弃帧速率（节流、解码失败或 latest-wins 覆盖） */
   dropsPerSec: number;
   /** 解码平均耗时 ms */
   decodeMs: number;

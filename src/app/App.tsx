@@ -1,29 +1,26 @@
-import { Fragment, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Moon, Settings, SquareTerminal, Sun } from "lucide-react";
-import { Group, Panel, Separator, useGroupRef } from "react-resizable-panels";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Grid3X3, Moon, PanelTopOpen, Plus, Settings, SquareTerminal, Sun, X } from "lucide-react";
 import * as THREE from "three";
 
 import { startAgentChannel } from "../agent/uiChannel";
 import { WorkerBridge } from "../bridge/WorkerBridge";
+import {
+  createDefaultSession,
+  parseAppConfig,
+  serializeAppConfig,
+  type AppConfig,
+  type RobotSessionConfig,
+} from "../core/appConfig";
 import type { ConnectionState, ServiceInfo, TopicInfo } from "../core/FoxgloveConnection";
 import type { LayoutConfig, PointCloudSettings } from "../core/layoutConfig";
 import {
-  DEFAULT_APP_SETTINGS,
   DEFAULT_POINT_CLOUD_SETTINGS,
   DEFAULT_WORKSPACE_LAYOUT,
-  parseLayout,
-  serializeLayout,
 } from "../core/layoutConfig";
 import { TfBuffer } from "../core/TfBuffer";
 import type { TFMessage } from "../core/types";
 import { toSec } from "../core/types";
-import {
-  applyPanelLayout,
-  buildPanelLayout,
-  layoutPercent,
-  setGroupLayout,
-  WORKSPACE_PANEL_MIN_SIZE,
-} from "../core/workspaceLayout";
+import { canAddPanel, createPanelId, type WorkspacePanel } from "../core/workspacePanels";
 import { ImagePanel } from "../panels/ImagePanel";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { MapEditorPanel } from "../panels/MapEditorPanel";
@@ -47,9 +44,10 @@ import { plugins, resolvePlugins } from "../plugins/registry";
 import type { PluginContext } from "../plugins/types";
 import type { PcdWorkerResponse } from "../worker/pcd.worker";
 import type { MessagePayload, StreamStats } from "../worker/protocol";
-import { CollapsibleSection } from "./CollapsibleSection";
 import { I18nProvider, translate } from "./i18n";
 import { SettingsPage } from "./SettingsPage";
+import { WorkspaceDock } from "./WorkspaceDock";
+import type { SerializedDockview } from "dockview-react";
 
 const DEFAULT_URL = "ws://localhost:8765";
 const PCD_KEY = "__pcd__";
@@ -81,11 +79,10 @@ interface PcdInfo {
 }
 
 interface DockPanel {
-  id: number;
+  id: string;
   kind: string;
   /** 面板自定义状态快照（配置保存/恢复用） */
   state?: unknown;
-  sizePercent?: number;
 }
 
 /** 想要显示的话题（话题未上报时挂起，出现后自动订阅） */
@@ -122,19 +119,58 @@ function useMediaQuery(query: string): boolean {
   return matches;
 }
 
-function readStoredLayout(): LayoutConfig | undefined {
+function createSessionId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `session-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function createDefaultAppConfig(): AppConfig {
+  const session = createDefaultSession(createSessionId(), "机器 1");
+  return {
+    version: 2,
+    activeSessionId: session.id,
+    theme: "dark",
+    settings: { language: "zh-CN", disabledPluginIds: [] },
+    sessions: [session],
+  };
+}
+
+function readStoredAppConfig(): AppConfig {
   try {
     const saved = localStorage.getItem(LAYOUT_KEY);
-    return saved ? parseLayout(saved) : undefined;
+    return saved ? parseAppConfig(saved) : createDefaultAppConfig();
   } catch (error) {
-    console.warn("[layout] 本地配置损坏，忽略:", error);
-    return undefined;
+    console.warn("[layout] 本地配置损坏，恢复默认工作区:", error);
+    return createDefaultAppConfig();
   }
 }
 
-export default function App() {
-  const initialLayoutRef = useRef<LayoutConfig | undefined>(readStoredLayout());
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+interface RobotSessionAppProps {
+  session: RobotSessionConfig;
+  active: boolean;
+  globalTheme: Theme;
+  globalSettings: AppConfig["settings"];
+  onSessionChange: (session: RobotSessionConfig) => void;
+  onConnectionStateChange: (id: string, state: ConnectionState) => void;
+  onThemeChange: (theme: Theme) => void;
+  onGlobalSettingsChange: (settings: AppConfig["settings"]) => void;
+  onSaveAll: (current: RobotSessionConfig) => void;
+  onLoadAll: (file: File) => void;
+}
+
+function RobotSessionApp({
+  session,
+  active = true,
+  globalTheme,
+  globalSettings,
+  onSessionChange,
+  onConnectionStateChange,
+  onThemeChange,
+  onGlobalSettingsChange,
+  onSaveAll,
+  onLoadAll,
+}: RobotSessionAppProps) {
   const bridgeRef = useRef<WorkerBridge>(null);
   const tfRef = useRef<TfBuffer>(null);
   const sceneRef = useRef<SceneManager>(null);
@@ -146,37 +182,43 @@ export default function App() {
   const configFileRef = useRef<HTMLInputElement>(null);
   const selectStartRef = useRef<[number, number]>(null);
   const navStartRef = useRef<[number, number]>(null); // 地面坐标
-  const nextPanelId = useRef(1);
   const connectedUrlRef = useRef(DEFAULT_URL);
-  const mainGroupRef = useGroupRef();
-  const centerGroupRef = useGroupRef();
-  const dockGroupRef = useGroupRef();
+  const initialUrlRef = useRef(session.url);
+  const savedCameraRef = useRef(session.camera);
   const isMobile = useMediaQuery("(max-width: 680px)");
 
   const [ready, setReady] = useState(false);
-  const [mode, setMode] = useState<"3d" | "map" | "urdf" | "settings">("3d");
+  const [sceneCanvas, setSceneCanvas] = useState<HTMLCanvasElement | null>(null);
+  const [sceneGeneration, setSceneGeneration] = useState(0);
+  const [mode, setMode] = useState<"3d" | "map" | "urdf" | "settings">(session.mode);
   const [settingsTab, setSettingsTab] = useState<"general" | "3d" | "plugins">("general");
-  const [theme, setTheme] = useState<Theme>(() =>
-    initialLayoutRef.current?.theme ?? (localStorage.getItem(THEME_KEY) === "light" ? "light" : "dark"),
-  );
+  const [theme, setTheme] = useState<Theme>(globalTheme);
   const [settings, setSettings] = useState<LayoutConfig["settings"]>(
-    initialLayoutRef.current?.settings ?? { ...DEFAULT_APP_SETTINGS, disabledPluginIds: [] },
+    {
+      language: globalSettings.language,
+      disabledPluginIds: globalSettings.disabledPluginIds,
+      groundVisible: session.scene.groundVisible,
+      tfAxesLineWidth: session.scene.tfAxesLineWidth,
+    },
   );
   const [workspace, setWorkspace] = useState<LayoutConfig["workspace"]>(
-    initialLayoutRef.current?.workspace ?? { ...DEFAULT_WORKSPACE_LAYOUT },
+    { ...DEFAULT_WORKSPACE_LAYOUT, urdfInspectorPercent: session.urdfInspectorPercent },
   );
-  const [url, setUrl] = useState(DEFAULT_URL);
-  const [activeBridgeUrl, setActiveBridgeUrl] = useState(
-    initialLayoutRef.current?.url ?? DEFAULT_URL,
-  );
+  const [url, setUrl] = useState(session.url);
+  const [activeBridgeUrl, setActiveBridgeUrl] = useState(session.url);
   const [connState, setConnState] = useState<ConnectionState>("closed");
   const [topics, setTopics] = useState<TopicInfo[]>([]);
   const [services, setServices] = useState<ServiceInfo[]>([]);
   const [frames, setFrames] = useState<string[]>([]);
   const [tfTree, setTfTree] = useState<Map<string, string>>(new Map());
-  const [fixedFrame, setFixedFrame] = useState("map");
-  const [followFrame, setFollowFrame] = useState<string>();
-  const [desired, setDesired] = useState<Map<string, DesiredTopic>>(new Map());
+  const [fixedFrame, setFixedFrame] = useState(session.fixedFrame);
+  const [followFrame, setFollowFrame] = useState<string | undefined>(session.followFrame);
+  const [desired, setDesired] = useState<Map<string, DesiredTopic>>(() => new Map(
+    session.activeTopics.map((topic) => [topic.topic, {
+      schemaName: topic.schemaName,
+      ...(topic.pointCloud ? { pointCloud: topic.pointCloud } : {}),
+    }]),
+  ));
   const [sceneStats, setSceneStats] = useState<SceneStats>({
     renderHz: 0,
     brokenFrames: [],
@@ -189,13 +231,18 @@ export default function App() {
   const [pcd, setPcd] = useState<PcdInfo>();
   const [pcdBusy, setPcdBusy] = useState<string>();
   const [pcdTool, setPcdTool] = useState<PcdTool>("orbit");
-  const [pcdVoxel, setPcdVoxel] = useState(0.1);
+  const [pcdVoxel, setPcdVoxel] = useState(session.pcdVoxel);
   const [selectRect, setSelectRect] = useState<{ x: number; y: number; w: number; h: number }>();
 
   // Nav 工具与面板坞
   const [navTool, setNavTool] = useState<NavTool>();
   const [navPreview, setNavPreview] = useState<{ x: number; y: number; yawDeg: number; len: number }>();
-  const [panels, setPanels] = useState<DockPanel[]>([]);
+  const [panels, setPanels] = useState<DockPanel[]>(() =>
+    session.panels.map((panel) => ({ ...panel })),
+  );
+  const [dockLayout, setDockLayout] = useState<SerializedDockview | undefined>(
+    session.dockLayout as SerializedDockview | undefined,
+  );
   const [terminalMounted, setTerminalMounted] = useState(false);
   const [terminalVisible, setTerminalVisible] = useState(false);
   const [terminalHeight, setTerminalHeight] = useState(() => {
@@ -204,6 +251,24 @@ export default function App() {
     const preferred = Number.isFinite(stored) && stored >= 160 ? stored : 280;
     return Math.min(maximum, preferred);
   });
+  const sceneMountStateRef = useRef({
+    active,
+    fixedFrame,
+    followFrame,
+    groundVisible: settings.groundVisible,
+    tfAxesLineWidth: settings.tfAxesLineWidth,
+    pcdTool,
+    navTool,
+  });
+  sceneMountStateRef.current = {
+    active,
+    fixedFrame,
+    followFrame,
+    groundVisible: settings.groundVisible,
+    tfAxesLineWidth: settings.tfAxesLineWidth,
+    pcdTool,
+    navTool,
+  };
 
   const resolvedPlugins = useMemo(
     () => resolvePlugins(plugins, settings.disabledPluginIds),
@@ -219,29 +284,20 @@ export default function App() {
     [settings.language],
   );
 
-  // 配置应用函数的最新引用（初始化效应在其定义前需要调用）
-  const applyConfigRef = useRef<(cfg: LayoutConfig, reconnect: boolean) => void>(null);
-
-  // 初始化：TF 缓冲、Worker 桥、3D 场景、自动连接
+  // 初始化每台机器独立的 TF 缓冲、Worker 桥与连接。
   useEffect(() => {
     const tf = new TfBuffer();
     const bridge = new WorkerBridge();
-    const scene = new SceneManager(canvasRef.current!, tf);
+    const topicSubscriptions = unsubsRef.current;
+    const displaySubscriptions = displaySubsRef.current;
     tfRef.current = tf;
     bridgeRef.current = bridge;
-    sceneRef.current = scene;
-    setReady(true);
-
-    scene.onStats = setSceneStats;
-    scene.onDisplayError = (topic, message) => setLastError(`${topic} ${message}`);
-    // 大负载与渲染帧对齐消费（两帧间只留最新）
-    scene.onBeforeRender = () => bridge.flushFrame();
     bridge.onStateChange = setConnState;
     bridge.onError = setLastError;
     bridge.onStats = setStreamStats;
     bridge.onServicesChange = setServices;
     // raw 消息（scan/path 等）即时更新了显示器，标脏触发渲染
-    bridge.onImmediateData = () => scene.invalidate();
+    bridge.onImmediateData = () => sceneRef.current?.invalidate();
 
     bridge.onTopicsChange = (list) => {
       setTopics(list);
@@ -263,21 +319,16 @@ export default function App() {
                 isStatic,
               );
             }
-            if (!isStatic && newest > 0) scene.reportTf(newest);
+            if (!isStatic && newest > 0) sceneRef.current?.reportTf(newest);
           });
           unsubsRef.current.set(topic, unsub);
         }
       }
     };
 
-    // 启动恢复：首屏初始化时已解析 localStorage，避免语言/主题闪烁
-    const initial = initialLayoutRef.current;
-    connectedUrlRef.current = initial?.url ?? DEFAULT_URL;
+    connectedUrlRef.current = initialUrlRef.current;
     bridge.connect(connectedUrlRef.current);
-    if (initial) applyConfigRef.current?.(initial, false);
-
-    // Agent 截图通道（CLI 的 screenshot 子命令在运行时可取 3D 视图截图）
-    const stopAgent = startAgentChannel({ screenshot: () => scene.screenshot() });
+    setReady(true);
 
     // frame 列表与 TF 树低频刷新
     const framesTimer = setInterval(() => {
@@ -293,16 +344,80 @@ export default function App() {
     }, 500);
 
     return () => {
-      stopAgent();
       clearInterval(framesTimer);
-      for (const unsub of unsubsRef.current.values()) unsub();
-      unsubsRef.current.clear();
-      for (const unsub of displaySubsRef.current.values()) unsub();
-      displaySubsRef.current.clear();
-      scene.dispose();
+      for (const unsub of topicSubscriptions.values()) unsub();
+      topicSubscriptions.clear();
+      for (const unsub of displaySubscriptions.values()) unsub();
+      displaySubscriptions.clear();
+      setReady(false);
       bridge.dispose();
     };
   }, []);
+
+  const attachSceneCanvas = useCallback((canvas: HTMLCanvasElement | null) => {
+    setSceneCanvas(canvas);
+  }, []);
+
+  // SceneManager 的生命周期跟随 3D 面板。关闭面板会释放 WebGL 和显示订阅，
+  // 再次添加时使用保留的相机与持久化场景状态重新创建。
+  useEffect(() => {
+    const tf = tfRef.current;
+    if (!ready || !sceneCanvas || !tf) return;
+    const mountState = sceneMountStateRef.current;
+    const displaySubscriptions = displaySubsRef.current;
+
+    const scene = new SceneManager(sceneCanvas, tf);
+    sceneRef.current = scene;
+    scene.onStats = setSceneStats;
+    scene.onDisplayError = (topic, message) => setLastError(`${topic} ${message}`);
+    scene.fixedFrame = mountState.fixedFrame;
+    scene.setFollowFrame(mountState.followFrame);
+    scene.setGridVisible(mountState.groundVisible);
+    scene.setTfAxesLineWidth(mountState.tfAxesLineWidth);
+    scene.setControlsEnabled(mountState.pcdTool === "orbit" && !mountState.navTool);
+    scene.setActive(mountState.active);
+    if (savedCameraRef.current) scene.setCameraState(savedCameraRef.current);
+    setSceneGeneration((current) => current + 1);
+
+    return () => {
+      savedCameraRef.current = scene.getCameraState();
+      for (const unsub of displaySubscriptions.values()) unsub();
+      displaySubscriptions.clear();
+      scene.dispose();
+      if (sceneRef.current === scene) sceneRef.current = null;
+      pcdRendererRef.current = null;
+      setPcd(undefined);
+      setPcdBusy(undefined);
+      setPcdTool("orbit");
+    };
+  }, [ready, sceneCanvas]);
+
+  // 大帧消费属于机器会话而不是 3D 面板：当前机器每帧只取每话题最新值，
+  // 非活动机器不消费，切回时立即刷新图像、曲线和 3D。
+  useEffect(() => {
+    if (!ready || !active) return;
+    let frame = 0;
+    const flush = () => {
+      if (bridgeRef.current?.flushFrame()) sceneRef.current?.invalidate();
+      frame = requestAnimationFrame(flush);
+    };
+    frame = requestAnimationFrame(flush);
+    return () => cancelAnimationFrame(frame);
+  }, [active, ready]);
+
+  // CLI 只连接当前机器；没有 3D 面板时由当前会话明确返回错误。
+  useEffect(() => {
+    if (!active || !ready) return;
+    return startAgentChannel({
+      screenshot: () => {
+        const scene = sceneRef.current;
+        if (!panels.some((panel) => panel.kind === "3d") || !scene) {
+          throw new Error("当前工作区没有 3D 面板");
+        }
+        return scene.screenshot();
+      },
+    });
+  }, [active, panels, ready]);
 
   // 主题：同步 CSS 令牌、3D 场景配色与持久化
   useEffect(() => {
@@ -310,7 +425,45 @@ export default function App() {
     document.documentElement.lang = settings.language;
     setSceneTheme(theme);
     localStorage.setItem(THEME_KEY, theme);
-  }, [theme, settings.language]);
+    onThemeChange(theme);
+  }, [theme, settings.language, onThemeChange]);
+
+  useEffect(() => {
+    if (globalTheme !== theme) setTheme(globalTheme);
+  }, [globalTheme, theme]);
+
+  useEffect(() => {
+    setSettings((current) => {
+      if (
+        current.language === globalSettings.language &&
+        current.disabledPluginIds.join("\0") === globalSettings.disabledPluginIds.join("\0")
+      ) return current;
+      return {
+        ...current,
+        language: globalSettings.language,
+        disabledPluginIds: globalSettings.disabledPluginIds,
+      };
+    });
+  }, [globalSettings]);
+
+  useEffect(() => {
+    onGlobalSettingsChange({
+      language: settings.language,
+      disabledPluginIds: settings.disabledPluginIds,
+    });
+  }, [settings.language, settings.disabledPluginIds, onGlobalSettingsChange]);
+
+  useEffect(() => {
+    onConnectionStateChange(session.id, connState);
+  }, [connState, onConnectionStateChange, session.id]);
+
+  useEffect(() => {
+    sceneRef.current?.setActive(active);
+    if (!active) {
+      setTerminalVisible(false);
+      setTerminalMounted(false);
+    }
+  }, [active, ready, sceneGeneration]);
 
   const toggleTheme = useCallback(() => {
     // 切换瞬间挂全局颜色过渡（常态不挂，避免干扰其他 transition）
@@ -360,6 +513,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!active) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (!event.ctrlKey || event.metaKey || event.altKey || event.code !== "Backquote") return;
       event.preventDefault();
@@ -367,7 +521,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown, { capture: true });
     return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, [toggleTerminal]);
+  }, [active, toggleTerminal]);
 
   useEffect(() => {
     localStorage.setItem(TERMINAL_HEIGHT_KEY, String(terminalHeight));
@@ -405,7 +559,8 @@ export default function App() {
   useEffect(() => {
     if (!ready) return;
     const bridge = bridgeRef.current!;
-    const scene = sceneRef.current!;
+    const scene = sceneRef.current;
+    if (!scene) return;
     const subs = displaySubsRef.current;
 
     for (const [topic, unsub] of subs) {
@@ -441,120 +596,64 @@ export default function App() {
         bridge.subscribe(topic, (payload) => display.update(payload)),
       );
     }
-  }, [ready, desired, topics, displayFactories]);
+  }, [ready, sceneGeneration, desired, topics, displayFactories]);
 
-  // ---- 配置保存/加载（rviz 式布局文件） ----
+  // ---- v2 会话配置保存/加载 ----
 
-  const buildConfig = useCallback(
-    (): LayoutConfig => ({
-      version: 1,
-      url,
-      fixedFrame,
-      theme,
-      settings,
-      workspace,
-      pcdVoxel,
-      followFrame,
-      activeTopics: [...desired].map(([topic, e]) => ({
-        topic,
-        schemaName: e.schemaName,
-        ...(e.pointCloud ? { pointCloud: e.pointCloud } : {}),
-      })),
-      panels: panels.map(({ kind, state, sizePercent }) => ({ kind, state, sizePercent })),
-      camera: sceneRef.current?.getCameraState(),
-    }),
-    [url, fixedFrame, theme, settings, workspace, pcdVoxel, followFrame, desired, panels],
-  );
+  const sessionModeRef = useRef(session.mode);
+  if (mode !== "settings") sessionModeRef.current = mode;
 
-  const buildConfigRef = useRef(buildConfig);
-  buildConfigRef.current = buildConfig;
+  const buildSessionConfig = useCallback((): RobotSessionConfig => ({
+    id: session.id,
+    name: session.name,
+    url,
+    mode: mode === "settings" ? sessionModeRef.current : mode,
+    fixedFrame,
+    scene: {
+      groundVisible: settings.groundVisible,
+      tfAxesLineWidth: settings.tfAxesLineWidth,
+    },
+    urdfInspectorPercent: workspace.urdfInspectorPercent,
+    pcdVoxel,
+    followFrame,
+    activeTopics: [...desired].map(([topic, entry]) => ({
+      topic,
+      schemaName: entry.schemaName,
+      ...(entry.pointCloud ? { pointCloud: entry.pointCloud } : {}),
+    })),
+    panels: panels.map((panel) => ({ ...panel })),
+    dockLayout,
+    camera: sceneRef.current?.getCameraState() ?? savedCameraRef.current,
+  }), [desired, dockLayout, fixedFrame, followFrame, mode, panels, pcdVoxel, session.id, session.name, settings.groundVisible, settings.tfAxesLineWidth, url, workspace.urdfInspectorPercent]);
 
-  const applyConfig = useCallback((cfg: LayoutConfig, reconnect: boolean) => {
-    setUrl(cfg.url);
-    if (reconnect && cfg.url !== connectedUrlRef.current) {
-      connectedUrlRef.current = cfg.url;
-      setActiveBridgeUrl(cfg.url);
-      bridgeRef.current?.connect(cfg.url);
-    }
-    setTheme(cfg.theme);
-    setSettings(cfg.settings);
-    setWorkspace(cfg.workspace);
-    setPcdVoxel(cfg.pcdVoxel);
-    setFixedFrame(cfg.fixedFrame);
-    setFollowFrame(cfg.followFrame);
-    setDesired(
-      new Map(
-        cfg.activeTopics.map((t) => [
-          t.topic,
-          {
-            schemaName: t.schemaName,
-            ...(t.schemaName === "sensor_msgs/msg/PointCloud2"
-              ? {
-                  pointCloud:
-                    t.pointCloud ?? {
-                      ...DEFAULT_POINT_CLOUD_SETTINGS,
-                      accumulate: t.accumulate ?? false,
-                    },
-                }
-              : {}),
-          },
-        ]),
-      ),
-    );
-    setPanels(cfg.panels.map((p) => ({
-      id: nextPanelId.current++,
-      kind: p.kind,
-      state: p.state,
-      sizePercent: p.sizePercent,
-    })));
-    if (cfg.camera) sceneRef.current?.setCameraState(cfg.camera);
-  }, []);
-  applyConfigRef.current = applyConfig;
+  const buildSessionConfigRef = useRef(buildSessionConfig);
+  buildSessionConfigRef.current = buildSessionConfig;
 
   const saveConfig = useCallback(() => {
-    downloadBlob(
-      new Blob([serializeLayout(buildConfig())], { type: "application/json" }),
-      "robviz.json",
-    );
-  }, [buildConfig]);
+    onSaveAll(buildSessionConfig());
+  }, [buildSessionConfig, onSaveAll]);
 
   const openConfigFile = useCallback(
     async (file: File) => {
-      try {
-        applyConfig(parseLayout(await file.text()), true);
-        setLastError(undefined);
-      } catch (err) {
-        setLastError(err instanceof Error ? err.message : String(err));
-      }
+      onLoadAll(file);
     },
-    [applyConfig],
+    [onLoadAll],
   );
 
-  // 自动保存到 localStorage（debounce 1s，下次打开自动恢复）
+  const lastEmittedSessionRef = useRef("");
   useEffect(() => {
     if (!ready) return;
-    const timer = setTimeout(() => {
-      try {
-        localStorage.setItem(LAYOUT_KEY, serializeLayout(buildConfig()));
-      } catch {
-        /* 存储不可用时忽略 */
-      }
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [ready, buildConfig]);
-
-  // 关页前兜底保存（捕获最后的相机位姿）
-  useEffect(() => {
-    const save = () => {
-      try {
-        localStorage.setItem(LAYOUT_KEY, serializeLayout(buildConfigRef.current()));
-      } catch {
-        /* ignore */
-      }
+    const emit = () => {
+      const snapshot = buildSessionConfigRef.current();
+      const serialized = JSON.stringify(snapshot);
+      if (serialized === lastEmittedSessionRef.current) return;
+      lastEmittedSessionRef.current = serialized;
+      onSessionChange(snapshot);
     };
-    window.addEventListener("beforeunload", save);
-    return () => window.removeEventListener("beforeunload", save);
-  }, []);
+    emit();
+    const timer = setInterval(emit, 1000);
+    return () => clearInterval(timer);
+  }, [onSessionChange, ready]);
 
   // ---- PCD 加载 / 清理 ----
 
@@ -769,15 +868,19 @@ export default function App() {
   // ---- 面板坞 ----
 
   const addPanel = useCallback((kind: string) => {
-    setPanels((prev) => [...prev, { id: nextPanelId.current++, kind }]);
+    setPanels((current) => {
+      if (!canAddPanel(current, kind)) return current;
+      const id = createPanelId(kind, new Set(current.map((panel) => panel.id)));
+      return [...current, { id, kind }];
+    });
   }, []);
 
-  const removePanel = useCallback((id: number) => {
+  const removePanel = useCallback((id: string) => {
     setPanels((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
   /** 面板内部状态快照上报（进配置文件） */
-  const updatePanelState = useCallback((id: number, state: unknown) => {
+  const updatePanelState = useCallback((id: string, state: unknown) => {
     setPanels((prev) => prev.map((p) => (p.id === id ? { ...p, state } : p)));
   }, []);
 
@@ -792,12 +895,13 @@ export default function App() {
 
   const resetWorkspaceLayout = useCallback(() => {
     setWorkspace({ ...DEFAULT_WORKSPACE_LAYOUT });
-    setPanels((current) => current.map((panel) => ({ ...panel, sizePercent: undefined })));
+    setDockLayout(undefined);
   }, []);
 
   const dataTopics = topics
     .filter((t) => !TF_TOPICS.has(t.topic))
     .sort((a, b) => a.topic.localeCompare(b.topic));
+  const hasThreeDPanel = panels.some((panel) => panel.kind === "3d");
 
   const allPluginPanelKinds = useMemo(
     () => new Set(plugins.flatMap((plugin) => (plugin.panels ?? []).map((panel) => `${plugin.id}:${panel.kind}`))),
@@ -807,28 +911,12 @@ export default function App() {
     () => new Set(resolvedPlugins.panels.map((panel) => panel.kind)),
     [resolvedPlugins.panels],
   );
-  const visiblePanels = panels.filter((panel) =>
-    panel.kind === "image" || panel.kind === "plot" || !allPluginPanelKinds.has(panel.kind) || activePluginPanelKinds.has(panel.kind),
-  );
-  const dockDefaultLayout = useMemo(() => buildPanelLayout(visiblePanels), [visiblePanels]);
-
-  const updateDockLayout = useCallback((layout: Record<string, number>) => {
-    setPanels((current) => applyPanelLayout(current, layout));
-  }, []);
-
-  useEffect(() => {
-    setGroupLayout(mainGroupRef.current, {
-      center: 100 - workspace.sidebarPercent,
-      sidebar: workspace.sidebarPercent,
-    });
-    if (visiblePanels.length > 0) {
-      setGroupLayout(centerGroupRef.current, {
-        viewport: 100 - workspace.dockPercent,
-        dock: workspace.dockPercent,
-      });
-      setGroupLayout(dockGroupRef.current, dockDefaultLayout);
+  const visiblePanels = panels.filter((panel) => {
+    if (panel.kind.startsWith("plugin-section:")) {
+      return resolvedPlugins.sections.some((section) => `plugin-section:${section.id}` === panel.kind);
     }
-  }, [workspace, visiblePanels.length, dockDefaultLayout, mainGroupRef, centerGroupRef, dockGroupRef]);
+    return panel.kind === "image" || panel.kind === "plot" || !allPluginPanelKinds.has(panel.kind) || activePluginPanelKinds.has(panel.kind);
+  });
 
   // 插件上下文（ready 后 refs 一定已就绪）
   const pluginCtx = useMemo<PluginContext | undefined>(() => {
@@ -842,6 +930,226 @@ export default function App() {
       locale: settings.language,
     };
   }, [ready, topics, fixedFrame, theme, settings.language]);
+
+  const knownPluginSectionsRef = useRef(new Set<string>());
+  useEffect(() => {
+    const additions: DockPanel[] = [];
+    for (const section of resolvedPlugins.sections) {
+      const kind = `plugin-section:${section.id}`;
+      if (knownPluginSectionsRef.current.has(kind)) continue;
+      knownPluginSectionsRef.current.add(kind);
+      additions.push({ id: kind, kind });
+    }
+    if (additions.length > 0) {
+      setPanels((current) => [
+        ...current,
+        ...additions.filter((addition) => !current.some((panel) => panel.kind === addition.kind)),
+      ]);
+    }
+  }, [resolvedPlugins.sections]);
+
+  const panelTitle = useCallback((kind: string) => {
+    if (kind === "3d") return t("view3d");
+    if (kind === "topics") return t("topics");
+    if (kind === "echo") return t("echoTopic");
+    if (kind === "teleop") return t("teleop");
+    if (kind === "services") return t("services");
+    if (kind === "tf-tree") return t("tfTree");
+    if (kind === "image") return t("imagePanel");
+    if (kind === "plot") return t("plotPanel");
+    if (kind.startsWith("plugin-section:")) {
+      return resolvedPlugins.sections.find((section) => `plugin-section:${section.id}` === kind)?.title ?? kind;
+    }
+    return resolvedPlugins.panels.find((panel) => panel.kind === kind)?.title ?? kind;
+  }, [resolvedPlugins.panels, resolvedPlugins.sections, t]);
+
+  const renderWorkspacePanel = useCallback((panel: WorkspacePanel) => {
+    const storedPanel = panels.find((candidate) => candidate.id === panel.id) ?? panel;
+
+    if (panel.kind === "3d") {
+      return (
+        <div className="workspace-panel">
+          <div className="viewport" onDoubleClick={onViewportDoubleClick}>
+            <canvas ref={attachSceneCanvas} />
+            <div className="nav-toolbar">
+              <button
+                className={navTool === "goal" ? "active" : ""}
+                onClick={() => setNavTool(navTool === "goal" ? undefined : "goal")}
+              >
+                {t("navigationGoal")}
+              </button>
+              <button
+                className={navTool === "initialpose" ? "active" : ""}
+                onClick={() => setNavTool(navTool === "initialpose" ? undefined : "initialpose")}
+              >
+                {t("initialPose")}
+              </button>
+              <button onClick={() => sceneRef.current?.resetView()} title={t("resetViewHint")}>
+                {t("resetView")}
+              </button>
+              <button
+                className={`icon-action ${settings.groundVisible ? "active" : ""}`}
+                onClick={() => setSettings((current) => ({ ...current, groundVisible: !current.groundVisible }))}
+                title={t("ground")}
+                aria-label={t("ground")}
+                aria-pressed={settings.groundVisible}
+              >
+                <Grid3X3 />
+              </button>
+              <label className={`field follow-field ${followFrame ? "following" : ""}`}>
+                {t("follow")}
+                <select value={followFrame ?? ""} onChange={(event) => setFollowFrame(event.target.value || undefined)}>
+                  <option value="">{t("off")}</option>
+                  {frames.map((frame) => <option key={frame} value={frame}>{frame}</option>)}
+                </select>
+              </label>
+              {navTool && <span className="nav-hint">{t("navHint")}</span>}
+            </div>
+            {(pcd || pcdBusy) && (
+              <div className="pcd-toolbar">
+                {pcdBusy ? <span className="pcd-status">{pcdBusy}</span> : pcd && (
+                  <>
+                    <span className="pcd-status">
+                      {pcd.name} · {t("pointsMillions", { count: (pcd.count / 1e6).toFixed(2) })}
+                      {pcd.rawCount !== pcd.count && t("originalPoints", { count: (pcd.rawCount / 1e6).toFixed(2) })}
+                    </span>
+                    <button className={pcdTool === "orbit" ? "active" : ""} onClick={() => setPcdTool("orbit")}>{t("browsing")}</button>
+                    <button className={pcdTool === "delete" ? "active" : ""} onClick={() => setPcdTool("delete")}>{t("boxDelete")}</button>
+                    <button className={pcdTool === "keep" ? "active" : ""} onClick={() => setPcdTool("keep")}>{t("boxKeep")}</button>
+                    <button onClick={pcdUndo} disabled={pcd.undoDepth === 0}>{t("undoCount", { count: pcd.undoDepth })}</button>
+                    <button onClick={pcdExport}>{t("export")}</button>
+                    <button onClick={closePcd}>{t("close")}</button>
+                  </>
+                )}
+              </div>
+            )}
+            {pcd && pcdTool !== "orbit" && !navTool && (
+              <div className="select-overlay" onPointerDown={onSelectDown} onPointerMove={onSelectMove} onPointerUp={onSelectUp}>
+                {selectRect && <div className="select-rect" style={{ left: selectRect.x, top: selectRect.y, width: selectRect.w, height: selectRect.h }} />}
+              </div>
+            )}
+            {navTool && (
+              <div className="select-overlay nav-overlay" onPointerDown={onNavDown} onPointerMove={onNavMove} onPointerUp={onNavUp}>
+                {navPreview && navPreview.len > 4 && (
+                  <div className="nav-arrow" style={{ left: navPreview.x, top: navPreview.y, width: navPreview.len, transform: `rotate(${navPreview.yawDeg}deg)` }} />
+                )}
+              </div>
+            )}
+            <div className="hud">
+              {sceneStats.brokenFrames.length > 0 && <div className="warn">{t("tfBroken", { frames: sceneStats.brokenFrames.join(", ") })}</div>}
+              {streamStats && streamStats.lagMs > 200 && <div className="warn">{t("networkLag", { ms: streamStats.lagMs })}</div>}
+              {streamStats && streamStats.totalHz > 0 && (
+                <div>
+                  {(streamStats.totalKbps / 1024).toFixed(1)} MB/s · {Math.round(streamStats.totalHz)} msg/s
+                  {streamStats.totalDropsPerSec > 0 && ` · ${t("dropped", { count: Math.round(streamStats.totalDropsPerSec) })}`}
+                  {` · ${t("lagStat", { ms: streamStats.lagMs })}`}
+                </div>
+              )}
+              <div>render {sceneStats.renderHz}/s · {t("tfSmoothing", { ms: sceneStats.tfDelayMs })}</div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    if (panel.kind === "topics") {
+      return (
+        <div className="workspace-panel utility-panel">
+          {dataTopics.length === 0 && <p className="empty-hint">{t("noTopics")}</p>}
+          {dataTopics.map(({ topic, schemaName }) => {
+            const displayable = schemaName in displayFactories;
+            const isActive = desired.has(topic);
+            const topicStat = streamStats?.topics[topic];
+            return (
+              <div key={topic}>
+                <button
+                  className={`topic-row ${isActive ? "active" : ""} ${displayable ? "" : "disabled"}`}
+                  onClick={() => displayable && toggleTopic(topic, schemaName)}
+                  disabled={!displayable}
+                >
+                  <span className="check">{isActive ? "✓" : ""}</span>
+                  <span className="name">{topic}</span>
+                  <span className="schema">{topicStat ? `${topicStat.hz.toFixed(0)} Hz` : schemaName.split("/").pop()}</span>
+                </button>
+                {isActive && schemaName === "sensor_msgs/msg/PointCloud2" && (() => {
+                  const renderer = sceneRef.current?.getDisplay(topic);
+                  const pointCloudRenderer = renderer instanceof PointCloudRenderer ? renderer : undefined;
+                  return (
+                    <PointCloudSettingsPanel
+                      settings={desired.get(topic)?.pointCloud ?? DEFAULT_POINT_CLOUD_SETTINGS}
+                      colorField={pointCloudRenderer?.colorField}
+                      autoRange={pointCloudRenderer?.autoRange ?? [0, 1]}
+                      onChange={(next) => updatePointCloudSettings(topic, next)}
+                      onClear={() => { pointCloudRenderer?.clear(); sceneRef.current?.invalidate(); }}
+                    />
+                  );
+                })()}
+              </div>
+            );
+          })}
+          {lastError && <p className="error-line">{lastError}</p>}
+        </div>
+      );
+    }
+
+    if (panel.kind === "echo" && ready) {
+      return <div className="workspace-panel utility-panel"><EchoTopicSection bridge={bridgeRef.current!} topics={topics} /></div>;
+    }
+    if (panel.kind === "teleop" && ready) {
+      return <div className="workspace-panel utility-panel"><TeleopSection bridge={bridgeRef.current!} /></div>;
+    }
+    if (panel.kind === "services" && ready) {
+      return <div className="workspace-panel utility-panel"><ServiceSection bridge={bridgeRef.current!} services={services} /></div>;
+    }
+    if (panel.kind === "tf-tree") {
+      return (
+        <div className="workspace-panel utility-panel">
+          <TfTreeSection tree={tfTree} followFrame={followFrame} onFollow={(frame) => setFollowFrame((current) => current === frame ? undefined : frame)} />
+        </div>
+      );
+    }
+    if (panel.kind === "image" && ready) {
+      return (
+        <ImagePanel
+          embedded
+          bridge={bridgeRef.current!}
+          topics={topics}
+          initialTopic={(storedPanel.state as { topic?: string } | undefined)?.topic}
+          onTopicChange={(topic) => updatePanelState(panel.id, { topic })}
+          onClose={() => removePanel(panel.id)}
+        />
+      );
+    }
+    if (panel.kind === "plot" && ready) {
+      return (
+        <PlotPanel
+          embedded
+          bridge={bridgeRef.current!}
+          topics={topics}
+          theme={theme}
+          initialSeries={(storedPanel.state as { series?: Array<{ topic: string; field: string }> } | undefined)?.series}
+          onSeriesChange={(series) => updatePanelState(panel.id, { series })}
+          onClose={() => removePanel(panel.id)}
+        />
+      );
+    }
+    if (panel.kind.startsWith("plugin-section:") && pluginCtx) {
+      const section = resolvedPlugins.sections.find((candidate) => `plugin-section:${candidate.id}` === panel.kind);
+      return section ? <div className="workspace-panel utility-panel"><section.component ctx={pluginCtx} /></div> : null;
+    }
+    const pluginPanel = resolvedPlugins.panels.find((candidate) => candidate.kind === panel.kind);
+    if (pluginPanel && pluginCtx) {
+      return (
+        <pluginPanel.component
+          ctx={pluginCtx}
+          state={storedPanel.state}
+          onStateChange={(state) => updatePanelState(panel.id, state)}
+          onClose={() => removePanel(panel.id)}
+        />
+      );
+    }
+    return <div className="workspace-panel"><p className="empty-hint">{t("unknownPanel", { kind: panel.kind })}</p></div>;
+  }, [attachSceneCanvas, closePcd, dataTopics, desired, displayFactories, followFrame, frames, lastError, navPreview, navTool, onNavDown, onNavMove, onNavUp, onSelectDown, onSelectMove, onSelectUp, onViewportDoubleClick, panels, pcd, pcdBusy, pcdExport, pcdTool, pcdUndo, pluginCtx, ready, removePanel, resolvedPlugins.panels, resolvedPlugins.sections, sceneStats, selectRect, services, settings.groundVisible, streamStats, t, tfTree, theme, toggleTopic, topics, updatePanelState, updatePointCloudSettings]);
 
   return (
     <I18nProvider locale={settings.language}>
@@ -859,6 +1167,50 @@ export default function App() {
             {t("urdfEditor")}
           </button>
         </nav>
+        {mode === "3d" && (
+          <details className="panel-menu">
+            <summary title={t("addPanel")}>
+              <PanelTopOpen /> {t("addPanel")}
+            </summary>
+            <div className="panel-menu-popover" role="menu">
+              {[
+                ["3d", t("view3d")],
+                ["topics", t("topics")],
+                ["echo", t("echoTopic")],
+                ["teleop", t("teleop")],
+                ["services", t("services")],
+                ["tf-tree", t("tfTree")],
+                ["image", t("imagePanel")],
+                ["plot", t("plotPanel")],
+              ].map(([kind, label]) => (
+                <button
+                  key={kind}
+                  role="menuitem"
+                  onClick={(event) => {
+                    addPanel(kind);
+                    event.currentTarget.closest("details")?.removeAttribute("open");
+                  }}
+                  disabled={!canAddPanel(panels, kind)}
+                >
+                  {label}
+                </button>
+              ))}
+              {resolvedPlugins.panels.map((pluginPanel) => (
+                <button key={pluginPanel.kind} role="menuitem" onClick={() => addPanel(pluginPanel.kind)}>
+                  {pluginPanel.title}
+                </button>
+              ))}
+              {resolvedPlugins.sections.map((section) => {
+                const kind = `plugin-section:${section.id}`;
+                return (
+                  <button key={kind} role="menuitem" onClick={() => addPanel(kind)} disabled={!canAddPanel(panels, kind)}>
+                    {section.title}
+                  </button>
+                );
+              })}
+            </div>
+          </details>
+        )}
         <input
           value={url}
           onChange={(e) => setUrl(e.target.value)}
@@ -888,7 +1240,7 @@ export default function App() {
             e.target.value = "";
           }}
         />
-        {mode === "3d" && (
+        {mode === "3d" && hasThreeDPanel && (
           <>
             <label className="field">
               {t("downsample")}
@@ -951,357 +1303,24 @@ export default function App() {
       </header>
 
       <main className={`main mode-${mode}`}>
-        <div className="workspace-3d" style={mode !== "3d" ? { display: "none" } : undefined}>
-          <Group
-            id="main-workspace"
-            groupRef={mainGroupRef}
-            className="main-resizable-group"
-            orientation={isMobile ? "vertical" : "horizontal"}
-            disabled={isMobile}
-            defaultLayout={{ center: 100 - workspace.sidebarPercent, sidebar: workspace.sidebarPercent }}
-            resizeTargetMinimumSize={{ fine: 6, coarse: 20 }}
-            onLayoutChanged={(layout, meta) => {
-              if (meta.isUserInteraction) setWorkspace((current) => ({
-                ...current,
-                sidebarPercent: layoutPercent(layout, "sidebar"),
-              }));
-            }}
-          >
-          <Panel id="center" minSize={isMobile ? 0 : WORKSPACE_PANEL_MIN_SIZE.mainCenter}>
-          <div className="center">
-          <Group
-            id="center-workspace"
-            groupRef={centerGroupRef}
-            className="center-resizable-group"
-            orientation="vertical"
-            disabled={isMobile || visiblePanels.length === 0}
-            defaultLayout={{ viewport: 100 - workspace.dockPercent, dock: workspace.dockPercent }}
-            resizeTargetMinimumSize={{ fine: 6, coarse: 20 }}
-            onLayoutChanged={(layout, meta) => {
-              if (meta.isUserInteraction && "dock" in layout) setWorkspace((current) => ({
-                ...current,
-                dockPercent: layoutPercent(layout, "dock"),
-              }));
-            }}
-          >
-          <Panel id="viewport" minSize={isMobile ? 0 : WORKSPACE_PANEL_MIN_SIZE.viewport}>
-          <div className="viewport" onDoubleClick={onViewportDoubleClick}>
-            <canvas ref={canvasRef} />
-            {/* Nav 工具条 */}
-            <div className="nav-toolbar">
-              <button
-                className={navTool === "goal" ? "active" : ""}
-                onClick={() => setNavTool(navTool === "goal" ? undefined : "goal")}
-              >
-                {t("navigationGoal")}
-              </button>
-              <button
-                className={navTool === "initialpose" ? "active" : ""}
-                onClick={() => setNavTool(navTool === "initialpose" ? undefined : "initialpose")}
-              >
-                {t("initialPose")}
-              </button>
-              <button onClick={() => sceneRef.current?.resetView()} title={t("resetViewHint")}>
-                {t("resetView")}
-              </button>
-              <label className={`field follow-field ${followFrame ? "following" : ""}`}>
-                {t("follow")}
-                <select
-                  value={followFrame ?? ""}
-                  onChange={(e) => setFollowFrame(e.target.value || undefined)}
-                >
-                  <option value="">{t("off")}</option>
-                  {frames.map((f) => (
-                    <option key={f} value={f}>
-                      {f}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {navTool && <span className="nav-hint">{t("navHint")}</span>}
-            </div>
-            {(pcd || pcdBusy) && (
-              <div className="pcd-toolbar">
-                {pcdBusy ? (
-                  <span className="pcd-status">{pcdBusy}</span>
-                ) : (
-                  pcd && (
-                    <>
-                      <span className="pcd-status">
-                        {pcd.name} · {t("pointsMillions", { count: (pcd.count / 1e6).toFixed(2) })}
-                        {pcd.rawCount !== pcd.count &&
-                          t("originalPoints", { count: (pcd.rawCount / 1e6).toFixed(2) })}
-                      </span>
-                      <button
-                        className={pcdTool === "orbit" ? "active" : ""}
-                        onClick={() => setPcdTool("orbit")}
-                      >
-                        {t("browsing")}
-                      </button>
-                      <button
-                        className={pcdTool === "delete" ? "active" : ""}
-                        onClick={() => setPcdTool("delete")}
-                      >
-                        {t("boxDelete")}
-                      </button>
-                      <button
-                        className={pcdTool === "keep" ? "active" : ""}
-                        onClick={() => setPcdTool("keep")}
-                      >
-                        {t("boxKeep")}
-                      </button>
-                      <button onClick={pcdUndo} disabled={pcd.undoDepth === 0}>
-                        {t("undoCount", { count: pcd.undoDepth })}
-                      </button>
-                      <button onClick={pcdExport}>{t("export")}</button>
-                      <button onClick={closePcd}>{t("close")}</button>
-                    </>
-                  )
-                )}
-              </div>
-            )}
-            {pcd && pcdTool !== "orbit" && !navTool && (
-              <div
-                className="select-overlay"
-                onPointerDown={onSelectDown}
-                onPointerMove={onSelectMove}
-                onPointerUp={onSelectUp}
-              >
-                {selectRect && (
-                  <div
-                    className="select-rect"
-                    style={{
-                      left: selectRect.x,
-                      top: selectRect.y,
-                      width: selectRect.w,
-                      height: selectRect.h,
-                    }}
-                  />
-                )}
-              </div>
-            )}
-            {navTool && (
-              <div
-                className="select-overlay nav-overlay"
-                onPointerDown={onNavDown}
-                onPointerMove={onNavMove}
-                onPointerUp={onNavUp}
-              >
-                {navPreview && navPreview.len > 4 && (
-                  <div
-                    className="nav-arrow"
-                    style={{
-                      left: navPreview.x,
-                      top: navPreview.y,
-                      width: navPreview.len,
-                      transform: `rotate(${navPreview.yawDeg}deg)`,
-                    }}
-                  />
-                )}
-              </div>
-            )}
-            <div className="hud">
-              {sceneStats.brokenFrames.length > 0 && (
-                <div className="warn">{t("tfBroken", { frames: sceneStats.brokenFrames.join(", ") })}</div>
-              )}
-              {streamStats && streamStats.lagMs > 200 && (
-                <div className="warn">{t("networkLag", { ms: streamStats.lagMs })}</div>
-              )}
-              {streamStats && streamStats.totalHz > 0 && (
-                <div>
-                  {(streamStats.totalKbps / 1024).toFixed(1)} MB/s ·{" "}
-                  {Math.round(streamStats.totalHz)} msg/s
-                  {streamStats.totalDropsPerSec > 0 &&
-                    ` · ${t("dropped", { count: Math.round(streamStats.totalDropsPerSec) })}`}
-                  {` · ${t("lagStat", { ms: streamStats.lagMs })}`}
-                </div>
-              )}
-              <div>
-                render {sceneStats.renderHz}/s · {t("tfSmoothing", { ms: sceneStats.tfDelayMs })}
-              </div>
-            </div>
-          </div>
-          </Panel>
-
-          {/* 面板坞：图像 / 曲线 */}
-          {visiblePanels.length > 0 && ready && (
-            <>
-            <Separator className="resize-handle horizontal" />
-            <Panel id="dock" minSize={isMobile ? 0 : WORKSPACE_PANEL_MIN_SIZE.dock} maxSize="70%">
-            <div className="dock-scroll">
-            <Group
-              id="dock-workspace"
-              groupRef={dockGroupRef}
-              className="dock"
-              defaultLayout={dockDefaultLayout}
-              resizeTargetMinimumSize={{ fine: 6, coarse: 20 }}
-              disabled={isMobile}
-              onLayoutChanged={(layout, meta) => meta.isUserInteraction && updateDockLayout(layout)}
-              style={{ minWidth: `${Math.max(1, visiblePanels.length) * 220}px` }}
-            >
-              {visiblePanels.map((p, index) => {
-                const pluginPanel = resolvedPlugins.panels.find((pp) => pp.kind === p.kind);
-                const name =
-                  p.kind === "image"
-                    ? t("imagePanel")
-                    : p.kind === "plot"
-                      ? t("plotPanel")
-                      : (pluginPanel?.title ?? p.kind);
-                return (
-                  <Fragment key={p.id}>
-                  {index > 0 && <Separator className="resize-handle vertical" />}
-                  <Panel id={`dock-${p.id}`} minSize={WORKSPACE_PANEL_MIN_SIZE.dockPanel} defaultSize={`${p.sizePercent ?? 100 / visiblePanels.length}%`}>
-                  <ErrorBoundary name={name} onReset={() => removePanel(p.id)}>
-                    {p.kind === "image" ? (
-                      <ImagePanel
-                        bridge={bridgeRef.current!}
-                        topics={topics}
-                        initialTopic={(p.state as { topic?: string } | undefined)?.topic}
-                        onTopicChange={(t) => updatePanelState(p.id, { topic: t })}
-                        onClose={() => removePanel(p.id)}
-                      />
-                    ) : p.kind === "plot" ? (
-                      <PlotPanel
-                        bridge={bridgeRef.current!}
-                        topics={topics}
-                        theme={theme}
-                        initialSeries={
-                          (
-                            p.state as
-                              | { series?: Array<{ topic: string; field: string }> }
-                              | undefined
-                          )?.series
-                        }
-                        onSeriesChange={(series) => updatePanelState(p.id, { series })}
-                        onClose={() => removePanel(p.id)}
-                      />
-                    ) : pluginPanel && pluginCtx ? (
-                      <pluginPanel.component
-                        ctx={pluginCtx}
-                        state={p.state}
-                        onStateChange={(s) => updatePanelState(p.id, s)}
-                        onClose={() => removePanel(p.id)}
-                      />
-                    ) : (
-                      <div className="panel">
-                        <div className="panel-header">
-                          <span className="panel-meta">{t("unknownPanel", { kind: p.kind })}</span>
-                          <span className="spacer" />
-                          <button className="panel-close" onClick={() => removePanel(p.id)}>
-                            ×
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </ErrorBoundary>
-                  </Panel>
-                  </Fragment>
-                );
-              })}
-            </Group>
-            </div>
-            </Panel>
-            </>
-          )}
-          </Group>
-        </div>
-        </Panel>
-
-          <Separator className="resize-handle vertical" />
-          <Panel id="sidebar" minSize={isMobile ? 0 : WORKSPACE_PANEL_MIN_SIZE.sidebar} maxSize="50%">
-          <aside className="sidebar">
-            <CollapsibleSection title={t("topics")}>
-              {dataTopics.length === 0 && (
-                <p className="empty-hint">{t("noTopics")}</p>
-              )}
-              {dataTopics.map(({ topic, schemaName }) => {
-                const displayable = schemaName in displayFactories;
-                const isActive = desired.has(topic);
-                const shortSchema = schemaName.split("/").pop();
-                const topicStat = streamStats?.topics[topic];
-                return (
-                  <div key={topic}>
-                    <button
-                      className={`topic-row ${isActive ? "active" : ""} ${displayable ? "" : "disabled"}`}
-                      onClick={() => displayable && toggleTopic(topic, schemaName)}
-                      disabled={!displayable}
-                    >
-                      <span className="check">{isActive ? "✓" : ""}</span>
-                      <span className="name">{topic}</span>
-                      <span className="schema">
-                        {topicStat ? `${topicStat.hz.toFixed(0)} Hz` : shortSchema}
-                      </span>
-                    </button>
-                    {isActive && schemaName === "sensor_msgs/msg/PointCloud2" && (() => {
-                      const renderer = sceneRef.current?.getDisplay(topic);
-                      const pointCloudRenderer = renderer instanceof PointCloudRenderer ? renderer : undefined;
-                      return (
-                        <PointCloudSettingsPanel
-                          settings={desired.get(topic)?.pointCloud ?? DEFAULT_POINT_CLOUD_SETTINGS}
-                          colorField={pointCloudRenderer?.colorField}
-                          autoRange={pointCloudRenderer?.autoRange ?? [0, 1]}
-                          onChange={(settings) => updatePointCloudSettings(topic, settings)}
-                          onClear={() => {
-                            pointCloudRenderer?.clear();
-                            sceneRef.current?.invalidate();
-                          }}
-                        />
-                      );
-                    })()}
-                  </div>
-                );
-              })}
-              {lastError && <p className="error-line">{lastError}</p>}
-            </CollapsibleSection>
-
-            {ready && (
-              <ErrorBoundary name={t("echoTopic")}>
-                <EchoTopicSection bridge={bridgeRef.current!} topics={topics} />
+        {mode === "3d" && (
+          <WorkspaceDock
+            panels={visiblePanels}
+            layout={dockLayout}
+            theme={theme}
+            titleForKind={panelTitle}
+            renderPanel={(panel) => (
+              <ErrorBoundary name={panelTitle(panel.kind)} onReset={() => removePanel(panel.id)}>
+                {renderWorkspacePanel(panel)}
               </ErrorBoundary>
             )}
-
-            <CollapsibleSection title={t("panelsSection")}>
-              <div className="side-row">
-                <button onClick={() => addPanel("image")}>{t("addImage")}</button>
-                <button onClick={() => addPanel("plot")}>{t("addPlot")}</button>
-                {resolvedPlugins.panels.map((pp) => (
-                  <button key={pp.kind} onClick={() => addPanel(pp.kind)}>
-                    {t("addPluginPanel", { title: pp.title })}
-                  </button>
-                ))}
-              </div>
-            </CollapsibleSection>
-
-            {ready && (
-              <ErrorBoundary name={t("teleop")}>
-                <TeleopSection bridge={bridgeRef.current!} />
-              </ErrorBoundary>
-            )}
-            {ready && (
-              <ErrorBoundary name={t("services")}>
-                <ServiceSection bridge={bridgeRef.current!} services={services} />
-              </ErrorBoundary>
-            )}
-            <ErrorBoundary name={t("tfTree")}>
-              <TfTreeSection
-                tree={tfTree}
-                followFrame={followFrame}
-                onFollow={(f) => setFollowFrame((prev) => (prev === f ? undefined : f))}
-              />
-            </ErrorBoundary>
-            {/* 插件侧栏区块（各自隔离，崩溃不影响主体） */}
-            {pluginCtx &&
-              resolvedPlugins.sections.map((s) => (
-                <ErrorBoundary key={s.id} name={s.title}>
-                  <CollapsibleSection title={s.title}>
-                    <s.component ctx={pluginCtx} />
-                  </CollapsibleSection>
-                </ErrorBoundary>
-              ))}
-          </aside>
-          </Panel>
-          </Group>
-        </div>
+            onPanelClosed={removePanel}
+            onLayoutChange={setDockLayout}
+            onInvalidLayout={() => setDockLayout(undefined)}
+            maximizeLabel={t("maximizePanel")}
+            restoreLabel={t("restorePanel")}
+          />
+        )}
 
         {mode === "map" && ready && (
           <ErrorBoundary name={t("mapEditor")}>
@@ -1352,5 +1371,193 @@ export default function App() {
       )}
     </div>
     </I18nProvider>
+  );
+}
+
+export default function App() {
+  const [config, setConfig] = useState<AppConfig>(readStoredAppConfig);
+  const configRef = useRef(config);
+  configRef.current = config;
+  const [connectionStates, setConnectionStates] = useState<Record<string, ConnectionState>>({});
+  const [runtimeGeneration, setRuntimeGeneration] = useState(0);
+  const [renamingId, setRenamingId] = useState<string>();
+  const [renameValue, setRenameValue] = useState("");
+  const [configError, setConfigError] = useState<string>();
+  const t = useMemo(
+    () => (key: Parameters<typeof translate>[1], values?: Record<string, string | number>) =>
+      translate(config.settings.language, key, values),
+    [config.settings.language],
+  );
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        localStorage.setItem(LAYOUT_KEY, serializeAppConfig(config));
+      } catch {
+        /* 存储不可用时忽略 */
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [config]);
+
+  const updateSession = useCallback((nextSession: RobotSessionConfig) => {
+    setConfig((current) => {
+      const previous = current.sessions.find((candidate) => candidate.id === nextSession.id);
+      if (previous && JSON.stringify(previous) === JSON.stringify(nextSession)) return current;
+      return {
+        ...current,
+        sessions: current.sessions.map((candidate) => candidate.id === nextSession.id ? nextSession : candidate),
+      };
+    });
+  }, []);
+
+  const updateConnectionState = useCallback((id: string, state: ConnectionState) => {
+    setConnectionStates((current) => current[id] === state ? current : { ...current, [id]: state });
+  }, []);
+
+  const updateTheme = useCallback((theme: Theme) => {
+    setConfig((current) => current.theme === theme ? current : { ...current, theme });
+  }, []);
+
+  const updateGlobalSettings = useCallback((settings: AppConfig["settings"]) => {
+    setConfig((current) => (
+      current.settings.language === settings.language &&
+      current.settings.disabledPluginIds.join("\0") === settings.disabledPluginIds.join("\0")
+        ? current
+        : { ...current, settings }
+    ));
+  }, []);
+
+  const addSession = useCallback(() => {
+    setConfig((current) => {
+      const session = createDefaultSession(createSessionId(), `机器 ${current.sessions.length + 1}`);
+      return { ...current, activeSessionId: session.id, sessions: [...current.sessions, session] };
+    });
+  }, []);
+
+  const closeSession = useCallback((id: string) => {
+    setConfig((current) => {
+      if (current.sessions.length === 1) return current;
+      const index = current.sessions.findIndex((session) => session.id === id);
+      const sessions = current.sessions.filter((session) => session.id !== id);
+      const activeSessionId = current.activeSessionId === id
+        ? sessions[Math.min(Math.max(0, index), sessions.length - 1)].id
+        : current.activeSessionId;
+      return { ...current, activeSessionId, sessions };
+    });
+    setConnectionStates((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+  }, []);
+
+  const commitRename = useCallback(() => {
+    const name = renameValue.trim();
+    if (renamingId && name) {
+      setConfig((current) => ({
+        ...current,
+        sessions: current.sessions.map((session) => session.id === renamingId ? { ...session, name } : session),
+      }));
+    }
+    setRenamingId(undefined);
+  }, [renameValue, renamingId]);
+
+  const saveAll = useCallback((currentSession: RobotSessionConfig) => {
+    const current = configRef.current;
+    const next = {
+      ...current,
+      sessions: current.sessions.map((session) => session.id === currentSession.id ? currentSession : session),
+    };
+    setConfig(next);
+    downloadBlob(new Blob([serializeAppConfig(next)], { type: "application/json" }), "robviz.json");
+  }, []);
+
+  const loadAll = useCallback(async (file: File) => {
+    try {
+      const next = parseAppConfig(await file.text());
+      setConfig(next);
+      setConnectionStates({});
+      setRuntimeGeneration((current) => current + 1);
+      setConfigError(undefined);
+    } catch (error) {
+      setConfigError(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  return (
+    <div className="app-shell">
+      <div className="session-tabs" role="tablist" aria-label={t("machines")}>
+        {config.sessions.map((session) => {
+          const active = session.id === config.activeSessionId;
+          const state = connectionStates[session.id] ?? "connecting";
+          return (
+            <div
+              key={session.id}
+              className={`session-tab ${active ? "active" : ""}`}
+              role="tab"
+              aria-selected={active}
+              tabIndex={active ? 0 : -1}
+              onClick={() => setConfig((current) => ({ ...current, activeSessionId: session.id }))}
+              onDoubleClick={() => { setRenamingId(session.id); setRenameValue(session.name); }}
+            >
+              <span className={`session-status ${state}`} aria-hidden="true" />
+              {renamingId === session.id ? (
+                <input
+                  value={renameValue}
+                  autoFocus
+                  aria-label={t("renameMachine")}
+                  onChange={(event) => setRenameValue(event.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") commitRename();
+                    if (event.key === "Escape") setRenamingId(undefined);
+                  }}
+                  onClick={(event) => event.stopPropagation()}
+                />
+              ) : (
+                <span className="session-name" title={`${session.name} · ${session.url}`}>{session.name}</span>
+              )}
+              {config.sessions.length > 1 && (
+                <button
+                  className="session-close"
+                  title={t("closeMachine")}
+                  aria-label={t("closeMachine")}
+                  onClick={(event) => { event.stopPropagation(); closeSession(session.id); }}
+                >
+                  <X />
+                </button>
+              )}
+            </div>
+          );
+        })}
+        <button className="session-add" onClick={addSession} title={t("addMachine")} aria-label={t("addMachine")}>
+          <Plus />
+        </button>
+        {configError && <span className="session-error" role="alert">{configError}</span>}
+      </div>
+      <div className="session-stack">
+        {config.sessions.map((session) => {
+          const active = session.id === config.activeSessionId;
+          return (
+            <div key={session.id} className={`session-host ${active ? "active" : "inactive"}`} aria-hidden={!active}>
+              <RobotSessionApp
+                key={`${runtimeGeneration}:${session.id}`}
+                session={session}
+                active={active}
+                globalTheme={config.theme}
+                globalSettings={config.settings}
+                onSessionChange={updateSession}
+                onConnectionStateChange={updateConnectionState}
+                onThemeChange={updateTheme}
+                onGlobalSettingsChange={updateGlobalSettings}
+                onSaveAll={saveAll}
+                onLoadAll={loadAll}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }

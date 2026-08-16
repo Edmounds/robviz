@@ -40,7 +40,7 @@ export interface PluginPanelProps {
   onClose: () => void;
 }
 
-/** 侧栏常驻区块 props */
+/** 单实例停靠区块 props（为兼容已有插件保留原接口名） */
 export interface PluginSectionProps {
   ctx: PluginContext;
 }
@@ -52,8 +52,8 @@ export interface RobvizPlugin {
   name: string;
   /** 3D 显示器：按消息 schema 注册，出现在话题列表里可勾选 */
   displays?: Array<{ schema: string; create: () => Display }>;
-  /** 面板坞面板：出现在侧栏"面板"区的添加按钮里 */
+  /** 可多开停靠面板：出现在顶栏“添加面板”菜单 */
   panels?: Array<{ kind: string; title: string; component: ComponentType<PluginPanelProps> }>;
-  /** 侧栏常驻区块（如内置的 Teleop / 服务） */
+  /** 单实例停靠区块（可移动、关闭和重新添加） */
   sections?: Array<{ id: string; title: string; component: ComponentType<PluginSectionProps> }>;
 }

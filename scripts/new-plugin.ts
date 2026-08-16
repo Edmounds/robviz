@@ -1,6 +1,6 @@
 /**
  * 插件脚手架：npm run plugin:new <id>
- * 生成 src/plugins/<id>/index.tsx 骨架（侧栏区块形态，最易上手；
+ * 生成 src/plugins/<id>/index.tsx 骨架（单实例停靠区块形态，最易上手；
  * 面板/3D 显示器形态见 docs/04-plugin-guide.md）。
  */
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -50,7 +50,7 @@ const plugin: RobvizPlugin = {
   id: "${id}",
   name: "${id}",
   sections: [{ id: "main", title: "${id}", component: Section }],
-  // panels: [...]   面板坞面板
+  // panels: [...]   可多开停靠面板（内容无需自带标题栏）
   // displays: [...] 3D 显示器
 };
 

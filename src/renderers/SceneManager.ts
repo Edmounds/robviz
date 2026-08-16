@@ -69,6 +69,7 @@ export class SceneManager {
   #tf: TfBuffer;
   #tfAxes: TfAxesRenderer;
   #running = true;
+  #active = true;
   #dirty = true;
   #renderCount = 0;
   #lastStatsAt = performance.now();
@@ -155,7 +156,7 @@ export class SceneManager {
 
     const loop = () => {
       if (!this.#running) return;
-      this.#tick();
+      if (this.#active) this.#tick();
       requestAnimationFrame(loop);
     };
     requestAnimationFrame(loop);
@@ -228,6 +229,11 @@ export class SceneManager {
 
   invalidate(): void {
     this.#dirty = true;
+  }
+
+  setActive(active: boolean): void {
+    this.#active = active;
+    if (active) this.#dirty = true;
   }
 
   // ---- 相机动画 ----

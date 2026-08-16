@@ -33,8 +33,11 @@ interface RobvizPlugin {
 | 扩展点 | 出现位置 | 适合做什么 |
 | --- | --- | --- |
 | `displays` | 话题列表（该 schema 的话题可勾选显示） | 自定义消息类型的 3D 可视化 |
-| `panels` | 侧栏"面板"区的添加按钮 → 底部面板坞 | 需要较大画面的内容（自定义图表、视频、表格） |
-| `sections` | 右侧侧栏常驻区块（同 Teleop / 服务） | 小型状态显示、控制开关 |
+| `panels` | 顶栏“添加面板”菜单；允许创建多个停靠实例 | 需要较大画面的内容（自定义图表、视频、表格） |
+| `sections` | 顶栏“添加面板”菜单；单实例停靠面板 | 小型状态显示、控制开关 |
+
+两类组件都保留原有 props。区别只在宿主生命周期：`panels` 可多开，每个实例有独立 `state`；
+`sections` 以 `<plugin-id>:<section-id>` 为稳定单例，用户可以移动、合并标签、最大化、关闭并重新添加。
 
 ### PluginContext（宿主能力）
 
@@ -94,7 +97,7 @@ state 必须是可 JSON 序列化的普通对象。
 
 ### 运行时启停
 
-用户可在“设置 → 插件”中立即启用或停用已打包插件。停用会卸载该插件的面板和侧栏区块，
+用户可在“设置 → 插件”中立即启用或停用已打包插件。停用会卸载该插件的面板和单实例区块，
 并销毁其 3D display；重新启用后，宿主会恢复已保存的面板状态、尺寸和 display 目标话题。
 插件仍由 Vite 在构建期发现，设置页不负责安装、删除或运行时扫描文件夹。
 
@@ -104,12 +107,12 @@ WebSocket 或 DOM 监听。把副作用放进 React `useEffect` 或 display 生�
 
 ## 2. 三类扩展点示例
 
-### 侧栏区块（最简单，从这里开始）
+### 单实例区块（最简单，从这里开始）
 
 完整可运行的例子：[src/plugins/example-odom-hud/index.tsx](../src/plugins/example-odom-hud/index.tsx)
 （订阅 Odometry 显示速度，约 60 行）。
 
-### 面板坞面板
+### 可多开停靠面板
 
 ```tsx
 const plugin: RobvizPlugin = {
@@ -119,8 +122,8 @@ const plugin: RobvizPlugin = {
 };
 ```
 
-面板外层容器用 `className="panel"`，标题栏用 `panel-header`（含关闭按钮调 `onClose`），
-主体用 `panel-body`，即可获得与内置面板一致的外观。
+Dockview 已提供标题、关闭、拖拽和最大化控件。插件组件只渲染内容工具栏与主体，不要再创建
+`panel-header` 或第二层可折叠外框；需要程序化关闭时仍可调用现有 `onClose` prop。
 
 ### 3D 显示器
 

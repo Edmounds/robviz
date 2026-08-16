@@ -52,6 +52,7 @@ export interface PlotSeriesConfig {
 }
 
 export function PlotPanel({
+  embedded = false,
   bridge,
   topics,
   theme = "dark",
@@ -59,6 +60,7 @@ export function PlotPanel({
   onSeriesChange,
   onClose,
 }: {
+  embedded?: boolean;
   bridge: WorkerBridge;
   topics: TopicInfo[];
   theme?: "dark" | "light";
@@ -295,6 +297,7 @@ export function PlotPanel({
     <CollapsiblePanel
       title={t("plotPanel")}
       onClose={onClose}
+      embedded={embedded}
       header={
         <>
         <select value={newTopic} onChange={(event) => setNewTopic(event.target.value)}>

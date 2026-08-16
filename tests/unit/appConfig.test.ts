@@ -69,6 +69,11 @@ describe("appConfig", () => {
       kind: "image",
       state: { topic: "/camera/image_raw" },
     });
+    const dockLayout = migrated.sessions[0].dockLayout as {
+      grid: { root: { data: Array<{ size: number; data?: Array<{ size: number }> }> } };
+    };
+    expect(dockLayout.grid.root.data.map((item) => item.size)).toEqual([760, 240]);
+    expect(dockLayout.grid.root.data[0].data?.map((item) => item.size)).toEqual([580, 420]);
   });
 
   it("rejects v2 workspaces whose active session does not exist", () => {

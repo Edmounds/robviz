@@ -13,6 +13,7 @@ import { CollapsiblePanel } from "../app/CollapsiblePanel";
 import { useI18n } from "../app/i18n";
 
 const IMAGE_SCHEMAS = new Set(["sensor_msgs/msg/Image", "sensor_msgs/msg/CompressedImage"]);
+const IMAGE_MAX_FREQUENCY = 5;
 
 interface HoverInfo {
   x: number;
@@ -124,12 +125,14 @@ function pixelText(frame: RawFrame, px: number, py: number): string {
 }
 
 export function ImagePanel({
+  embedded = false,
   bridge,
   topics,
   initialTopic,
   onTopicChange,
   onClose,
 }: {
+  embedded?: boolean;
   bridge: WorkerBridge;
   topics: TopicInfo[];
   /** 配置恢复：初始选中的话题 */
@@ -142,6 +145,7 @@ export function ImagePanel({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<RawFrame>(null);
   const [topic, setTopic] = useState(initialTopic ?? "");
+  const [collapsed, setCollapsed] = useState(false);
   const [hover, setHover] = useState<HoverInfo>();
   const [meta, setMeta] = useState<string>("");
 
@@ -154,7 +158,7 @@ export function ImagePanel({
   const imageTopics = topics.filter((t) => IMAGE_SCHEMAS.has(t.schemaName));
 
   useEffect(() => {
-    if (!topic) return;
+    if (!topic || collapsed) return;
     const canvas = canvasRef.current!;
     const ctx = canvas.getContext("2d")!;
 
@@ -191,12 +195,12 @@ export function ImagePanel({
             (range ? ` · ${range[0].toFixed(2)}~${range[1].toFixed(2)}` : ""),
         );
       }
-    });
+    }, { maxFrequency: IMAGE_MAX_FREQUENCY });
     return () => {
       unsub();
       frameRef.current = null;
     };
-  }, [bridge, topic]);
+  }, [bridge, collapsed, topic]);
 
   const onMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const frame = frameRef.current;
@@ -219,12 +223,8 @@ export function ImagePanel({
     });
   }, []);
 
-  return (
-    <CollapsiblePanel
-      title={t("imagePanel")}
-      onClose={onClose}
-      header={
-        <>
+  const header = (
+    <>
         <select value={topic} onChange={(e) => setTopic(e.target.value)}>
           <option value="">{t("chooseImageTopic")}</option>
           {imageTopics.map((t) => (
@@ -234,9 +234,9 @@ export function ImagePanel({
           ))}
         </select>
         <span className="panel-meta">{meta}</span>
-        </>
-      }
-    >
+    </>
+  );
+  const content = (
       <div className="panel-body image-body">
         <canvas ref={canvasRef} onMouseMove={onMove} onMouseLeave={() => setHover(undefined)} />
         {hover && (
@@ -245,6 +245,25 @@ export function ImagePanel({
           </div>
         )}
       </div>
+  );
+
+  if (embedded) {
+    return (
+      <div className="panel dock-panel-content">
+        <div className="panel-header">{header}</div>
+        <div className="panel-content">{content}</div>
+      </div>
+    );
+  }
+
+  return (
+    <CollapsiblePanel
+      title={t("imagePanel")}
+      onClose={onClose}
+      onCollapsedChange={setCollapsed}
+      header={header}
+    >
+      {content}
     </CollapsiblePanel>
   );
 }

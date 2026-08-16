@@ -6,7 +6,12 @@
  * - cloud/grid 大负载挂到 per-topic 最新槽，由渲染循环开头统一消费
  *   （flushFrame），两帧之间到达多帧只留最新，被覆盖的立即归还缓冲池。
  */
-import type { ConnectionState, ServiceInfo, TopicInfo } from "../core/FoxgloveConnection";
+import type {
+  ConnectionState,
+  ServiceInfo,
+  SubscribeOptions,
+  TopicInfo,
+} from "../core/FoxgloveConnection";
 import type {
   MainToWorker,
   MessagePayload,
@@ -31,6 +36,7 @@ function payloadBuffers(payload: MessagePayload): ArrayBuffer[] {
 export class WorkerBridge {
   #worker!: Worker;
   #handlers = new Map<string, Set<PayloadHandler>>();
+  #subscriptionOptions = new Map<string, SubscribeOptions>();
   /** 大负载的帧间最新槽 */
   #frameLatest = new Map<string, { payload: MessagePayload; schemaName: string }>();
   #url: string | undefined;
@@ -112,7 +118,7 @@ export class WorkerBridge {
           if (msg.state === "open") {
             // 重连后恢复全部订阅
             for (const topic of this.#handlers.keys()) {
-              this.#post({ type: "subscribe", topic });
+              this.#post({ type: "subscribe", topic, ...this.#subscriptionOptions.get(topic) });
             }
           }
           this.onStateChange?.(msg.state);
@@ -203,12 +209,13 @@ export class WorkerBridge {
     });
   }
 
-  subscribe(topic: string, handler: PayloadHandler): () => void {
+  subscribe(topic: string, handler: PayloadHandler, options: SubscribeOptions = {}): () => void {
     let set = this.#handlers.get(topic);
     if (!set) {
       set = new Set();
       this.#handlers.set(topic, set);
-      this.#post({ type: "subscribe", topic });
+      this.#subscriptionOptions.set(topic, options);
+      this.#post({ type: "subscribe", topic, ...options });
     }
     set.add(handler);
     return () => {
@@ -217,6 +224,7 @@ export class WorkerBridge {
       s.delete(handler);
       if (s.size === 0) {
         this.#handlers.delete(topic);
+        this.#subscriptionOptions.delete(topic);
         this.#post({ type: "unsubscribe", topic });
       }
     };

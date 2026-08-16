@@ -116,6 +116,74 @@ export function createDefaultSession(id: string, name: string): RobotSessionConf
   };
 }
 
+function createMigratedDockLayout(
+  panels: WorkspacePanelConfig[],
+  workspace: { sidebarPercent: number; dockPercent: number },
+  legacyPanelSizes: Array<number | undefined>,
+): unknown {
+  const width = 1000;
+  const height = 1000;
+  const sidebarWidth = Math.round(width * workspace.sidebarPercent / 100);
+  const centerWidth = width - sidebarWidth;
+  const dockHeight = Math.round(height * workspace.dockPercent / 100);
+  const viewportHeight = height - dockHeight;
+  let groupIndex = 0;
+  const leaf = (views: string[], size: number, activeView = views.at(-1)) => ({
+    type: "leaf" as const,
+    data: { views, activeView, id: `migration-${++groupIndex}` },
+    size,
+  });
+
+  const extraPanels = panels.filter((panel) => !DEFAULT_CORE_PANELS.some((core) => core.id === panel.id));
+  let center: unknown = leaf(["3d"], centerWidth, "3d");
+  if (extraPanels.length > 0) {
+    const weights = legacyPanelSizes.map((size) => size ?? 1);
+    const totalWeight = weights.reduce((sum, size) => sum + size, 0);
+    const dockChildren = extraPanels.map((panel, index) =>
+      leaf([panel.id], Math.round(centerWidth * weights[index] / totalWeight), panel.id),
+    );
+    center = {
+      type: "branch",
+      data: [
+        leaf(["3d"], viewportHeight, "3d"),
+        dockChildren.length === 1
+          ? { ...dockChildren[0], size: dockHeight }
+          : { type: "branch", data: dockChildren, size: dockHeight },
+      ],
+      size: centerWidth,
+    };
+  }
+
+  const right = {
+    type: "branch" as const,
+    data: [
+      leaf(["topics"], Math.round(height / 2), "topics"),
+      leaf(["echo", "teleop", "services", "tf-tree"], Math.round(height / 2), "tf-tree"),
+    ],
+    size: sidebarWidth,
+  };
+  const serializedPanels = Object.fromEntries(panels.map((panel) => [panel.id, {
+    id: panel.id,
+    contentComponent: "workspace-panel",
+    params: { panelId: panel.id, kind: panel.kind },
+    title: panel.kind,
+    renderer: "always",
+    minimumHeight: 30,
+    minimumWidth: 30,
+  }]));
+
+  return {
+    grid: {
+      root: { type: "branch", data: [center, right], size: height },
+      width,
+      height,
+      orientation: "HORIZONTAL",
+    },
+    panels: serializedPanels,
+    activeGroup: "migration-1",
+  };
+}
+
 function migrateV1(raw: unknown): AppConfig {
   const legacy = parseLayout(JSON.stringify(raw));
   const session = createDefaultSession("session-1", "机器 1");
@@ -149,6 +217,11 @@ function migrateV1(raw: unknown): AppConfig {
       state: panel.state,
     })),
   ];
+  session.dockLayout = createMigratedDockLayout(
+    session.panels,
+    legacy.workspace,
+    legacy.panels.map((panel) => panel.sizePercent),
+  );
   session.camera = legacy.camera;
 
   return {

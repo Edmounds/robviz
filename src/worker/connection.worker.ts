@@ -189,6 +189,7 @@ function enqueue(topic: string, schemaName: string, message: unknown): void {
 interface StatAcc {
   count: number;
   bytes: number;
+  decodedCount: number;
   decodeMs: number;
   drops: number;
   /** EWMA 平滑后的速率（低频话题在短统计窗内跳动） */
@@ -204,7 +205,7 @@ let lagMaxMs = 0;
 function stat(topic: string): StatAcc {
   let s = statAcc.get(topic);
   if (!s) {
-    s = { count: 0, bytes: 0, decodeMs: 0, drops: 0, hzEwma: 0, kbpsEwma: 0 };
+    s = { count: 0, bytes: 0, decodedCount: 0, decodeMs: 0, drops: 0, hzEwma: 0, kbpsEwma: 0 };
     statAcc.set(topic, s);
   }
   return s;
@@ -231,7 +232,7 @@ setInterval(() => {
       hz: s.hzEwma,
       kbps: s.kbpsEwma,
       dropsPerSec: s.drops * factor,
-      decodeMs: s.count > 0 ? s.decodeMs / s.count : 0,
+      decodeMs: s.decodedCount > 0 ? s.decodeMs / s.decodedCount : 0,
     };
     stats.topics[topic] = t;
     stats.totalKbps += t.kbps;
@@ -239,6 +240,7 @@ setInterval(() => {
     stats.totalDropsPerSec += t.dropsPerSec;
     s.count = 0;
     s.bytes = 0;
+    s.decodedCount = 0;
     s.decodeMs = 0;
     s.drops = 0;
   }
@@ -250,11 +252,11 @@ setInterval(() => {
 
 // ---- 订阅与生命周期 ----
 
-function handleSubscribe(topic: string): void {
+function handleSubscribe(topic: string, maxFrequency?: number): void {
   if (!conn || unsubs.has(topic)) return;
   const unsub = conn.subscribe(topic, (message, channel) => {
     enqueue(topic, channel.schemaName, message);
-  });
+  }, { maxFrequency });
   unsubs.set(topic, unsub);
 }
 
@@ -273,11 +275,16 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
         onChannels: (topics) => post({ type: "channels", topics }),
         onServices: (services) => post({ type: "services", services }),
         onError: (err) => post({ type: "error", message: err.message }),
-        onMessageMeta: ({ topic, bytes, decodeMs, serverTimeNs }) => {
+        onMessageMeta: ({ topic, bytes, decodeMs, decoded, serverTimeNs }) => {
           const s = stat(topic);
           s.count++;
           s.bytes += bytes;
-          s.decodeMs += decodeMs;
+          if (decoded) {
+            s.decodedCount++;
+            s.decodeMs += decodeMs;
+          } else {
+            s.drops++;
+          }
           const deltaMs = Date.now() - Number(serverTimeNs / 1_000_000n);
           if (deltaMs < clockOffsetBaseline) clockOffsetBaseline = deltaMs;
           const lag = deltaMs - clockOffsetBaseline;
@@ -287,7 +294,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       break;
     }
     case "subscribe":
-      handleSubscribe(msg.topic);
+      handleSubscribe(msg.topic, msg.maxFrequency);
       break;
     case "unsubscribe": {
       unsubs.get(msg.topic)?.();

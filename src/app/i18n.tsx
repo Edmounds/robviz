@@ -6,6 +6,10 @@ export type Locale = "zh-CN" | "en";
 
 const zh = {
   settings: "设置",
+  machines: "机器标签",
+  addMachine: "添加机器",
+  closeMachine: "关闭机器标签",
+  renameMachine: "重命名机器",
   general: "通用",
   threeD: "3D",
   plugins: "插件",
@@ -81,6 +85,9 @@ const zh = {
   echoSelectedCount: "{selected} / {total}",
   echoNoSelection: "勾选字段后在这里显示实时值",
   panelsSection: "面板",
+  addPanel: "添加面板",
+  maximizePanel: "最大化面板",
+  restorePanel: "还原面板",
   addImage: "+ 图像",
   addPlot: "+ 曲线",
   addPluginPanel: "+ {title}",
@@ -219,7 +226,7 @@ const zh = {
 type MessageKey = keyof typeof zh;
 
 const en: Record<MessageKey, string> = {
-  settings: "Settings", general: "General", threeD: "3D", plugins: "Plugins",
+  settings: "Settings", machines: "Machine tabs", addMachine: "Add machine", closeMachine: "Close machine tab", renameMachine: "Rename machine", general: "General", threeD: "3D", plugins: "Plugins",
   language: "Language", appearance: "Appearance", theme: "Theme", dark: "Dark", light: "Light",
   scene: "Scene", ground: "Ground grid", groundHint: "Show the ground reference grid in the main 3D view",
   axesWidth: "TF axes width", layout: "Layout", resetLayout: "Reset layout",
@@ -243,7 +250,7 @@ const en: Record<MessageKey, string> = {
   echoChooseHint: "Choose a topic and wait for data", echoNoFields: "No displayable fields in this message",
   echoFields: "Fields", echoOutput: "Echo Output", echoSelectAll: "Select all",
   echoClearSelection: "Clear", echoSelectedCount: "{selected} / {total}",
-  echoNoSelection: "Select fields to display their live values", panelsSection: "Panels", addImage: "+ Image", addPlot: "+ Plot",
+  echoNoSelection: "Select fields to display their live values", panelsSection: "Panels", addPanel: "Add panel", maximizePanel: "Maximize panel", restorePanel: "Restore panel", addImage: "+ Image", addPlot: "+ Plot",
   addPluginPanel: "+ {title}", teleop: "Teleop", teleopTitle: "Teleop", linearSpeed: "Linear speed",
   angularSpeed: "Angular speed", services: "Services", chooseService: "Choose a service...", tfTree: "TF Tree",
   loadingUrdf: "Loading URDF editor...", moduleError: "{name} failed (isolated)", reset: "Reset",
