@@ -190,7 +190,7 @@ export class FoxgloveConnection {
 
   #connect(): void {
     this.#opts.onStateChange?.("connecting");
-    const protocols = [FoxgloveClient.SUPPORTED_SUBPROTOCOL];
+    const protocols = [FoxgloveClient.SUPPORTED_SUBPROTOCOL, "foxglove.sdk.v1"];
     const ws = this.#opts.createWebSocket
       ? this.#opts.createWebSocket(this.#url, protocols)
       : (new WebSocket(this.#url, protocols) as unknown as IWebSocket);
