@@ -133,6 +133,7 @@ export function SettingsPage({
                       panels: plugin.panels?.length ?? 0,
                       sections: plugin.sections?.length ?? 0,
                       displays: plugin.displays?.length ?? 0,
+                      tools: plugin.viewportTools?.length ?? 0,
                     })}</small>
                   </span>
                   <span className="plugin-setting-toggle">

@@ -5,6 +5,7 @@ import type { Channel, IWebSocket, Service } from "@foxglove/ws-protocol";
 
 import { isFrameDue } from "./frameThrottle";
 import { PUB_SCHEMAS } from "./rosSchemas";
+import { validateWebSocketUrl } from "./connectionTarget";
 
 export type ConnectionState = "connecting" | "open" | "closed";
 
@@ -90,9 +91,12 @@ export class FoxgloveConnection {
   #reconnectAttempt = 0;
   #heartbeatSentAt: number | undefined;
   #heartbeatSequence = 0;
+  #connectionGeneration = 0;
 
   #channelsByTopic = new Map<string, Channel>();
   #readers = new Map<number, MessageReader>(); // channelId → reader
+  #quarantinedChannels = new Set<number>(); // channelId → bad schema / encoding
+  #decodeErrorAt = new Map<number, number>(); // channelId → last malformed-frame report
   /** 期望订阅集合（与服务端实际 advertise 解耦，重连后自动恢复） */
   #handlers = new Map<string, Map<MessageHandler, HandlerRegistration>>();
   #readyRegistrations: HandlerRegistration[] = [];
@@ -106,7 +110,7 @@ export class FoxgloveConnection {
   #serviceCallId = 0;
   #pendingCalls = new Map<
     number,
-    { service: Service; resolve: (v: unknown) => void; reject: (e: Error) => void }
+    { service: Service; timer: ReturnType<typeof setTimeout>; resolve: (v: unknown) => void; reject: (e: Error) => void }
   >();
 
   constructor(url: string, opts: FoxgloveConnectionOptions = {}) {
@@ -200,32 +204,90 @@ export class FoxgloveConnection {
     }
     const callId = ++this.#serviceCallId;
     return await new Promise((resolve, reject) => {
-      this.#pendingCalls.set(callId, { service, resolve, reject });
-      setTimeout(() => {
-        if (this.#pendingCalls.delete(callId)) reject(new Error(`service ${name} timeout`));
+      const timer = setTimeout(() => {
+        const pending = this.#pendingCalls.get(callId);
+        if (!pending) return;
+        this.#pendingCalls.delete(callId);
+        pending.reject(new Error(`service ${name} timeout`));
       }, 10_000);
-      client.sendServiceCallRequest({ serviceId: service.id, callId, encoding: "cdr", data });
+      this.#pendingCalls.set(callId, {
+        service,
+        timer,
+        resolve: (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      try {
+        client.sendServiceCallRequest({ serviceId: service.id, callId, encoding: "cdr", data });
+      } catch (err) {
+        this.#pendingCalls.delete(callId);
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
 
   close(): void {
     this.#closed = true;
+    this.#connectionGeneration++;
     if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
+    this.#reconnectTimer = undefined;
     this.#clearConnectionTimers();
+    for (const [id, p] of this.#pendingCalls) {
+      p.reject(new Error("connection closed"));
+      this.#pendingCalls.delete(id);
+    }
     this.#client?.close();
+    this.#client = undefined;
+    this.#channelsByTopic.clear();
+    this.#readers.clear();
+    this.#quarantinedChannels.clear();
+    this.#decodeErrorAt.clear();
+    this.#readyRegistrations.length = 0;
+    this.#subscriptions.clear();
+    this.#subscriptionIdByTopic.clear();
+    this.#pubChannels.clear();
+    this.#services.clear();
+    this.#opts.onChannels?.([]);
+    this.#opts.onServices?.([]);
+    this.#opts.onStateChange?.("closed");
   }
 
   #connect(): void {
+    const generation = ++this.#connectionGeneration;
+    if (!this.#opts.createWebSocket) {
+      const validation = validateWebSocketUrl(this.#url);
+      if (!validation.ok) {
+        this.#opts.onError?.(new Error(validation.error));
+        this.#opts.onStateChange?.("closed");
+        return;
+      }
+    }
+
     this.#opts.onStateChange?.("connecting");
     const protocols = [FoxgloveClient.SUPPORTED_SUBPROTOCOL, "foxglove.sdk.v1"];
-    const ws = this.#opts.createWebSocket
-      ? this.#opts.createWebSocket(this.#url, protocols)
-      : (new WebSocket(this.#url, protocols) as unknown as IWebSocket);
+    let ws: IWebSocket;
+    try {
+      ws = this.#opts.createWebSocket
+        ? this.#opts.createWebSocket(this.#url, protocols)
+        : (new WebSocket(this.#url, protocols) as unknown as IWebSocket);
+    } catch (err) {
+      this.#opts.onError?.(err instanceof Error ? err : new Error(String(err)));
+      this.#opts.onStateChange?.("closed");
+      return;
+    }
 
     const client = new FoxgloveClient({ ws });
     this.#client = client;
+    const isCurrent = () => this.#connectionGeneration === generation && this.#client === client;
 
     client.on("open", () => {
+      if (!isCurrent()) return;
       this.#markInboundTraffic();
       this.#stableTimer = setTimeout(() => {
         this.#reconnectAttempt = 0;
@@ -234,6 +296,7 @@ export class FoxgloveConnection {
     });
 
     client.on("serverInfo", (info) => {
+      if (!isCurrent()) return;
       this.#markInboundTraffic();
       if (info.capabilities.includes(ServerCapability.parameters)) {
         this.#startHeartbeat();
@@ -241,12 +304,17 @@ export class FoxgloveConnection {
     });
 
     client.on("time", () => {
+      if (!isCurrent()) return;
       this.#markInboundTraffic();
     });
 
     client.on("advertise", (channels) => {
+      if (!isCurrent()) return;
       this.#markInboundTraffic();
       for (const ch of channels) {
+        this.#quarantinedChannels.delete(ch.id);
+        this.#decodeErrorAt.delete(ch.id);
+        this.#readers.delete(ch.id);
         this.#channelsByTopic.set(ch.topic, ch);
         if (this.#handlers.has(ch.topic)) this.#ensureSubscribed(ch.topic);
       }
@@ -254,12 +322,14 @@ export class FoxgloveConnection {
     });
 
     client.on("advertiseServices", (services) => {
+      if (!isCurrent()) return;
       this.#markInboundTraffic();
       for (const s of services) this.#services.set(s.name, s);
       this.#opts.onServices?.(this.services);
     });
 
     client.on("unadvertiseServices", (serviceIds) => {
+      if (!isCurrent()) return;
       this.#markInboundTraffic();
       for (const [name, s] of this.#services) {
         if (serviceIds.includes(s.id)) this.#services.delete(name);
@@ -268,6 +338,7 @@ export class FoxgloveConnection {
     });
 
     client.on("serviceCallResponse", (res) => {
+      if (!isCurrent()) return;
       this.#markInboundTraffic();
       const pending = this.#pendingCalls.get(res.callId);
       if (!pending) return;
@@ -289,6 +360,7 @@ export class FoxgloveConnection {
     });
 
     client.on("serviceCallFailure", (res) => {
+      if (!isCurrent()) return;
       this.#markInboundTraffic();
       const pending = this.#pendingCalls.get(res.callId);
       if (!pending) return;
@@ -297,11 +369,14 @@ export class FoxgloveConnection {
     });
 
     client.on("unadvertise", (channelIds) => {
+      if (!isCurrent()) return;
       this.#markInboundTraffic();
       for (const [topic, ch] of this.#channelsByTopic) {
         if (channelIds.includes(ch.id)) {
           this.#channelsByTopic.delete(topic);
           this.#readers.delete(ch.id);
+          this.#quarantinedChannels.delete(ch.id);
+          this.#decodeErrorAt.delete(ch.id);
           const subId = this.#subscriptionIdByTopic.get(topic);
           if (subId !== undefined) {
             this.#subscriptions.delete(subId);
@@ -313,6 +388,7 @@ export class FoxgloveConnection {
     });
 
     client.on("message", ({ subscriptionId, timestamp, data }) => {
+      if (!isCurrent()) return;
       this.#markInboundTraffic();
       const topic = this.#subscriptions.get(subscriptionId);
       if (topic === undefined) return;
@@ -337,7 +413,8 @@ export class FoxgloveConnection {
         });
         return;
       }
-      const reader = this.#readerFor(channel);
+      const reader = this.#getOrBuildReader(channel);
+      if (!reader) return;
       const t0 = performance.now();
       let message: unknown;
       try {
@@ -350,9 +427,14 @@ export class FoxgloveConnection {
           decoded: false,
           serverTimeNs: timestamp,
         });
-        this.#opts.onError?.(
-          new Error(`decode failed on ${topic} (${channel.schemaName}): ${String(err)}`),
-        );
+        const nowError = performance.now();
+        const lastError = this.#decodeErrorAt.get(channel.id) ?? -Infinity;
+        if (nowError - lastError >= 5_000) {
+          this.#decodeErrorAt.set(channel.id, nowError);
+          this.#opts.onError?.(
+            new Error(`decode failed on ${topic} (${channel.schemaName}): ${String(err)}`),
+          );
+        }
         ready.length = 0;
         return;
       }
@@ -378,20 +460,38 @@ export class FoxgloveConnection {
     });
 
     client.on("error", (err) => {
+      if (!isCurrent()) return;
       this.#opts.onError?.(err);
     });
 
-    client.on("status", () => this.#markInboundTraffic());
-    client.on("removeStatus", () => this.#markInboundTraffic());
-    client.on("parameterValues", () => this.#markInboundTraffic());
-    client.on("connectionGraphUpdate", () => this.#markInboundTraffic());
-    client.on("fetchAssetResponse", () => this.#markInboundTraffic());
-
+    client.on("status", () => {
+      if (!isCurrent()) return;
+      this.#markInboundTraffic();
+    });
+    client.on("removeStatus", () => {
+      if (!isCurrent()) return;
+      this.#markInboundTraffic();
+    });
+    client.on("parameterValues", () => {
+      if (!isCurrent()) return;
+      this.#markInboundTraffic();
+    });
+    client.on("connectionGraphUpdate", () => {
+      if (!isCurrent()) return;
+      this.#markInboundTraffic();
+    });
+    client.on("fetchAssetResponse", () => {
+      if (!isCurrent()) return;
+      this.#markInboundTraffic();
+    });
     client.on("close", () => {
+      if (!isCurrent()) return;
       this.#clearConnectionTimers();
       if (this.#client === client) this.#client = undefined;
       this.#channelsByTopic.clear();
       this.#readers.clear();
+      this.#quarantinedChannels.clear();
+      this.#decodeErrorAt.clear();
       this.#readyRegistrations.length = 0;
       this.#subscriptions.clear();
       this.#subscriptionIdByTopic.clear();
@@ -401,6 +501,8 @@ export class FoxgloveConnection {
         p.reject(new Error("connection closed"));
         this.#pendingCalls.delete(id);
       }
+      this.#opts.onChannels?.([]);
+      this.#opts.onServices?.([]);
       this.#opts.onStateChange?.("closed");
       const base = this.#opts.reconnectMs ?? 500;
       if (!this.#closed && base > 0) {
@@ -465,20 +567,35 @@ export class FoxgloveConnection {
     if (this.#subscriptionIdByTopic.has(topic)) return;
     const channel = this.#channelsByTopic.get(topic);
     if (!channel) return; // 等 advertise
-    const subId = this.#client.subscribe(channel.id);
-    this.#subscriptions.set(subId, topic);
-    this.#subscriptionIdByTopic.set(topic, subId);
+    try {
+      const subId = this.#client.subscribe(channel.id);
+      this.#subscriptions.set(subId, topic);
+      this.#subscriptionIdByTopic.set(topic, subId);
+    } catch (err) {
+      this.#opts.onError?.(
+        new Error(`subscribe failed on ${topic} (channel ${channel.id}): ${String(err)}`),
+      );
+    }
   }
 
-  #readerFor(channel: Channel): MessageReader {
+  #getOrBuildReader(channel: Channel): MessageReader | undefined {
+    if (this.#quarantinedChannels.has(channel.id)) return undefined;
     let reader = this.#readers.get(channel.id);
     if (!reader) {
-      if (channel.encoding !== "cdr") {
-        throw new Error(`unsupported encoding "${channel.encoding}" on ${channel.topic}`);
+      try {
+        if (channel.encoding !== "cdr") {
+          throw new Error(`unsupported encoding "${channel.encoding}" on ${channel.topic}`);
+        }
+        const definitions = parse(channel.schema, { ros2: true });
+        reader = new MessageReader(definitions);
+        this.#readers.set(channel.id, reader);
+      } catch (err) {
+        this.#quarantinedChannels.add(channel.id);
+        this.#opts.onError?.(
+          new Error(`bad schema/encoding for ${channel.topic} (${channel.schemaName}): ${String(err)}`),
+        );
+        return undefined;
       }
-      const definitions = parse(channel.schema, { ros2: true });
-      reader = new MessageReader(definitions);
-      this.#readers.set(channel.id, reader);
     }
     return reader;
   }

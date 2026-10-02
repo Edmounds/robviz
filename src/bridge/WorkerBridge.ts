@@ -60,14 +60,28 @@ export class WorkerBridge {
   onImmediateData?: () => void;
 
   #callId = 0;
+  #connectionGeneration = 0;
   #pendingCalls = new Map<
     number,
-    { resolve: (v: unknown) => void; reject: (e: Error) => void }
+    {
+      generation: number;
+      timer: ReturnType<typeof setTimeout>;
+      resolve: (v: unknown) => void;
+      reject: (e: Error) => void;
+    }
   >();
 
   constructor(streamingActive = true) {
     this.#streamingActive = streamingActive;
     this.#spawnWorker();
+  }
+
+  #rejectPendingCalls(reason: Error): void {
+    for (const pending of this.#pendingCalls.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(reason);
+    }
+    this.#pendingCalls.clear();
   }
 
   /**
@@ -97,10 +111,13 @@ export class WorkerBridge {
     this.#worker.onerror = (ev: ErrorEvent) => {
       console.error("[bridge] connection worker crashed:", ev.message);
       this.onError?.(`连接 Worker 崩溃，正在重启: ${ev.message}`);
-      for (const pending of this.#pendingCalls.values()) {
-        pending.reject(new Error("connection worker crashed"));
-      }
-      this.#pendingCalls.clear();
+      this.#rejectPendingCalls(new Error("connection worker crashed"));
+      this.state = "closed";
+      this.topics = [];
+      this.services = [];
+      this.onStateChange?.("closed");
+      this.onTopicsChange?.([]);
+      this.onServicesChange?.([]);
       if (this.#disposed) return;
       const delay = Math.max(0, 1000 - (Date.now() - this.#lastWorkerRestartAt));
       this.#lastWorkerRestartAt = Date.now() + delay;
@@ -117,7 +134,13 @@ export class WorkerBridge {
       switch (msg.type) {
         case "state":
           this.state = msg.state;
-          if (msg.state === "open" && this.#streamingActive) {
+          if (msg.state === "closed") {
+            this.#rejectPendingCalls(new Error("connection closed"));
+            this.topics = [];
+            this.services = [];
+            this.onTopicsChange?.([]);
+            this.onServicesChange?.([]);
+          } else if (msg.state === "open" && this.#streamingActive) {
             // 重连后恢复全部订阅
             for (const topic of this.#handlers.keys()) {
               this.#post({ type: "subscribe", topic, ...this.#subscriptionOptions.get(topic) });
@@ -137,8 +160,14 @@ export class WorkerBridge {
           const pending = this.#pendingCalls.get(msg.id);
           if (pending) {
             this.#pendingCalls.delete(msg.id);
-            if (msg.ok) pending.resolve(msg.response);
-            else pending.reject(new Error(msg.error ?? "service call failed"));
+            clearTimeout(pending.timer);
+            if (pending.generation !== this.#connectionGeneration) {
+              pending.reject(new Error("service result ignored from previous connection"));
+            } else if (msg.ok) {
+              pending.resolve(msg.response);
+            } else {
+              pending.reject(new Error(msg.error ?? "service call failed"));
+            }
           }
           break;
         }
@@ -196,21 +225,65 @@ export class WorkerBridge {
     return dispatched;
   }
 
+  get url(): string | undefined {
+    return this.#url;
+  }
+
   connect(url: string): void {
     this.#url = url;
+    this.#connectionGeneration++;
+    this.state = "connecting";
+    this.onStateChange?.("connecting");
+    this.#rejectPendingCalls(new Error("connection changed"));
+    this.topics = [];
+    this.services = [];
+    this.stats = undefined;
+    for (const { payload } of this.#frameLatest.values()) {
+      this.#recycle(payloadBuffers(payload));
+    }
+    this.#frameLatest.clear();
+    this.onTopicsChange?.([]);
+    this.onServicesChange?.([]);
     this.#post({ type: "connect", url });
   }
 
   /** 发布消息到机器人（schemaName 须在 PUB_SCHEMAS 内） */
   publish(topic: string, schemaName: string, message: unknown): void {
+    if (this.state !== "open") {
+      throw new Error(`Cannot publish to ${topic}: connection is not open (current state: ${this.state})`);
+    }
     this.#post({ type: "publish", topic, schemaName, message });
   }
 
   /** 调用服务，10s 超时 */
   callService(name: string, request: unknown): Promise<unknown> {
+    if (this.state !== "open") {
+      return Promise.reject(
+        new Error(`Cannot call service ${name}: connection is not open (current state: ${this.state})`),
+      );
+    }
     const id = ++this.#callId;
+    const generation = this.#connectionGeneration;
     return new Promise((resolve, reject) => {
-      this.#pendingCalls.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        const item = this.#pendingCalls.get(id);
+        if (item) {
+          this.#pendingCalls.delete(id);
+          item.reject(new Error(`Service call ${name} timed out after 10s`));
+        }
+      }, 10_000);
+      this.#pendingCalls.set(id, {
+        generation,
+        timer,
+        resolve: (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      });
       this.#post({ type: "callService", id, name, request });
     });
   }
@@ -257,6 +330,11 @@ export class WorkerBridge {
 
   dispose(): void {
     this.#disposed = true;
+    this.#rejectPendingCalls(new Error("bridge disposed"));
+    for (const { payload } of this.#frameLatest.values()) {
+      this.#recycle(payloadBuffers(payload));
+    }
+    this.#frameLatest.clear();
     this.#worker.terminate();
   }
 

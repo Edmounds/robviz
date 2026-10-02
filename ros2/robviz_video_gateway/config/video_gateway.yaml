@@ -1,0 +1,9 @@
+robviz_video_gateway:
+  ros__parameters:
+    host: "0.0.0.0"
+    port: 8787
+    default_target_fps: 10.0
+    min_bitrate_kbps: 150
+    start_bitrate_kbps: 1000
+    max_bitrate_kbps: 1000
+    prefer_hardware: true

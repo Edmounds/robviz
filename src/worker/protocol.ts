@@ -29,7 +29,7 @@ export interface GridPayload {
   data: Int8Array;
 }
 
-/** raw Image：data 拷贝为独立紧凑 buffer 以便 Transferable */
+/** raw Image：Worker 已校验并归一化为紧凑小端像素，必要时拷贝。 */
 export interface ImagePayload {
   kind: "image";
   header: Header;
@@ -37,6 +37,7 @@ export interface ImagePayload {
   height: number;
   encoding: string;
   step: number;
+  is_bigendian: false;
   data: Uint8Array;
 }
 

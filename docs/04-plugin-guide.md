@@ -25,19 +25,21 @@ interface RobvizPlugin {
   displays?: Array<{ schema: string; create: () => Display }>;
   panels?: Array<{ kind: string; title: string; component: ComponentType<PluginPanelProps> }>;
   sections?: Array<{ id: string; title: string; component: ComponentType<PluginSectionProps> }>;
+  viewportTools?: PluginViewportTool[];
 }
 ```
 
-三类扩展点，按需实现一类或多类：
+四类扩展点，按需实现一类或多类：
 
 | 扩展点 | 出现位置 | 适合做什么 |
 | --- | --- | --- |
 | `displays` | 话题列表（该 schema 的话题可勾选显示） | 自定义消息类型的 3D 可视化 |
 | `panels` | 顶栏“添加面板”菜单；允许创建多个停靠实例 | 需要较大画面的内容（自定义图表、视频、表格） |
 | `sections` | 顶栏“添加面板”菜单；单实例停靠面板 | 小型状态显示、控制开关 |
+| `viewportTools` | 3D 视口工具条 | 需要主视口点选/拖拽交互的机器人功能 |
 
 两类组件都保留原有 props。区别只在宿主生命周期：`panels` 可多开，每个实例有独立 `state`；
-`sections` 以 `<plugin-id>:<section-id>` 为稳定单例，用户可以移动、合并标签、最大化、关闭并重新添加。
+`sections` 以 `<plugin-id>:<section-id>` 为稳定单例，用户可以移动、合并标签、最大化、关闭并重新添加。新建会话会首次加入当时启用的插件区块；关闭状态随会话配置保存，导入已有布局不会自动插入新插件区块。
 
 ### PluginContext（宿主能力）
 
@@ -50,7 +52,11 @@ interface PluginContext {
   tf: TfBuffer;           // TF 查询
   fixedFrame: string;     // 当前 fixed frame
   theme: "dark" | "light";
-  locale: "zh-CN" | "en"; // 当前宿主语言；插件自行翻译自己的名称和文案
+  locale: "zh-CN" | "en";
+  active: boolean;                 // 当前机器标签是否在前台
+  connectionState: "connecting" | "open" | "closed";
+  pluginStates: Readonly<Record<string, unknown>>; // 当前机器各插件的 JSON 状态
+  onPluginStateChange(pluginId: string, state: unknown): void;
 }
 ```
 
@@ -80,6 +86,36 @@ const tf = ctx.tf.lookup("map", "base_link", Infinity); // Infinity = 最新
 // → { translation: {x,y,z}, rotation: {x,y,z,w} } | undefined
 ```
 
+### 插件状态持久化
+
+工具条和区块共享 `ctx.pluginStates[pluginId]`，用 `ctx.onPluginStateChange(pluginId, state)` 更新。
+状态按机器标签保存，并随浏览器自动恢复及 JSON 导入/导出；宿主 schema 只保证它是 JSON 数据，插件
+必须在读取导入值时自行校验形状并补齐默认值。不要用独立 localStorage 键保存插件配置。
+
+### 3D 视口工具
+
+`viewportTools` 在 3D 工具条提供按钮。宿主负责相机投影、地面命中测试和指针拖拽；插件收到以当前
+`fixedFrame` 表达的地面 `position` 与拖拽 `yaw`，无需访问 SceneManager：
+
+```ts
+const plugin: RobvizPlugin = {
+  id: "nav-goals",
+  name: "Navigation goals",
+  viewportTools: [{
+    id: "goal",
+    title: (ctx) => ctx.locale === "en" ? "Navigation Goal" : "导航目标",
+    hint: "Click to set position, drag to set heading",
+    onPoseSelect: (ctx, interaction) => {
+      if (!ctx.active || ctx.connectionState !== "open") return;
+      // ctx.bridge.publish(...)
+    },
+  }],
+};
+```
+
+工具只在所属插件启用时注册；切换会话、断线或停用插件会取消当前指针交互。宿主暴露活动状态作为元数据，
+但不强制所有第三方插件在非活动会话中禁止写入；插件必须为自己的机器人写操作定义生命周期。
+
 ### 面板状态持久化
 
 面板组件通过 `state` / `onStateChange` 接入配置文件（保存布局时随 `robviz.json` 导出，
@@ -98,14 +134,13 @@ state 必须是可 JSON 序列化的普通对象。
 ### 运行时启停
 
 用户可在“设置 → 插件”中立即启用或停用已打包插件。停用会卸载该插件的面板和单实例区块，
-并销毁其 3D display；重新启用后，宿主会恢复已保存的面板状态、尺寸和 display 目标话题。
-插件仍由 Vite 在构建期发现，设置页不负责安装、删除或运行时扫描文件夹。
+并销毁其 3D display；宿主保留对应工作区位置，重新启用后恢复。插件仍由 Vite 在构建期发现，设置页不负责安装、删除或运行时扫描文件夹。
 
 插件模块顶层代码会在应用加载时执行，无法通过启停撤销，因此不要在模块顶层创建订阅、定时器、
 WebSocket 或 DOM 监听。把副作用放进 React `useEffect` 或 display 生命周期，并在 cleanup / `dispose()`
 中完整释放。插件文案可根据 `ctx.locale` 在 `"zh-CN"` 与 `"en"` 之间切换。
 
-## 2. 三类扩展点示例
+## 2. 四类扩展点示例
 
 ### 单实例区块（最简单，从这里开始）
 
@@ -155,8 +190,8 @@ const plugin: RobvizPlugin = {
   数据内容（曲线、点云颜色）可以有彩色。深浅主题都要可读——不要硬编码黑白。
 - **订阅必须清理**：`useEffect` 返回 `unsub`，否则关面板后还在收消息。
 - **顶层不得产生副作用**：运行时开关只卸载扩展点，无法撤销模块求值时创建的资源。
-- **错误隔离**：三类扩展点都套在 ErrorBoundary/显示器隔离里，插件崩溃不会拖垮主体，
-  但仍应自己处理可预期的错误（话题不存在、字段缺失）。
+- **错误隔离**：面板、区块和工具按钮的渲染由 ErrorBoundary 保护，display 按实例隔离；视口事件回调不由 ErrorBoundary 捕获，插件应捕获并处理可预期错误。
+  但仍应自己处理可预期的问题（话题不存在、字段缺失）。
 - id 与目录名必须一致，否则 registry 会跳过该插件；面板 kind 会自动带上 `<id>:` 前缀写入配置文件。
 
 ## 4. 验证清单

@@ -7,13 +7,14 @@ import {
   pointCloudSettingsSchema,
 } from "./layoutConfig";
 
+export const APP_CONFIG_STORAGE_KEY = "robviz.layout";
+
 const vec3 = z.tuple([z.number(), z.number(), z.number()]);
 
 export const DEFAULT_CORE_PANELS = [
   { id: "3d", kind: "3d" },
   { id: "topics", kind: "topics" },
   { id: "echo", kind: "echo" },
-  { id: "teleop", kind: "teleop" },
   { id: "services", kind: "services" },
   { id: "tf-tree", kind: "tf-tree" },
 ] as const;
@@ -34,6 +35,7 @@ const robotSessionSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   url: z.string(),
+  mediaUrl: z.string().optional(),
   mode: z.enum(["3d", "map", "urdf"]).default("3d"),
   fixedFrame: z.string(),
   scene: z.object({
@@ -44,6 +46,9 @@ const robotSessionSchema = z.object({
   pcdVoxel: z.number().nonnegative().default(0.1),
   followFrame: z.string().optional(),
   activeTopics: z.array(activeTopicSchema).default([]),
+  pluginState: z.record(z.string(), z.unknown()).default({}),
+  initializedPluginSectionIds: z.array(z.string()).default([]),
+  autoAddPluginSections: z.boolean().default(false),
   panels: z.array(panelSchema).default([]),
   dockLayout: z.unknown().optional(),
   camera: z.object({ position: vec3, target: vec3 }).optional(),
@@ -98,6 +103,25 @@ const appConfigSchema = z
 
 export type AppConfig = z.infer<typeof appConfigSchema>;
 
+export function renameAppSession(config: AppConfig, id: string, draft: string): AppConfig {
+  const name = draft.trim();
+  if (!name || !config.sessions.some((session) => session.id === id)) return config;
+  return {
+    ...config,
+    sessions: config.sessions.map((session) => session.id === id ? { ...session, name } : session),
+  };
+}
+
+export function getDefaultMediaUrl(foxgloveUrl: string): string {
+  try {
+    const parsed = new URL(foxgloveUrl);
+    const proto = parsed.protocol === "wss:" ? "wss:" : "ws:";
+    return `${proto}//${parsed.hostname}:8787/ws`;
+  } catch {
+    return "ws://localhost:8787/ws";
+  }
+}
+
 export function createDefaultSession(id: string, name: string): RobotSessionConfig {
   return {
     id,
@@ -112,6 +136,9 @@ export function createDefaultSession(id: string, name: string): RobotSessionConf
     urdfInspectorPercent: 35,
     pcdVoxel: 0.1,
     activeTopics: [],
+    pluginState: {},
+    initializedPluginSectionIds: [],
+    autoAddPluginSections: true,
     panels: DEFAULT_CORE_PANELS.map((panel) => ({ ...panel })),
   };
 }
@@ -158,7 +185,7 @@ function createMigratedDockLayout(
     type: "branch" as const,
     data: [
       leaf(["topics"], Math.round(height / 2), "topics"),
-      leaf(["echo", "teleop", "services", "tf-tree"], Math.round(height / 2), "tf-tree"),
+      leaf(["echo", "services", "tf-tree"], Math.round(height / 2), "tf-tree"),
     ],
     size: sidebarWidth,
   };
@@ -223,6 +250,7 @@ function migrateV1(raw: unknown): AppConfig {
     legacy.panels.map((panel) => panel.sizePercent),
   );
   session.camera = legacy.camera;
+  session.autoAddPluginSections = false;
 
   return {
     version: 2,
@@ -240,6 +268,43 @@ export function serializeAppConfig(config: AppConfig): string {
   return JSON.stringify(config, null, 2);
 }
 
+export function saveAppConfigToStorage(
+  config: AppConfig,
+  storage: { setItem(key: string, value: string): void },
+): void {
+  storage.setItem(APP_CONFIG_STORAGE_KEY, serializeAppConfig(config));
+}
+
+/** 保留旧遥控面板的 id/布局，只迁移已经存在的面板，不重新打开用户关闭的区块。 */
+function migrateTeleopPanels(config: AppConfig): AppConfig {
+  for (const session of config.sessions) {
+    const migratedIds = new Set<string>();
+    for (const panel of session.panels) {
+      if (panel.kind !== "teleop") continue;
+      panel.kind = "plugin-section:teleop:teleop";
+      migratedIds.add(panel.id);
+    }
+    if (migratedIds.size === 0) continue;
+    if (!session.initializedPluginSectionIds.includes("teleop:teleop")) {
+      session.initializedPluginSectionIds.push("teleop:teleop");
+    }
+    const layout = session.dockLayout;
+    if (!layout || typeof layout !== "object" || !("panels" in layout)) continue;
+    const dockPanels = layout.panels;
+    if (!dockPanels || typeof dockPanels !== "object" || Array.isArray(dockPanels)) continue;
+    for (const [id, panel] of Object.entries(dockPanels)) {
+      if (!migratedIds.has(id) || !panel || typeof panel !== "object") continue;
+      const params = "params" in panel ? panel.params : undefined;
+      panel.params = {
+        ...(params && typeof params === "object" && !Array.isArray(params) ? params : {}),
+        panelId: id,
+        kind: "plugin-section:teleop:teleop",
+      };
+    }
+  }
+  return config;
+}
+
 export function parseAppConfig(text: string): AppConfig {
   let raw: unknown;
   try {
@@ -249,7 +314,7 @@ export function parseAppConfig(text: string): AppConfig {
   }
 
   if (typeof raw === "object" && raw !== null && "version" in raw && raw.version === 1) {
-    return migrateV1(raw);
+    return migrateTeleopPanels(migrateV1(raw));
   }
 
   const result = appConfigSchema.safeParse(raw);
@@ -258,5 +323,5 @@ export function parseAppConfig(text: string): AppConfig {
     const path = issue?.path.join(".") || "(根)";
     throw new Error(`配置格式不合法: ${path}: ${issue?.message ?? "unknown"}`);
   }
-  return result.data;
+  return migrateTeleopPanels(result.data);
 }

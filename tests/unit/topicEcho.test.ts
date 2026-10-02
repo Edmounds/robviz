@@ -49,6 +49,7 @@ describe("topic echo fields", () => {
   it("去掉 Worker 传输层 kind 并保留图像消息元数据", () => {
     const payload: ImagePayload = {
       kind: "image",
+      is_bigendian: false,
       header: { stamp: { sec: 1, nanosec: 2 }, frame_id: "camera" },
       width: 640,
       height: 480,

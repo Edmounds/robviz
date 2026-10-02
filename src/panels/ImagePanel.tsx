@@ -3,11 +3,13 @@
  * raw Image（rgb8/bgr8/mono8/mono16/16UC1/32FC1，深度图 turbo 上色）。
  * 悬停显示像素坐标 + 值（深度显示米数），视觉调参用。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
 import type { TopicInfo } from "../core/FoxgloveConnection";
+import { requiresRawImage } from "../core/image";
 import { preferredImageTopic, sortedImageTopics } from "../core/imageTopics";
+import { webRtcManager, type WebRtcStreamStats } from "../media/WebRtcStreamClient";
 import { turbo } from "../renderers/colormap";
 import type { MessagePayload } from "../worker/protocol";
 import { CollapsiblePanel } from "../app/CollapsiblePanel";
@@ -25,7 +27,7 @@ interface RawFrame {
   width: number;
   height: number;
   encoding: string;
-  /** 原始像素（拷贝，供悬停取值） */
+  /** Worker 归一化后的紧凑小端像素（拷贝，供悬停取值） */
   data: Uint8Array;
 }
 
@@ -126,38 +128,61 @@ function pixelText(frame: RawFrame, px: number, py: number): string {
 
 export function ImagePanel({
   embedded = false,
+  active = true,
   bridge,
   topics,
   initialTopic,
   initialPreferRaw = false,
+  initialUseWebRtc = true,
+  mediaUrl: configuredMediaUrl,
   onTopicChange,
   onClose,
 }: {
   embedded?: boolean;
+  active?: boolean;
   bridge: WorkerBridge;
   topics: TopicInfo[];
   /** 配置恢复：初始选中的话题 */
   initialTopic?: string;
-  /** 配置恢复：用户是否明确选择保留 raw 传输 */
+  /** 配置恢复：保留 Raw 话题，不等于选择 Raw 传输 */
   initialPreferRaw?: boolean;
-  /** 配置保存：话题选择变化时上报 */
-  onTopicChange?: (topic: string, preferRaw: boolean) => void;
+  /** 配置恢复：选择 WebRTC 或 Raw 渲染/传输 */
+  initialUseWebRtc?: boolean;
+  mediaUrl?: string;
+  /** 配置保存：话题或传输选择变化时上报 */
+  onTopicChange?: (topic: string, preferRaw: boolean, useWebRtc: boolean) => void;
   onClose: () => void;
 }) {
   const { t } = useI18n();
+  const panelId = useId();
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
   const frameRef = useRef<RawFrame>(null);
   const preferRawRef = useRef(initialPreferRaw);
   const [topic, setTopic] = useState(initialTopic ?? "");
   const [collapsed, setCollapsed] = useState(false);
   const [hover, setHover] = useState<HoverInfo>();
   const [meta, setMeta] = useState<string>("");
+  const [targetFps, setTargetFps] = useState(10);
+  const targetFpsRef = useRef(targetFps);
+  targetFpsRef.current = targetFps;
+  const [useWebRtc, setUseWebRtc] = useState(initialUseWebRtc);
+  const [webrtcStats, setWebRtcStats] = useState<WebRtcStreamStats | null>(null);
+
+  const isImageTopic = topics.some(
+    (cand) => cand.topic === topic && cand.schemaName === "sensor_msgs/msg/Image",
+  );
+  const activeWebRtc = useWebRtc && isImageTopic;
+  const mediaUrl = webRtcManager.deriveMediaUrl(
+    bridge.url || "ws://localhost:8765",
+    configuredMediaUrl,
+  );
 
   useEffect(() => {
-    onTopicChange?.(topic, preferRawRef.current);
+    onTopicChange?.(topic, preferRawRef.current, useWebRtc);
     // onTopicChange 是 App 侧的快照记录回调，身份变化不需重跑
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topic]);
+  }, [topic, useWebRtc]);
 
   const imageTopics = sortedImageTopics(topics);
 
@@ -172,8 +197,44 @@ export function ImagePanel({
   }, [initialTopic, topic, topics]);
 
   useEffect(() => {
-    if (!topic || collapsed) return;
-    const canvas = canvasRef.current!;
+    if (!active || !activeWebRtc || !topic || collapsed) return;
+    const videoEl = videoRef.current;
+    const unsub = webRtcManager.watch(
+      topic,
+      mediaUrl,
+      panelId,
+      targetFpsRef.current,
+      (stream) => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+      },
+      (stats) => {
+        setWebRtcStats(stats);
+        if (stats.sourceEncoding && requiresRawImage(stats.sourceEncoding)) {
+          setUseWebRtc(false);
+        }
+      },
+    );
+    return () => {
+      unsub();
+      setWebRtcStats(null);
+      if (videoEl) {
+        videoEl.srcObject = null;
+      }
+    };
+  }, [active, activeWebRtc, collapsed, mediaUrl, panelId, topic]);
+
+  useEffect(() => {
+    if (active && activeWebRtc && topic && !collapsed) {
+      webRtcManager.setFps(topic, mediaUrl, panelId, targetFps);
+    }
+  }, [active, activeWebRtc, collapsed, mediaUrl, panelId, targetFps, topic]);
+
+  useEffect(() => {
+    if (!active || activeWebRtc || !topic || collapsed) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
     const ctx = canvas.getContext("2d")!;
 
     const unsub = bridge.subscribe(topic, (payload: MessagePayload) => {
@@ -212,7 +273,7 @@ export function ImagePanel({
       unsub();
       frameRef.current = null;
     };
-  }, [bridge, collapsed, topic]);
+  }, [active, activeWebRtc, bridge, collapsed, topic]);
 
   const onMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const frame = frameRef.current;
@@ -235,6 +296,16 @@ export function ImagePanel({
     });
   }, []);
 
+  const displayMeta = activeWebRtc && webrtcStats
+    ? (webrtcStats.status === "streaming" || webrtcStats.status === "congested"
+        ? `H.264 ${webrtcStats.width}×${webrtcStats.height} · ${webrtcStats.actualFps} FPS (${targetFps}) · ${webrtcStats.bitrateKbps} kbps · loss ${(webrtcStats.packetLoss * 100).toFixed(1)}% · RTT ${(webrtcStats.rtt * 1000).toFixed(0)} ms`
+        : webrtcStats.status === "connecting"
+        ? "WebRTC 连接中..."
+        : webrtcStats.status === "error"
+        ? webrtcStats.statusText || t("webrtcUnavailable")
+        : "")
+    : meta;
+
   const header = (
     <>
         <select
@@ -255,13 +326,63 @@ export function ImagePanel({
             </option>
           ))}
         </select>
-        <span className="panel-meta">{meta}</span>
+        {isImageTopic && (
+          <>
+            <select
+              value={targetFps}
+              title={t("targetFps")}
+              onChange={(e) => {
+                const fps = Number(e.target.value);
+                setTargetFps(fps);
+                if (active && activeWebRtc && !collapsed) {
+                  webRtcManager.setFps(topic, mediaUrl, panelId, fps);
+                }
+              }}
+              style={{ maxWidth: 80, marginLeft: 4 }}
+            >
+              <option value={5}>5 FPS</option>
+              <option value={10}>10 FPS</option>
+              <option value={15}>15 FPS</option>
+              <option value={20}>20 FPS</option>
+              <option value={30}>30 FPS</option>
+            </select>
+            <button
+              type="button"
+              className={`panel-btn ${activeWebRtc ? "active" : ""}`}
+              style={{
+                fontSize: 11,
+                padding: "2px 6px",
+                marginLeft: 4,
+                background: activeWebRtc ? "#0284c7" : "#334155",
+                color: "#fff",
+                border: "none",
+                borderRadius: 3,
+                cursor: "pointer",
+              }}
+              title="切换 WebRTC / Raw 渲染"
+              onClick={() => setUseWebRtc(!useWebRtc)}
+            >
+              {activeWebRtc ? "WebRTC" : "Raw"}
+            </button>
+          </>
+        )}
+        <span className="panel-meta">{displayMeta}</span>
     </>
   );
   const content = (
       <div className="panel-body image-body">
-        <canvas ref={canvasRef} onMouseMove={onMove} onMouseLeave={() => setHover(undefined)} />
-        {hover && (
+        {activeWebRtc ? (
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            style={{ width: "100%", height: "100%", objectFit: "contain", display: "block", background: "#000" }}
+          />
+        ) : (
+          <canvas ref={canvasRef} onMouseMove={onMove} onMouseLeave={() => setHover(undefined)} />
+        )}
+        {hover && !activeWebRtc && (
           <div className="pixel-tip" style={{ left: hover.x + 12, top: hover.y + 12 }}>
             {hover.text}
           </div>

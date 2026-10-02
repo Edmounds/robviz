@@ -5,7 +5,13 @@
 import type { ComponentType } from "react";
 
 import type { Display } from "../renderers/SceneManager";
-import type { PluginPanelProps, PluginSectionProps, RobvizPlugin } from "./types";
+import type {
+  PluginContext,
+  PluginPanelProps,
+  PluginSectionProps,
+  RobvizPlugin,
+  ViewportPoseInteraction,
+} from "./types";
 
 export function collectPlugins(modules: Record<string, unknown>): RobvizPlugin[] {
   const out: RobvizPlugin[] = [];
@@ -50,11 +56,20 @@ export interface PluginSectionDef {
   pluginId: string;
 }
 
+export interface PluginViewportToolDef {
+  id: string;
+  title: (ctx: PluginContext) => string;
+  hint?: (ctx: PluginContext) => string;
+  onPoseSelect: (ctx: PluginContext, interaction: ViewportPoseInteraction) => void;
+  pluginId: string;
+}
+
 export interface ResolvedPlugins {
   activePlugins: RobvizPlugin[];
   panels: PluginPanelDef[];
   sections: PluginSectionDef[];
   displays: Record<string, () => Display>;
+  viewportTools: PluginViewportToolDef[];
 }
 
 /** 先固定 display schema 的首个所有者，再过滤启用状态，避免运行时切换导致接管。 */
@@ -93,10 +108,24 @@ export function resolvePlugins(
     const display = owner.displays?.find((candidate) => candidate.schema === schema);
     if (display) displays[schema] = display.create;
   }
-  return { activePlugins, panels, sections, displays };
+  const viewportTools = activePlugins.flatMap((plugin) =>
+    (plugin.viewportTools ?? []).map((tool) => {
+      const title = tool.title;
+      const hint = tool.hint;
+      return {
+        id: `${plugin.id}:${tool.id}`,
+        title: (ctx: PluginContext) => typeof title === "function" ? title(ctx) : title,
+        hint: hint === undefined ? undefined : (ctx: PluginContext) => typeof hint === "function" ? hint(ctx) : hint,
+        onPoseSelect: tool.onPoseSelect,
+        pluginId: plugin.id,
+      };
+    }),
+  );
+  return { activePlugins, panels, sections, displays, viewportTools };
 }
 
 const resolved = resolvePlugins(plugins, []);
 export const pluginPanels = resolved.panels;
 export const pluginSections = resolved.sections;
 export const pluginDisplays = resolved.displays;
+export const pluginViewportTools = resolved.viewportTools;

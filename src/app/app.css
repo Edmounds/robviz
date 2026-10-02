@@ -129,16 +129,44 @@ body,
   background: var(--status-error);
 }
 
+.session-label {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  justify-content: center;
+  line-height: 1.15;
+  overflow: hidden;
+}
+
 .session-name {
   min-width: 0;
-  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.session-close,
-.session-add {
+.session-target {
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 0.85em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-name-input {
+  min-width: 0;
+  flex: 1;
+  height: 26px;
+  padding: 2px 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+  background: var(--canvas);
+  color: var(--foreground);
+  font: inherit;
+}
+
+.session-rename {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -151,6 +179,12 @@ body,
   color: var(--text-muted);
   cursor: pointer;
 }
+
+.session-rename svg {
+  width: 13px;
+  height: 13px;
+}
+
 
 .session-close:hover,
 .session-add:hover {

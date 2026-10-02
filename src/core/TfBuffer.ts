@@ -117,6 +117,11 @@ export class TfBuffer {
     this.#windowSec = windowSec;
   }
 
+  clear(): void {
+    this.#edges.clear();
+    this.#framesCache = undefined;
+  }
+
   setTransform(
     parent: string,
     child: string,

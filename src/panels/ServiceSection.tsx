@@ -2,7 +2,7 @@ import { Minus, Plus } from "lucide-react";
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
-import type { ServiceInfo } from "../core/FoxgloveConnection";
+import type { ConnectionState, ServiceInfo } from "../core/FoxgloveConnection";
 import { defaultsFromSchema } from "../core/msgDefaults";
 import {
   defaultServiceFieldValue,
@@ -174,7 +174,15 @@ function ResultValue({ name, value }: { name?: string; value: unknown }) {
   );
 }
 
-export function ServiceSection({ bridge, services }: { bridge: WorkerBridge; services: ServiceInfo[] }) {
+export function ServiceSection({
+  bridge,
+  services,
+  connState,
+}: {
+  bridge: WorkerBridge;
+  services: ServiceInfo[];
+  connState?: ConnectionState;
+}) {
   const { t } = useI18n();
   const serviceSelectId = useId();
   const [selected, setSelected] = useState<string>();
@@ -234,7 +242,13 @@ export function ServiceSection({ bridge, services }: { bridge: WorkerBridge; ser
     }
   }, [bridge, busy, request, selected]);
 
-  if (services.length === 0) return null;
+  if (services.length === 0) {
+    return (
+      <CollapsibleSection title={t("services")}>
+        <p className="empty-hint">{connState === "closed" ? t("disconnected") : t("noServices")}</p>
+      </CollapsibleSection>
+    );
+  }
 
   return (
     <CollapsibleSection title={t("services")}>
@@ -265,7 +279,12 @@ export function ServiceSection({ bridge, services }: { bridge: WorkerBridge; ser
               onChange={(path, value) => setRequest((current) => setServiceValue(current, path, value))}
             />
           ))}
-          <button type="submit" disabled={busy || Boolean(schema.error)}>{busy ? t("calling") : t("call")}</button>
+          <button
+            type="submit"
+            disabled={busy || Boolean(schema.error) || (connState !== undefined && connState !== "open")}
+          >
+            {busy ? t("calling") : t("call")}
+          </button>
           {schema.error && <p className="service-error" role="alert">{schema.error}</p>}
           {error && <p className="service-error" role="alert">{error}</p>}
           {result !== undefined && <div className="service-result"><ResultValue value={result} /></div>}

@@ -8,7 +8,7 @@
 import type { ComponentType } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
-import type { TopicInfo } from "../core/FoxgloveConnection";
+import type { ConnectionState, TopicInfo } from "../core/FoxgloveConnection";
 import type { TfBuffer } from "../core/TfBuffer";
 import type { Display } from "../renderers/SceneManager";
 import type { Theme } from "../renderers/sceneTheme";
@@ -28,6 +28,26 @@ export interface PluginContext {
   theme: Theme;
   /** 当前宿主语言；插件自行负责自己的翻译文案 */
   locale: Locale;
+  /** 当前机器人会话标签是否处于活动前台 */
+  active: boolean;
+  /** 当前机器人底层连接状态 */
+  connectionState: ConnectionState;
+  /** 当前会话内各插件的可持久化状态；由宿主保存到 session JSON */
+  pluginStates: Readonly<Record<string, unknown>>;
+  /** 更新当前会话中某个插件的持久化状态 */
+  onPluginStateChange: (pluginId: string, state: unknown) => void;
+}
+
+export interface ViewportPoseInteraction {
+  position: { x: number; y: number; z: number };
+  yaw: number;
+}
+
+export interface PluginViewportTool {
+  id: string;
+  title: string | ((ctx: PluginContext) => string);
+  hint?: string | ((ctx: PluginContext) => string);
+  onPoseSelect: (ctx: PluginContext, interaction: ViewportPoseInteraction) => void;
 }
 
 /** 面板坞面板 props */
@@ -56,4 +76,6 @@ export interface RobvizPlugin {
   panels?: Array<{ kind: string; title: string; component: ComponentType<PluginPanelProps> }>;
   /** 单实例停靠区块（可移动、关闭和重新添加） */
   sections?: Array<{ id: string; title: string; component: ComponentType<PluginSectionProps> }>;
+  /** 3D 视口交互工具（出现在 3D 视图顶栏，支持点选/拖拽交互） */
+  viewportTools?: PluginViewportTool[];
 }

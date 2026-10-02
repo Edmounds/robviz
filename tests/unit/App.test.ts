@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { connectionTargetLabel } from "../../src/core/connectionTarget";
+import { connectionTargetLabel, validateWebSocketUrl } from "../../src/core/connectionTarget";
 
 describe("App session tabs", () => {
   it.each([
@@ -11,7 +11,14 @@ describe("App session tabs", () => {
     expect(connectionTargetLabel(url)).toBe(target);
   });
 
-  it("keeps an incomplete connection address visible while it is edited", () => {
-    expect(connectionTargetLabel("ws://")).toBe("ws://");
+  it("rejects malformed WebSocket URLs before constructing a socket", () => {
+    expect(validateWebSocketUrl("http://robot:8765").ok).toBe(false);
+    expect(validateWebSocketUrl("ws:").ok).toBe(false);
+    expect(validateWebSocketUrl("ws://robot:8765/#fragment").ok).toBe(false);
+    expect(validateWebSocketUrl("ws://user:password@robot:8765").ok).toBe(false);
+    expect(validateWebSocketUrl(" wss://robot.example:8765/bridge ")).toEqual({
+      ok: true,
+      url: "wss://robot.example:8765/bridge",
+    });
   });
 });

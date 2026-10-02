@@ -72,4 +72,42 @@ describe("plugin registry", () => {
     expect(disabledOwner.sections.map((section) => section.id)).toEqual(["b:main"]);
     expect(disabledOwner.displays["custom/Thing"]).toBeUndefined();
   });
+
+  it("ships Teleop and Nav enabled by default with plugin-owned sections and viewport tools", () => {
+    const teleop = plugins.find((plugin) => plugin.id === "teleop");
+    const nav = plugins.find((plugin) => plugin.id === "nav-goals");
+    expect(teleop?.sections?.map((section) => section.id)).toContain("teleop");
+    expect(nav?.sections?.map((section) => section.id)).toContain("config");
+    expect(nav?.viewportTools?.map((tool) => tool.id)).toEqual(["goal", "initialpose"]);
+
+    const enabled = resolvePlugins(plugins, []);
+    expect(enabled.sections.map((section) => section.id)).toContain("teleop:teleop");
+    expect(enabled.viewportTools.map((tool) => tool.id)).toEqual(["nav-goals:goal", "nav-goals:initialpose"]);
+    expect(resolvePlugins(plugins, ["teleop"]).sections.map((section) => section.id)).not.toContain("teleop:teleop");
+    expect(resolvePlugins(plugins, ["nav-goals"]).viewportTools).toEqual([]);
+  });
+
+  it("resolves viewport tools and removes them with the owning plugin", () => {
+    const all: RobvizPlugin[] = [
+      {
+        id: "nav",
+        name: "Nav",
+        viewportTools: [
+          {
+            id: "goal",
+            title: (ctx) => ctx.locale === "en" ? "Goal" : "目标",
+            hint: "Click and drag",
+            onPoseSelect: vi.fn(),
+          },
+        ],
+      },
+    ];
+    const context = { locale: "en" } as never;
+    const enabled = resolvePlugins(all, []);
+    expect(enabled.viewportTools).toHaveLength(1);
+    expect(enabled.viewportTools[0].id).toBe("nav:goal");
+    expect(enabled.viewportTools[0].title(context)).toBe("Goal");
+    expect(enabled.viewportTools[0].hint?.(context)).toBe("Click and drag");
+    expect(resolvePlugins(all, ["nav"]).viewportTools).toEqual([]);
+  });
 });

@@ -11,6 +11,7 @@
  *    偏移增量即网络/排队滞后（bufferbloat 指示器）。
  */
 import { FoxgloveConnection } from "../core/FoxgloveConnection";
+import { normalizeImage, type RosImage } from "../core/image";
 import { parsePointCloud2 } from "../core/pointcloud";
 import type { OccupancyGrid, PointCloud2 } from "../core/types";
 import type {
@@ -107,14 +108,7 @@ function preparePayload(schemaName: string, message: unknown): {
     };
   }
   if (schemaName === "sensor_msgs/msg/Image") {
-    const msg = message as {
-      header: import("../core/types").Header;
-      width: number;
-      height: number;
-      encoding: string;
-      step: number;
-      data: Uint8Array;
-    };
+    const msg = normalizeImage(message as RosImage);
     const data = msg.data;
     if (!(data.buffer instanceof ArrayBuffer)) {
       throw new Error("image data is not backed by a transferable ArrayBuffer");
@@ -127,6 +121,7 @@ function preparePayload(schemaName: string, message: unknown): {
         height: msg.height,
         encoding: msg.encoding,
         step: msg.step,
+        is_bigendian: msg.is_bigendian,
         data,
       },
       transfer: [data.buffer],
@@ -274,27 +269,32 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
       pendingOrdered.length = 0;
       statAcc.clear();
       clockOffsetBaseline = Infinity;
-      conn = new FoxgloveConnection(msg.url, {
-        onStateChange: (state) => post({ type: "state", state }),
-        onChannels: (topics) => post({ type: "channels", topics }),
-        onServices: (services) => post({ type: "services", services }),
-        onError: (err) => post({ type: "error", message: err.message }),
-        onMessageMeta: ({ topic, bytes, decodeMs, decoded, serverTimeNs }) => {
-          const s = stat(topic);
-          s.count++;
-          s.bytes += bytes;
-          if (decoded) {
-            s.decodedCount++;
-            s.decodeMs += decodeMs;
-          } else {
-            s.drops++;
-          }
-          const deltaMs = Date.now() - Number(serverTimeNs / 1_000_000n);
-          if (deltaMs < clockOffsetBaseline) clockOffsetBaseline = deltaMs;
-          const lag = deltaMs - clockOffsetBaseline;
-          if (lag > lagMaxMs) lagMaxMs = lag;
-        },
-      });
+      try {
+        conn = new FoxgloveConnection(msg.url, {
+          onStateChange: (state) => post({ type: "state", state }),
+          onChannels: (topics) => post({ type: "channels", topics }),
+          onServices: (services) => post({ type: "services", services }),
+          onError: (err) => post({ type: "error", message: err.message }),
+          onMessageMeta: ({ topic, bytes, decodeMs, decoded, serverTimeNs }) => {
+            const s = stat(topic);
+            s.count++;
+            s.bytes += bytes;
+            if (decoded) {
+              s.decodedCount++;
+              s.decodeMs += decodeMs;
+            } else {
+              s.drops++;
+            }
+            const deltaMs = Date.now() - Number(serverTimeNs / 1_000_000n);
+            if (deltaMs < clockOffsetBaseline) clockOffsetBaseline = deltaMs;
+            const lag = deltaMs - clockOffsetBaseline;
+            if (lag > lagMaxMs) lagMaxMs = lag;
+          },
+        });
+      } catch (err) {
+        post({ type: "error", message: err instanceof Error ? err.message : String(err) });
+        post({ type: "state", state: "closed" });
+      }
       break;
     }
     case "subscribe":
@@ -307,15 +307,20 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
     }
     case "publish":
       try {
-        conn?.publish(msg.topic, msg.schemaName, msg.message);
+        if (!conn) throw new Error("not connected");
+        conn.publish(msg.topic, msg.schemaName, msg.message);
       } catch (err) {
         post({ type: "error", message: `publish ${msg.topic}: ${String(err)}` });
       }
       break;
     case "callService": {
       const { id, name, request } = msg;
+      if (!conn) {
+        post({ type: "serviceResult", id, ok: false, error: "not connected" });
+        break;
+      }
       conn
-        ?.callService(name, request)
+        .callService(name, request)
         .then((response) => post({ type: "serviceResult", id, ok: true, response }))
         .catch((err: Error) => post({ type: "serviceResult", id, ok: false, error: err.message }));
       break;

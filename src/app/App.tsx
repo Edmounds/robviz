@@ -1,12 +1,15 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Grid3X3, Moon, PanelTopOpen, Plus, Settings, SquareTerminal, Sun, X } from "lucide-react";
+import { Grid3X3, Moon, PanelTopOpen, Pencil, Plus, Settings, SquareTerminal, Sun, X } from "lucide-react";
 import * as THREE from "three";
 
 import { startAgentChannel } from "../agent/uiChannel";
 import { WorkerBridge } from "../bridge/WorkerBridge";
 import {
+  APP_CONFIG_STORAGE_KEY,
   createDefaultSession,
   parseAppConfig,
+  renameAppSession,
+  saveAppConfigToStorage,
   serializeAppConfig,
   type AppConfig,
   type RobotSessionConfig,
@@ -27,7 +30,6 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { PointCloudSettingsPanel } from "../panels/PointCloudSettingsPanel";
 import { EchoTopicSection } from "../panels/EchoTopicSection";
 import { ServiceSection } from "../panels/ServiceSection";
-import { TeleopSection } from "../panels/TeleopSection";
 import { TfTreeSection } from "../panels/TfTreeSection";
 import { EditableCloudRenderer } from "../renderers/EditableCloudRenderer";
 import { GridRenderer } from "../renderers/GridRenderer";
@@ -41,6 +43,7 @@ import type { Theme } from "../renderers/sceneTheme";
 import { setSceneTheme } from "../renderers/sceneTheme";
 import { plugins, resolvePlugins } from "../plugins/registry";
 import type { PluginContext } from "../plugins/types";
+import type { PluginViewportToolDef } from "../plugins/registry";
 import type { PcdWorkerResponse } from "../worker/pcd.worker";
 import type { MessagePayload, StreamStats } from "../worker/protocol";
 import { I18nProvider, translate } from "./i18n";
@@ -51,7 +54,6 @@ import type { SerializedDockview } from "dockview-react";
 const DEFAULT_URL = "ws://localhost:8765";
 const PCD_KEY = "__pcd__";
 const THEME_KEY = "robviz.theme";
-const LAYOUT_KEY = "robviz.layout";
 const TERMINAL_HEIGHT_KEY = "robviz.terminal.height";
 const UrdfEditorPage = lazy(() => import("../panels/UrdfEditorPage"));
 const TerminalPanel = lazy(() => import("../panels/TerminalPanel"));
@@ -73,7 +75,8 @@ const BUILTIN_DISPLAY_FACTORIES: Record<string, () => Display> = {
 const TF_TOPICS = new Set(["/tf", "/tf_static"]);
 
 type PcdTool = "orbit" | "delete" | "keep";
-type NavTool = "goal" | "initialpose";
+
+type NavTool = string;
 
 interface PcdInfo {
   name: string;
@@ -109,10 +112,6 @@ function downloadBuffer(data: ArrayBuffer, name: string): void {
   downloadBlob(new Blob([data], { type: "application/octet-stream" }), name);
 }
 
-function yawQuat(yaw: number): { x: number; y: number; z: number; w: number } {
-  return { x: 0, y: 0, z: Math.sin(yaw / 2), w: Math.cos(yaw / 2) };
-}
-
 function useMediaQuery(query: string): boolean {
   const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
   useEffect(() => {
@@ -143,11 +142,19 @@ function createDefaultAppConfig(): AppConfig {
 
 function readStoredAppConfig(): AppConfig {
   try {
-    const saved = localStorage.getItem(LAYOUT_KEY);
+    const saved = localStorage.getItem(APP_CONFIG_STORAGE_KEY);
     return saved ? parseAppConfig(saved) : createDefaultAppConfig();
   } catch (error) {
     console.warn("[layout] 本地配置损坏，恢复默认工作区:", error);
     return createDefaultAppConfig();
+  }
+}
+
+function persistAppConfig(config: AppConfig): void {
+  try {
+    saveAppConfigToStorage(config, localStorage);
+  } catch {
+    /* 存储不可用时忽略 */
   }
 }
 
@@ -161,6 +168,7 @@ interface RobotSessionAppProps {
   onThemeChange: (theme: Theme) => void;
   onGlobalSettingsChange: (settings: AppConfig["settings"]) => void;
   onSaveAll: (current: RobotSessionConfig) => void;
+  onSaveAllAsFile: (current: RobotSessionConfig) => void;
   onLoadAll: (file: File) => void;
 }
 
@@ -174,6 +182,7 @@ function RobotSessionApp({
   onThemeChange,
   onGlobalSettingsChange,
   onSaveAll,
+  onSaveAllAsFile,
   onLoadAll,
 }: RobotSessionAppProps) {
   const bridgeRef = useRef<WorkerBridge>(null);
@@ -185,6 +194,8 @@ function RobotSessionApp({
   const pcdRendererRef = useRef<EditableCloudRenderer>(null);
   const pcdFileRef = useRef<HTMLInputElement>(null);
   const configFileRef = useRef<HTMLInputElement>(null);
+  const pluginCtxRef = useRef<PluginContext | null>(null);
+  const viewportToolsRef = useRef<PluginViewportToolDef[]>([]);
   const selectStartRef = useRef<[number, number]>(null);
   const navStartRef = useRef<[number, number]>(null); // 地面坐标
   const connectedUrlRef = useRef(DEFAULT_URL);
@@ -206,6 +217,12 @@ function RobotSessionApp({
       groundVisible: session.scene.groundVisible,
       tfAxesLineWidth: session.scene.tfAxesLineWidth,
     },
+  );
+  const [pluginStates, setPluginStates] = useState<Record<string, unknown>>(
+    () => session.pluginState ?? {},
+  );
+  const [initializedPluginSectionIds, setInitializedPluginSectionIds] = useState<Set<string>>(
+    () => new Set(session.initializedPluginSectionIds ?? []),
   );
   const [workspace, setWorkspace] = useState<LayoutConfig["workspace"]>(
     { ...DEFAULT_WORKSPACE_LAYOUT, urdfInspectorPercent: session.urdfInspectorPercent },
@@ -509,6 +526,12 @@ function RobotSessionApp({
 
   const connect = useCallback(() => {
     setLastError(undefined);
+    if (connectedUrlRef.current !== url) {
+      tfRef.current?.clear();
+      setFrames([]);
+      setTfTree(new Map());
+      sceneRef.current?.invalidate();
+    }
     connectedUrlRef.current = url;
     setActiveBridgeUrl(url);
     bridgeRef.current?.connect(url);
@@ -614,6 +637,7 @@ function RobotSessionApp({
     id: session.id,
     name: session.name,
     url,
+    mediaUrl: session.mediaUrl,
     mode: mode === "settings" ? sessionModeRef.current : mode,
     fixedFrame,
     scene: {
@@ -628,10 +652,13 @@ function RobotSessionApp({
       schemaName: entry.schemaName,
       ...(entry.pointCloud ? { pointCloud: entry.pointCloud } : {}),
     })),
+    pluginState: pluginStates,
+    initializedPluginSectionIds: [...initializedPluginSectionIds],
+    autoAddPluginSections: session.autoAddPluginSections,
     panels: panels.map((panel) => ({ ...panel })),
     dockLayout,
     camera: sceneRef.current?.getCameraState() ?? savedCameraRef.current,
-  }), [desired, dockLayout, fixedFrame, followFrame, mode, panels, pcdVoxel, session.id, session.name, settings.groundVisible, settings.tfAxesLineWidth, url, workspace.urdfInspectorPercent]);
+  }), [desired, dockLayout, fixedFrame, followFrame, initializedPluginSectionIds, mode, panels, pcdVoxel, pluginStates, session.autoAddPluginSections, session.id, session.mediaUrl, session.name, settings.groundVisible, settings.tfAxesLineWidth, url, workspace.urdfInspectorPercent]);
 
   const buildSessionConfigRef = useRef(buildSessionConfig);
   buildSessionConfigRef.current = buildSessionConfig;
@@ -639,6 +666,10 @@ function RobotSessionApp({
   const saveConfig = useCallback(() => {
     onSaveAll(buildSessionConfig());
   }, [buildSessionConfig, onSaveAll]);
+
+  const saveConfigAsFile = useCallback(() => {
+    onSaveAllAsFile(buildSessionConfig());
+  }, [buildSessionConfig, onSaveAllAsFile]);
 
   const openConfigFile = useCallback(
     async (file: File) => {
@@ -836,40 +867,34 @@ function RobotSessionApp({
     });
   }, []);
 
+  const cancelNav = useCallback(() => {
+    navStartRef.current = null;
+    setNavPreview(undefined);
+    setNavTool(undefined);
+  }, []);
+
   const onNavUp = useCallback(
     (e: React.PointerEvent) => {
       const start = navStartRef.current;
       navStartRef.current = null;
       setNavPreview(undefined);
-      const tool = navTool;
+      const toolId = navTool;
       setNavTool(undefined);
-      if (!start || !tool) return;
+      if (!start || !toolId) return;
       const end = groundPoint(e) ?? start;
-      const yaw = Math.atan2(end[1] - start[1], end[0] - start[0]);
-      const bridge = bridgeRef.current!;
-      const now = Date.now() / 1000;
-      const header = {
-        stamp: { sec: Math.floor(now), nanosec: Math.round((now % 1) * 1e9) },
-        frame_id: fixedFrame,
-      };
-      const pose = {
-        position: { x: start[0], y: start[1], z: 0 },
-        orientation: yawQuat(yaw),
-      };
-      if (tool === "goal") {
-        bridge.publish("/goal_pose", "geometry_msgs/msg/PoseStamped", { header, pose });
-      } else {
-        const covariance = new Array<number>(36).fill(0);
-        covariance[0] = 0.25;
-        covariance[7] = 0.25;
-        covariance[35] = 0.068;
-        bridge.publish("/initialpose", "geometry_msgs/msg/PoseWithCovarianceStamped", {
-          header,
-          pose: { pose, covariance },
-        });
-      }
+      const ctx = pluginCtxRef.current;
+      const tool = viewportToolsRef.current.find((candidate) => candidate.id === toolId);
+          if (!ctx || !tool || !ctx.active || ctx.connectionState !== "open") return;
+          try {
+            tool.onPoseSelect(ctx, {
+              position: { x: start[0], y: start[1], z: 0 },
+              yaw: Math.atan2(end[1] - start[1], end[0] - start[0]),
+            });
+          } catch (error) {
+            setLastError(`Viewport tool ${tool.id} failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
     },
-    [navTool, fixedFrame, groundPoint],
+    [groundPoint, navTool],
   );
 
   // ---- 面板坞 ----
@@ -886,9 +911,22 @@ function RobotSessionApp({
     setPanels((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
+  const handleWorkspacePanelClosed = useCallback((id: string) => {
+    const panel = panels.find((candidate) => candidate.id === id);
+    if (panel?.kind.startsWith("plugin-section:")) {
+      const sectionPluginId = panel.kind.slice("plugin-section:".length).split(":")[0];
+      if (settings.disabledPluginIds.includes(sectionPluginId)) return;
+    }
+    removePanel(id);
+  }, [panels, removePanel, settings.disabledPluginIds]);
+
   /** 面板内部状态快照上报（进配置文件） */
   const updatePanelState = useCallback((id: string, state: unknown) => {
     setPanels((prev) => prev.map((p) => (p.id === id ? { ...p, state } : p)));
+  }, []);
+
+  const updatePluginState = useCallback((pluginId: string, state: unknown) => {
+    setPluginStates((current) => ({ ...current, [pluginId]: state }));
   }, []);
 
   const togglePlugin = useCallback((pluginId: string, enabled: boolean) => {
@@ -935,17 +973,33 @@ function RobotSessionApp({
       fixedFrame,
       theme,
       locale: settings.language,
+      active,
+      connectionState: connState,
+      pluginStates,
+      onPluginStateChange: updatePluginState,
     };
-  }, [ready, topics, fixedFrame, theme, settings.language]);
+  }, [active, connState, fixedFrame, pluginStates, ready, settings.language, theme, topics, updatePluginState]);
 
-  const knownPluginSectionsRef = useRef(new Set<string>());
+  pluginCtxRef.current = pluginCtx ?? null;
+  viewportToolsRef.current = resolvedPlugins.viewportTools;
+
+  useEffect(() => {
+    if (!active || connState !== "open" || (navTool && !resolvedPlugins.viewportTools.some((tool) => tool.id === navTool))) {
+      cancelNav();
+    }
+  }, [active, cancelNav, connState, navTool, resolvedPlugins.viewportTools]);
+
   useEffect(() => {
     const additions: DockPanel[] = [];
+    const initialized = new Set(initializedPluginSectionIds);
     for (const section of resolvedPlugins.sections) {
       const kind = `plugin-section:${section.id}`;
-      if (knownPluginSectionsRef.current.has(kind)) continue;
-      knownPluginSectionsRef.current.add(kind);
-      additions.push({ id: kind, kind });
+      if (!session.autoAddPluginSections || initialized.has(section.id)) continue;
+      initialized.add(section.id);
+      if (!panels.some((panel) => panel.kind === kind)) additions.push({ id: kind, kind });
+    }
+    if (initialized.size !== initializedPluginSectionIds.size) {
+      setInitializedPluginSectionIds(initialized);
     }
     if (additions.length > 0) {
       setPanels((current) => [
@@ -953,13 +1007,12 @@ function RobotSessionApp({
         ...additions.filter((addition) => !current.some((panel) => panel.kind === addition.kind)),
       ]);
     }
-  }, [resolvedPlugins.sections]);
+  }, [initializedPluginSectionIds, panels, resolvedPlugins.sections, session.autoAddPluginSections]);
 
   const panelTitle = useCallback((kind: string) => {
     if (kind === "3d") return t("view3d");
     if (kind === "topics") return t("topics");
     if (kind === "echo") return t("echoTopic");
-    if (kind === "teleop") return t("teleop");
     if (kind === "services") return t("services");
     if (kind === "tf-tree") return t("tfTree");
     if (kind === "image") return t("imagePanel");
@@ -974,23 +1027,26 @@ function RobotSessionApp({
     const storedPanel = panels.find((candidate) => candidate.id === panel.id) ?? panel;
 
     if (panel.kind === "3d") {
+      const selectedTool = navTool
+        ? resolvedPlugins.viewportTools.find((tool) => tool.id === navTool)
+        : undefined;
+
       return (
         <div className="workspace-panel">
           <div className="viewport" onDoubleClick={onViewportDoubleClick}>
             <canvas ref={attachSceneCanvas} />
             <div className="nav-toolbar">
-              <button
-                className={navTool === "goal" ? "active" : ""}
-                onClick={() => setNavTool(navTool === "goal" ? undefined : "goal")}
-              >
-                {t("navigationGoal")}
-              </button>
-              <button
-                className={navTool === "initialpose" ? "active" : ""}
-                onClick={() => setNavTool(navTool === "initialpose" ? undefined : "initialpose")}
-              >
-                {t("initialPose")}
-              </button>
+              {pluginCtx && resolvedPlugins.viewportTools.map((tool) => (
+                <button
+                  key={tool.id}
+                  className={navTool === tool.id ? "active" : ""}
+                  disabled={!active || connState !== "open"}
+                  title={tool.hint?.(pluginCtx)}
+                  onClick={() => setNavTool(navTool === tool.id ? undefined : tool.id)}
+                >
+                  {tool.title(pluginCtx)}
+                </button>
+              ))}
               <button onClick={() => sceneRef.current?.resetView()} title={t("resetViewHint")}>
                 {t("resetView")}
               </button>
@@ -1010,7 +1066,7 @@ function RobotSessionApp({
                   {frames.map((frame) => <option key={frame} value={frame}>{frame}</option>)}
                 </select>
               </label>
-              {navTool && <span className="nav-hint">{t("navHint")}</span>}
+              {selectedTool && pluginCtx && <span className="nav-hint">{selectedTool.hint?.(pluginCtx)}</span>}
             </div>
             {(pcd || pcdBusy) && (
               <div className="pcd-toolbar">
@@ -1036,7 +1092,7 @@ function RobotSessionApp({
               </div>
             )}
             {navTool && (
-              <div className="select-overlay nav-overlay" onPointerDown={onNavDown} onPointerMove={onNavMove} onPointerUp={onNavUp}>
+              <div className="select-overlay nav-overlay" onPointerDown={onNavDown} onPointerMove={onNavMove} onPointerUp={onNavUp} onPointerCancel={cancelNav}>
                 {navPreview && navPreview.len > 4 && (
                   <div className="nav-arrow" style={{ left: navPreview.x, top: navPreview.y, width: navPreview.len, transform: `rotate(${navPreview.yawDeg}deg)` }} />
                 )}
@@ -1102,11 +1158,12 @@ function RobotSessionApp({
     if (panel.kind === "echo" && ready) {
       return <div className="workspace-panel utility-panel"><EchoTopicSection bridge={bridgeRef.current!} topics={topics} /></div>;
     }
-    if (panel.kind === "teleop" && ready) {
-      return <div className="workspace-panel utility-panel"><TeleopSection bridge={bridgeRef.current!} /></div>;
-    }
     if (panel.kind === "services" && ready) {
-      return <div className="workspace-panel utility-panel"><ServiceSection bridge={bridgeRef.current!} services={services} /></div>;
+      return (
+        <div className="workspace-panel utility-panel">
+          <ServiceSection bridge={bridgeRef.current!} services={services} connState={connState} />
+        </div>
+      );
     }
     if (panel.kind === "tf-tree") {
       return (
@@ -1117,17 +1174,20 @@ function RobotSessionApp({
     }
     if (panel.kind === "image" && ready) {
       const imageState = storedPanel.state as
-        | { topic?: string; preferRaw?: boolean }
+        | { topic?: string; preferRaw?: boolean; useWebRtc?: boolean }
         | undefined;
       return (
         <ImagePanel
           embedded
+          active={active}
           bridge={bridgeRef.current!}
           topics={topics}
           initialTopic={imageState?.topic}
           initialPreferRaw={imageState?.preferRaw}
-          onTopicChange={(topic, preferRaw) =>
-            updatePanelState(panel.id, { topic, preferRaw })
+          initialUseWebRtc={imageState?.useWebRtc !== false}
+          mediaUrl={session.mediaUrl}
+          onTopicChange={(topic, preferRaw, useWebRtc) =>
+            updatePanelState(panel.id, { topic, preferRaw, useWebRtc })
           }
           onClose={() => removePanel(panel.id)}
         />
@@ -1164,7 +1224,7 @@ function RobotSessionApp({
       );
     }
     return <div className="workspace-panel"><p className="empty-hint">{t("unknownPanel", { kind: panel.kind })}</p></div>;
-  }, [attachSceneCanvas, closePcd, dataTopics, desired, displayFactories, followFrame, frames, lastError, navPreview, navTool, onNavDown, onNavMove, onNavUp, onSelectDown, onSelectMove, onSelectUp, onViewportDoubleClick, panels, pcd, pcdBusy, pcdExport, pcdTool, pcdUndo, pluginCtx, ready, removePanel, resolvedPlugins.panels, resolvedPlugins.sections, sceneStats, selectRect, services, settings.groundVisible, streamStats, t, tfTree, theme, toggleTopic, topics, updatePanelState, updatePointCloudSettings]);
+  }, [active, attachSceneCanvas, cancelNav, closePcd, connState, dataTopics, desired, displayFactories, followFrame, frames, lastError, navPreview, navTool, onNavDown, onNavMove, onNavUp, onSelectDown, onSelectMove, onSelectUp, onViewportDoubleClick, panels, pcd, pcdBusy, pcdExport, pcdTool, pcdUndo, pluginCtx, ready, removePanel, resolvedPlugins.panels, resolvedPlugins.sections, resolvedPlugins.viewportTools, sceneStats, selectRect, services, session.mediaUrl, settings.groundVisible, streamStats, t, tfTree, theme, toggleTopic, topics, updatePanelState, updatePointCloudSettings]);
 
   return (
     <I18nProvider locale={settings.language}>
@@ -1192,7 +1252,6 @@ function RobotSessionApp({
                 ["3d", t("view3d")],
                 ["topics", t("topics")],
                 ["echo", t("echoTopic")],
-                ["teleop", t("teleop")],
                 ["services", t("services")],
                 ["tf-tree", t("tfTree")],
                 ["image", t("imagePanel")],
@@ -1240,6 +1299,9 @@ function RobotSessionApp({
         <span className="spacer" />
         <button onClick={saveConfig} title={t("saveConfigHint")}>
           {t("saveConfig")}
+        </button>
+        <button onClick={saveConfigAsFile} title={t("saveConfigAsFileHint")}>
+          {t("saveConfigAsFile")}
         </button>
         <button onClick={() => configFileRef.current?.click()} title={t("loadConfigHint")}>
           {t("loadConfig")}
@@ -1329,7 +1391,7 @@ function RobotSessionApp({
                 {renderWorkspacePanel(panel)}
               </ErrorBoundary>
             )}
-            onPanelClosed={removePanel}
+            onPanelClosed={handleWorkspacePanelClosed}
             onLayoutChange={setDockLayout}
             onInvalidLayout={() => setDockLayout(undefined)}
             maximizeLabel={t("maximizePanel")}
@@ -1398,6 +1460,9 @@ export default function App() {
   const [connectionStates, setConnectionStates] = useState<Record<string, ConnectionState>>({});
   const [runtimeGeneration, setRuntimeGeneration] = useState(0);
   const [configError, setConfigError] = useState<string>();
+  const editingSessionIdRef = useRef<string | undefined>(undefined);
+  const [editingSessionId, setEditingSessionId] = useState<string>();
+  const [editingSessionName, setEditingSessionName] = useState("");
   const t = useMemo(
     () => (key: Parameters<typeof translate>[1], values?: Record<string, string | number>) =>
       translate(config.settings.language, key, values),
@@ -1405,15 +1470,32 @@ export default function App() {
   );
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      try {
-        localStorage.setItem(LAYOUT_KEY, serializeAppConfig(config));
-      } catch {
-        /* 存储不可用时忽略 */
-      }
-    }, 500);
+    const timer = setTimeout(() => persistAppConfig(config), 500);
     return () => clearTimeout(timer);
   }, [config]);
+
+  const renameSession = useCallback((id: string, draft: string) => {
+    setConfig((current) => renameAppSession(current, id, draft));
+  }, []);
+
+  const beginRenameSession = useCallback((session: RobotSessionConfig) => {
+    editingSessionIdRef.current = session.id;
+    setEditingSessionId(session.id);
+    setEditingSessionName(session.name);
+  }, []);
+
+  const commitRenameSession = useCallback((id: string) => {
+    if (editingSessionIdRef.current !== id) return;
+    editingSessionIdRef.current = undefined;
+    renameSession(id, editingSessionName);
+    setEditingSessionId(undefined);
+  }, [editingSessionName, renameSession]);
+
+  const cancelRenameSession = useCallback((id: string) => {
+    if (editingSessionIdRef.current !== id) return;
+    editingSessionIdRef.current = undefined;
+    setEditingSessionId(undefined);
+  }, []);
 
   const updateSession = useCallback((nextSession: RobotSessionConfig) => {
     setConfig((current) => {
@@ -1474,6 +1556,16 @@ export default function App() {
       sessions: current.sessions.map((session) => session.id === currentSession.id ? currentSession : session),
     };
     setConfig(next);
+    persistAppConfig(next);
+  }, []);
+
+  const saveAllAsFile = useCallback((currentSession: RobotSessionConfig) => {
+    const current = configRef.current;
+    const next = {
+      ...current,
+      sessions: current.sessions.map((session) => session.id === currentSession.id ? currentSession : session),
+    };
+    setConfig(next);
     downloadBlob(new Blob([serializeAppConfig(next)], { type: "application/json" }), "robviz.json");
   }, []);
 
@@ -1503,9 +1595,55 @@ export default function App() {
               aria-selected={active}
               tabIndex={active ? 0 : -1}
               onClick={() => setConfig((current) => ({ ...current, activeSessionId: session.id }))}
+              onDoubleClick={(event) => {
+                event.stopPropagation();
+                beginRenameSession(session);
+              }}
+              onKeyDown={(event) => {
+                if (event.key !== "F2") return;
+                event.preventDefault();
+                beginRenameSession(session);
+              }}
             >
               <span className={`session-status ${state}`} aria-hidden="true" />
-              <span className="session-name" title={session.url}>{connectionTargetLabel(session.url)}</span>
+              {editingSessionId === session.id ? (
+                <input
+                  className="session-name-input"
+                  value={editingSessionName}
+                  autoFocus
+                  aria-label={t("renameMachine")}
+                  onChange={(event) => setEditingSessionName(event.target.value)}
+                  onClick={(event) => event.stopPropagation()}
+                  onDoubleClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => {
+                    event.stopPropagation();
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      commitRenameSession(session.id);
+                    } else if (event.key === "Escape") {
+                      event.preventDefault();
+                      cancelRenameSession(session.id);
+                    }
+                  }}
+                  onBlur={() => commitRenameSession(session.id)}
+                />
+              ) : (
+                <span className="session-label" title={session.url}>
+                  <span className="session-name">{session.name}</span>
+                  <span className="session-target">{connectionTargetLabel(session.url)}</span>
+                </span>
+              )}
+              <button
+                className="session-rename"
+                title={t("renameMachine")}
+                aria-label={t("renameMachine")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  beginRenameSession(session);
+                }}
+              >
+                <Pencil />
+              </button>
               {config.sessions.length > 1 && (
                 <button
                   className="session-close"
@@ -1540,6 +1678,7 @@ export default function App() {
                 onThemeChange={updateTheme}
                 onGlobalSettingsChange={updateGlobalSettings}
                 onSaveAll={saveAll}
+                onSaveAllAsFile={saveAllAsFile}
                 onLoadAll={loadAll}
               />
             </div>
