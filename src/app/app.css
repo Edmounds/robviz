@@ -1209,6 +1209,63 @@ body {
   color: var(--text-faint);
 }
 
+.waypoint-maker {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 0 8px;
+}
+
+.waypoint-maker-status,
+.waypoint-maker-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 12px;
+}
+
+.waypoint-maker-status {
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: var(--fs-meta);
+}
+
+.waypoint-maker-spacer {
+  flex: 1;
+}
+
+.waypoint-maker-dirty {
+  color: var(--status-warn);
+}
+
+.waypoint-maker-check-row {
+  justify-content: space-between;
+}
+
+.waypoint-maker-check-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.waypoint-maker-actions {
+  flex-wrap: wrap;
+}
+
+.waypoint-maker-actions .topic-input {
+  min-width: 0;
+  flex: 1 1 150px;
+}
+
+.waypoint-maker-message {
+  margin: 3px 12px 0;
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  overflow-wrap: anywhere;
+}
+
 .topic-input {
   flex: 1;
   min-width: 0;
@@ -2480,6 +2537,407 @@ button:disabled {
   height: 100%;
   overflow: auto;
   padding: 8px;
+}
+
+/* ---- Waypoints editor ---- */
+.waypoints-editor-page {
+  display: grid;
+  grid-template-rows: 38px minmax(0, 1fr) 210px auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.waypoints-toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.waypoints-toolbar > svg {
+  width: 15px;
+  height: 15px;
+  flex: none;
+  color: var(--text-muted);
+}
+
+.waypoints-toolbar select,
+.waypoints-toolbar button,
+.waypoints-toolbar .icon-action {
+  min-height: var(--ctl-min-h);
+  flex: none;
+  padding: 2px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-ctl);
+  background: transparent;
+  color: var(--foreground-soft);
+  font: var(--fs-ui) var(--sans);
+  cursor: pointer;
+}
+
+.waypoints-toolbar select {
+  max-width: 260px;
+  font-family: var(--mono);
+}
+
+.waypoints-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+
+.waypoints-toolbar button:hover:not(:disabled) {
+  border-color: var(--foreground);
+  color: var(--foreground);
+}
+
+.waypoints-toolbar button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.waypoints-file-meta,
+.waypoints-draft-status {
+  flex: none;
+  color: var(--text-faint);
+  font: var(--fs-meta) var(--mono);
+}
+
+.waypoints-draft-status.dirty {
+  color: var(--status-warn);
+}
+
+.waypoints-workspace {
+  display: grid;
+  grid-template-columns: minmax(170px, 220px) minmax(0, 1fr) minmax(190px, 250px);
+  min-width: 0;
+  min-height: 0;
+}
+
+.waypoints-list,
+.waypoints-inspector {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid var(--border-soft);
+}
+
+.waypoints-inspector {
+  border-right: none;
+  border-left: 1px solid var(--border-soft);
+}
+
+.waypoints-section-title {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  font-size: var(--fs-ui);
+  font-weight: 500;
+}
+
+.waypoints-section-title svg {
+  width: 14px;
+  height: 14px;
+}
+
+.waypoint-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 31px;
+  padding: 3px 8px;
+  border: none;
+  border-bottom: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--text-muted);
+  font: var(--fs-meta) var(--mono);
+  text-align: left;
+  cursor: pointer;
+}
+
+.waypoint-row:hover:not(:disabled),
+.waypoint-row.active {
+  background: var(--surface-soft);
+  color: var(--foreground);
+}
+
+.waypoint-row:disabled {
+  color: var(--status-warn);
+  cursor: default;
+}
+
+.waypoint-row-mark {
+  color: var(--foreground);
+  font-weight: 600;
+  text-align: center;
+}
+
+.waypoint-row small {
+  color: var(--text-faint);
+  font-size: 10px;
+}
+
+.waypoints-map-wrap {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--canvas);
+}
+
+.waypoints-map-wrap canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.waypoints-map-status,
+.waypoints-map-legend {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 7px;
+  background: color-mix(in srgb, var(--canvas) 88%, transparent);
+  color: var(--text-muted);
+  font: var(--fs-meta) var(--mono);
+  pointer-events: none;
+}
+
+.waypoints-map-status {
+  top: 8px;
+  left: 8px;
+  color: var(--status-warn);
+}
+
+.waypoints-map-status svg {
+  width: 14px;
+  height: 14px;
+}
+
+.waypoints-map-legend {
+  right: 8px;
+  bottom: 8px;
+}
+
+.waypoints-map-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.waypoint-legend-point,
+.waypoint-legend-robot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--foreground);
+}
+
+.waypoint-legend-robot {
+  border-radius: 0;
+  background: var(--status-warn);
+}
+
+.waypoint-form {
+  display: grid;
+  gap: 7px;
+  padding: 9px 10px;
+}
+
+.waypoint-form label,
+.settings-grid-row label {
+  display: grid;
+  grid-template-columns: minmax(54px, 0.8fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}
+
+.waypoint-form input,
+.waypoint-form select,
+.settings-grid-row input,
+.settings-image-transport input[type="number"] {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--ctl-min-h);
+  padding: 2px 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-ctl);
+  background: transparent;
+  color: var(--foreground);
+  font: var(--fs-ui) var(--mono);
+}
+
+.waypoints-pose-status {
+  margin: 8px 10px 12px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  font: var(--fs-meta) var(--mono);
+}
+
+.waypoints-pose-status .waypoints-section-title {
+  margin: 0 -10px 7px;
+  padding: 0;
+  border-bottom: none;
+}
+
+.waypoints-pose-status .available {
+  color: var(--foreground);
+}
+
+.waypoints-pose-status .unavailable {
+  color: var(--status-warn);
+}
+
+.waypoints-pose-status small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-faint);
+}
+
+.waypoints-previews {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  border-top: 1px solid var(--border-soft);
+}
+
+.waypoints-previews > .panel {
+  min-height: 0;
+}
+
+.waypoints-feedback {
+  max-height: 64px;
+  overflow: auto;
+  padding: 5px 10px;
+  border-top: 1px solid var(--border-soft);
+  font: var(--fs-meta) var(--mono);
+  word-break: break-word;
+}
+
+.waypoints-feedback:not(.error-line) {
+  color: var(--text-muted);
+}
+
+/* ---- Image transport settings ---- */
+.settings-image-transport {
+  max-width: 760px;
+}
+
+.image-settings-stream {
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.image-settings-stream h2 {
+  color: var(--foreground-soft);
+  font-size: var(--fs-body);
+  text-transform: none;
+}
+
+.settings-row input[type="number"] {
+  width: 110px;
+  min-height: var(--ctl-min-h);
+  padding: 2px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-ctl);
+  background: transparent;
+  color: var(--foreground);
+  font: var(--fs-ui) var(--mono);
+}
+
+.settings-grid-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.settings-grid-row label {
+  display: block;
+}
+
+.settings-grid-row label span {
+  display: block;
+  margin-bottom: 3px;
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.settings-actions .settings-command {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.settings-actions svg {
+  width: 14px;
+  height: 14px;
+}
+
+.settings-version {
+  color: var(--text-faint);
+  font: var(--fs-meta) var(--mono);
+}
+
+.settings-feedback {
+  margin: 10px 0 0;
+  font: var(--fs-meta) var(--mono);
+  word-break: break-word;
+}
+
+.settings-feedback.ok {
+  color: var(--foreground);
+}
+
+.settings-feedback.error {
+  color: var(--status-error);
+}
+
+@media (max-width: 760px) {
+  .waypoints-editor-page {
+    grid-template-rows: 38px minmax(0, 1fr) 180px auto;
+  }
+
+  .waypoints-workspace {
+    grid-template-columns: 150px minmax(0, 1fr);
+  }
+
+  .waypoints-inspector {
+    display: none;
+  }
+
+  .waypoints-previews {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .settings-grid-row {
+    grid-template-columns: 1fr;
+  }
 }
 
 .urdf-file-list > div {

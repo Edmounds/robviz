@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "rgb": {
+    "bandwidth_mbps": 1.5,
+    "auto_quality": true,
+    "quality": 70,
+    "width": 640,
+    "height": 360,
+    "max_fps": 10.0
+  },
+  "depth": {
+    "bandwidth_mbps": 0.8,
+    "auto_quality": true,
+    "quality": 70,
+    "width": 424,
+    "height": 240,
+    "max_fps": 10.0
+  }
+}

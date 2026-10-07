@@ -12,7 +12,8 @@
 远程终端按需启动操作电脑上的本地网关，不改变机器人侧部署。
 
 **功能一览**：3D 显示（Map / LaserScan / PointCloud2 / Path / Marker / URDF / TF）、
-图像面板（压缩图 + 深度图 turbo 上色 + 悬停取值）、曲线面板（多话题字段对比）、
+图像面板（压缩图 + 深度图 turbo 上色 + 悬停取值）、内置航点编辑器（正式/调试 YAML、2D odom 网格、TF 新鲜度）、
+曲线面板（多话题字段对比）、
 遥控 Teleop、服务调用、Nav 目标 / 初始位姿、TF 树、视角跟踪目标、大 PCD 加载清理、
 2D 地图编辑、布局配置保存/加载（rviz 式）、分割停靠工作区、多机器标签页、中英文与明暗主题、
 远程终端、运行时插件开关、
@@ -94,6 +95,10 @@ npm run terminal
 - **Nav 工具**：默认启用的 Nav Goals 插件提供视口“导航目标 / 初始位姿”，点击定位置、拖动定朝向；默认发布到 `/goal_pose` / `/initialpose`，话题可在插件区块中按机器标签配置。
 - **URDF**：顶栏进入"URDF 编辑"，可加载文件/文件夹、查看结构与物理辅助信息、控制关节、
   订阅 `/joint_states`，并在 XML 编辑器中修改、应用和下载 URDF。
+- **航点编辑器**：顶栏进入"航点编辑"，选择正式或调试 YAML，编辑 XYZ/yaw，拖动 2D odom 网格中的已有点，
+  查看 `odom → base_link` 当前位姿和新鲜度。正式模板中的缺失点会标记为缺失，不会生成虚假坐标。
+- **图像传输**：设置页的"图像传输"分别控制 RGB 与 Native Depth 的 Mbps、JPEG 自动/固定质量、尺寸和 FPS。
+  "应用"或保存默认后，只有 ROS 重载服务返回成功才显示为已生效。航点页固定订阅两个 `CompressedImage` 预览话题。
 
 ### Panda URDF 示例
 
@@ -147,7 +152,10 @@ Cursor agent 会自动学会这些命令。
 
 ## 插件
 
-RobViz 默认打包并启用 Teleop 与 Nav Goals 两个控制插件；各机器的 Teleop 参数、导航话题会随会话配置保存。切换机器标签时，内置 Teleop 会暂停并清除输入，重新切回后需要显式启用。宿主不会为第三方插件制定通用的非活动会话写入策略。
+RobViz 默认打包并启用 Teleop、Nav Goals 和 Waypoints Maker 三个项目插件；各机器的 Teleop 参数、导航话题和航点录制表单会随会话配置保存。切换机器标签时，内置 Teleop 会暂停并清除输入，Waypoints Maker 只清理订阅，不取消已接受的导航。宿主不会为第三方插件制定通用的非活动会话写入策略。
+
+Waypoints Maker 订阅 recorder 的状态和提示话题，并通过
+`/fruit/waypoint_maker/command` 发送严格 JSON 命令。它只允许活动且在线的会话写入，正式文件与调试文件由 recorder 的文件 ID allowlist 管理。
 
 想加自己的功能（自定义面板 / 3D 显示器 / 侧栏区块 / 视口工具）：
 

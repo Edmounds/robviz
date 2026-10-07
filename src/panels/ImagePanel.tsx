@@ -132,6 +132,7 @@ export function ImagePanel({
   bridge,
   topics,
   initialTopic,
+  fixedTopic,
   initialPreferRaw = false,
   initialUseWebRtc = true,
   mediaUrl: configuredMediaUrl,
@@ -144,6 +145,8 @@ export function ImagePanel({
   topics: TopicInfo[];
   /** 配置恢复：初始选中的话题 */
   initialTopic?: string;
+  /** 固定预览话题；设置后不显示可切换话题选择器。 */
+  fixedTopic?: string;
   /** 配置恢复：保留 Raw 话题，不等于选择 Raw 传输 */
   initialPreferRaw?: boolean;
   /** 配置恢复：选择 WebRTC 或 Raw 渲染/传输 */
@@ -159,7 +162,7 @@ export function ImagePanel({
   const videoRef = useRef<HTMLVideoElement>(null);
   const frameRef = useRef<RawFrame>(null);
   const preferRawRef = useRef(initialPreferRaw);
-  const [topic, setTopic] = useState(initialTopic ?? "");
+  const [topic, setTopic] = useState(fixedTopic ?? initialTopic ?? "");
   const [collapsed, setCollapsed] = useState(false);
   const [hover, setHover] = useState<HoverInfo>();
   const [meta, setMeta] = useState<string>("");
@@ -187,14 +190,14 @@ export function ImagePanel({
   const imageTopics = sortedImageTopics(topics);
 
   useEffect(() => {
-    const preferred = preferredImageTopic(
+    const preferred = fixedTopic ?? preferredImageTopic(
       topics,
       topic,
       initialTopic,
       preferRawRef.current,
     );
     if (preferred !== topic) setTopic(preferred);
-  }, [initialTopic, topic, topics]);
+  }, [fixedTopic, initialTopic, topic, topics]);
 
   useEffect(() => {
     if (!active || !activeWebRtc || !topic || collapsed) return;
@@ -308,24 +311,28 @@ export function ImagePanel({
 
   const header = (
     <>
-        <select
-          value={topic}
-          onChange={(e) => {
-            preferRawRef.current = topics.some(
-              (candidate) =>
-                candidate.topic === e.target.value &&
-                candidate.schemaName === "sensor_msgs/msg/Image",
-            );
-            setTopic(e.target.value);
-          }}
-        >
-          <option value="">{t("chooseImageTopic")}</option>
-          {imageTopics.map((t) => (
-            <option key={t.topic} value={t.topic}>
-              {t.topic}
-            </option>
-          ))}
-        </select>
+        {fixedTopic ? (
+          <span className="panel-meta" title={fixedTopic}>{fixedTopic}</span>
+        ) : (
+          <select
+            value={topic}
+            onChange={(e) => {
+              preferRawRef.current = topics.some(
+                (candidate) =>
+                  candidate.topic === e.target.value &&
+                  candidate.schemaName === "sensor_msgs/msg/Image",
+              );
+              setTopic(e.target.value);
+            }}
+          >
+            <option value="">{t("chooseImageTopic")}</option>
+            {imageTopics.map((t) => (
+              <option key={t.topic} value={t.topic}>
+                {t.topic}
+              </option>
+            ))}
+          </select>
+        )}
         {isImageTopic && (
           <>
             <select
