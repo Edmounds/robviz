@@ -90,16 +90,30 @@ function ImageTransportSettings({
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ kind: "ok" | "error"; text: string }>();
 
-  const reloadRos = useCallback(async (version: number) => {
+  const reloadRos = useCallback(async (version: number, session: string) => {
     if (connectionState !== "open") {
       throw new Error(isEn ? "Connect to ROS before applying image settings" : "应用图像配置前请先连接 ROS");
     }
     const response = await bridge.callService("/fruit_robviz_bridge/reload_image_settings", {});
     const result = response as { success?: unknown; message?: unknown };
+    const message = typeof result.message === "string" ? result.message : "";
     if (result.success !== true) {
-      throw new Error(typeof result.message === "string" ? result.message : `ROS reload rejected version ${version}`);
+      throw new Error(message || `ROS reload rejected version ${version}`);
     }
-    return typeof result.message === "string" ? result.message : `applied version ${version}`;
+    let confirmed: { version?: unknown; session?: unknown };
+    try {
+      confirmed = JSON.parse(message);
+    } catch {
+      throw new Error(`Invalid ROS reload confirmation: ${message}`);
+    }
+    if (confirmed?.version !== version || confirmed?.session !== session) {
+      throw new Error(
+        isEn
+          ? `ROS reload confirmed unexpected version: ${message}`
+          : `ROS 重载返回的版本不匹配：${message}`,
+      );
+    }
+    return message;
   }, [bridge, connectionState, isEn]);
 
   useEffect(() => {
@@ -121,7 +135,7 @@ function ImageTransportSettings({
     try {
       const response = await applyImageSettings(settings);
       setSettings(response.settings);
-      const message = await reloadRos(response.version);
+      const message = await reloadRos(response.version, response.settings.session);
       setStatus({ kind: "ok", text: isEn ? `Applied: ${message}` : `已生效：${message}` });
     } catch (error) {
       setStatus({ kind: "error", text: error instanceof Error ? error.message : String(error) });
@@ -137,7 +151,7 @@ function ImageTransportSettings({
     try {
       const response = await saveImageSettingsDefaults(settings);
       setSettings(response.settings);
-      const message = await reloadRos(response.version);
+      const message = await reloadRos(response.version, response.settings.session);
       setStatus({ kind: "ok", text: isEn ? `Default saved and applied: ${message}` : `默认已保存并生效：${message}` });
     } catch (error) {
       setStatus({ kind: "error", text: error instanceof Error ? error.message : String(error) });

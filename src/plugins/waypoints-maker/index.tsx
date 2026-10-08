@@ -1,7 +1,7 @@
 /** 项目插件：航点录制、编辑和逐段试跑。 */
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import type { Odometry } from "../../core/types";
+import type { Odometry, TFMessage } from "../../core/types";
 import type { PluginContext, PluginSectionProps, RobvizPlugin } from "../types";
 
 const COMMAND_TOPIC = "/fruit/waypoint_maker/command";
@@ -43,6 +43,8 @@ interface RecorderState {
   fileId: string;
   formal: boolean;
   version: string;
+  diskVersion?: string;
+  diskSynced?: boolean;
   dirty: boolean;
   points: WaypointPoint[];
   lastBackupPath: string;
@@ -115,12 +117,20 @@ function readPoint(raw: unknown): WaypointPoint | undefined {
   };
 }
 
-function readRecorderState(raw: unknown): RecorderState | undefined {
-  if (!isRecord(raw) || !isRecord(raw.waypoints) || !isRecord(raw.navigation)) return undefined;
-  const waypoints = raw.waypoints;
-  const navigation = raw.navigation;
-  const points = Array.isArray(raw.points)
-    ? raw.points.map(readPoint).filter((point): point is WaypointPoint => point !== undefined)
+export function readRecorderState(raw: unknown): RecorderState | undefined {
+  let data: unknown = raw;
+  if (isRecord(raw) && typeof raw.data === "string") {
+    try {
+      data = JSON.parse(raw.data);
+    } catch {
+      return undefined;
+    }
+  }
+  if (!isRecord(data) || !isRecord(data.waypoints) || !isRecord(data.navigation)) return undefined;
+  const waypoints = data.waypoints;
+  const navigation = data.navigation;
+  const points = Array.isArray(data.points)
+    ? data.points.map(readPoint).filter((point): point is WaypointPoint => point !== undefined)
     : [];
   const template = Array.isArray(waypoints.template)
     ? waypoints.template.flatMap((item): TemplateEntry[] => {
@@ -136,14 +146,16 @@ function readRecorderState(raw: unknown): RecorderState | undefined {
     : [];
   const finalYawMode = waypoints.final_yaw_mode;
   return {
-    status: typeof raw.status === "string" ? raw.status : "idle",
-    message: typeof raw.message === "string" ? raw.message : "",
-    fileId: typeof raw.file_id === "string" ? raw.file_id : "",
-    formal: raw.formal === true,
-    version: typeof raw.version === "string" ? raw.version : "",
-    dirty: raw.dirty === true,
+    status: typeof data.status === "string" ? data.status : "idle",
+    message: typeof data.message === "string" ? data.message : "",
+    fileId: typeof data.file_id === "string" ? data.file_id : "",
+    formal: data.formal === true,
+    version: typeof data.version === "string" ? data.version : "",
+    diskVersion: typeof data.disk_version === "string" ? data.disk_version : undefined,
+    diskSynced: typeof data.disk_synced === "boolean" ? data.disk_synced : true,
+    dirty: data.dirty === true,
     points,
-    lastBackupPath: typeof raw.last_backup_path === "string" ? raw.last_backup_path : "",
+    lastBackupPath: typeof data.last_backup_path === "string" ? data.last_backup_path : "",
     waypoints: {
       count: typeof waypoints.count === "number" ? waypoints.count : points.length,
       cursor: typeof waypoints.cursor === "number" ? waypoints.cursor : 0,
@@ -179,6 +191,7 @@ function MakerSection({ ctx }: PluginSectionProps) {
   const [finalYawMode, setFinalYawMode] = useState<FinalYawMode>(stored.finalYawMode);
   const [localError, setLocalError] = useState("");
   const [odom, setOdom] = useState<OdomStatus>();
+  const [lastTfAt, setLastTfAt] = useState(0);
   const [poseTick, setPoseTick] = useState(0);
 
   const odomTopic = useMemo(
@@ -202,9 +215,17 @@ function MakerSection({ ctx }: PluginSectionProps) {
       const message = payload.message as { data?: unknown };
       if (typeof message.data === "string") setPrompt(message.data);
     });
+    const unsubscribeTf = ctx.bridge.subscribe("/tf", (payload) => {
+      if (payload.kind !== "raw") return;
+      const message = payload.message as TFMessage;
+      if (message.transforms?.some((item) => item.header?.frame_id === "odom" && item.child_frame_id === "base_link")) {
+        setLastTfAt(Date.now());
+      }
+    });
     return () => {
       unsubscribeState();
       unsubscribePrompt();
+      unsubscribeTf();
     };
   }, [ctx.bridge]);
 
@@ -267,8 +288,10 @@ function MakerSection({ ctx }: PluginSectionProps) {
   const effectiveType = formal ? selectedTemplate?.type ?? pointType : pointType;
   const existing = recorder?.points.some((point) => point.name === effectiveName) === true;
   const odomAgeMs = odom ? Date.now() - odom.receivedAt : Number.POSITIVE_INFINITY;
+  const tfAgeMs = lastTfAt > 0 ? Date.now() - lastTfAt : Number.POSITIVE_INFINITY;
   const odomFresh = odomAgeMs <= 1500;
-  const poseAvailable = currentPose !== undefined && odomFresh;
+  const tfFresh = tfAgeMs <= 1500;
+  const poseAvailable = currentPose !== undefined && tfFresh && odomFresh;
   const markerAdvertised = ctx.topics.some((topic) => topic.topic === MARKER_TOPIC);
   const busy = recorder?.status === "sampling" || recorder?.navigation.active === true;
   const navigationActive = recorder?.navigation.active === true;
@@ -300,7 +323,12 @@ function MakerSection({ ctx }: PluginSectionProps) {
   const loadFile = (fileId: string) => {
     if (fileId === recorder?.fileId) return;
     if (recorder?.dirty && !window.confirm(ctx.locale === "en" ? "Discard unsaved waypoint changes?" : "放弃未保存的航点修改？")) return;
-    send({ command: "load_waypoint_file", file_id: fileId });
+    send({ command: "load_waypoint_file", file_id: fileId, confirm_discard: true });
+  };
+
+  const reloadFile = () => {
+    if (recorder?.dirty && !window.confirm(ctx.locale === "en" ? "Discard unsaved waypoint changes?" : "放弃未保存的航点修改？")) return;
+    send({ command: "reload", confirm_discard: true });
   };
 
   const statusText = ctx.connectionState !== "open"
@@ -317,6 +345,11 @@ function MakerSection({ ctx }: PluginSectionProps) {
         <span className={`session-status ${ctx.connectionState}`} aria-hidden="true" />
         <span>{statusText}</span>
         <span className="waypoint-maker-spacer" />
+        {recorder?.diskSynced === false && (
+          <span className="waypoint-maker-dirty" title={en ? "Disk file was modified externally" : "磁盘文件已变化，请重载"}>
+            {en ? "Disk modified" : "磁盘已变"}
+          </span>
+        )}
         <span className={recorder?.dirty ? "waypoint-maker-dirty" : "side-label"}>
           {recorder?.dirty ? (en ? "Unsaved" : "未保存") : (en ? "Saved" : "已保存")}
         </span>
@@ -410,6 +443,9 @@ function MakerSection({ ctx }: PluginSectionProps) {
         </button>
         <button type="button" onClick={() => send({ command: "undo" })} disabled={!canWrite(ctx) || busy}>
           {en ? "Undo" : "撤销"}
+        </button>
+        <button type="button" onClick={reloadFile} disabled={!canWrite(ctx) || busy}>
+          {en ? "Reload" : "重载"}
         </button>
         <button type="button" onClick={() => send({ command: "save" })} disabled={!canWrite(ctx) || busy}>
           {en ? "Save" : "保存"}

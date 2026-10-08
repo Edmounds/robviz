@@ -99,6 +99,8 @@ npm run terminal
   查看 `odom → base_link` 当前位姿和新鲜度。正式模板中的缺失点会标记为缺失，不会生成虚假坐标。
 - **图像传输**：设置页的"图像传输"分别控制 RGB 与 Native Depth 的 Mbps、JPEG 自动/固定质量、尺寸和 FPS。
   "应用"或保存默认后，只有 ROS 重载服务返回成功才显示为已生效。航点页固定订阅两个 `CompressedImage` 预览话题。
+  ROS 成功消息必须是精确匹配当前版本与 HTTP 启动会话的 JSON。
+  HTTP 服务重启或并发修改导致版本不匹配时，重新加载设置后再应用。
 
 ### Panda URDF 示例
 
@@ -156,6 +158,10 @@ RobViz 默认打包并启用 Teleop、Nav Goals 和 Waypoints Maker 三个项目
 
 Waypoints Maker 订阅 recorder 的状态和提示话题，并通过
 `/fruit/waypoint_maker/command` 发送严格 JSON 命令。它只允许活动且在线的会话写入，正式文件与调试文件由 recorder 的文件 ID allowlist 管理。
+丢弃草稿确认使用布尔值 `confirm_discard: true`。
+加载失败保留 recorder 草稿和 Undo。
+取消终态后的连续实测停稳窗口未完成时，下一段保持 blocked。
+通信结果未知时 recorder 保留目标所有权，浏览器重连不重发目标。
 
 想加自己的功能（自定义面板 / 3D 显示器 / 侧栏区块 / 视口工具）：
 

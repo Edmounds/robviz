@@ -56,6 +56,7 @@ export interface ImageStreamSettings {
 
 export interface ImageSettings {
   version: number;
+  session: string;
   rgb: ImageStreamSettings;
   depth: ImageStreamSettings;
 }

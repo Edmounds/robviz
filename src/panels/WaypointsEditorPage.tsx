@@ -258,15 +258,15 @@ export function WaypointsEditorPage({
     const update = () => {
       const transform = tf.lookup("odom", "base_link", 0);
       const now = Date.now();
-      const lastMessage = Math.max(lastTfWallRef.current, lastOdomWallRef.current);
-      const ageMs = lastMessage > 0 ? now - lastMessage : Infinity;
-      const available = Boolean(transform) && ageMs <= FRESHNESS_LIMIT_MS;
+      const tfAgeMs = lastTfWallRef.current > 0 ? now - lastTfWallRef.current : Infinity;
+      const odomAgeMs = lastOdomWallRef.current > 0 ? now - lastOdomWallRef.current : Infinity;
+      const available = Boolean(transform) && tfAgeMs <= FRESHNESS_LIMIT_MS && odomAgeMs <= FRESHNESS_LIMIT_MS;
       setPose((current) => ({
         x: transform?.translation.x ?? current?.x ?? 0,
         y: transform?.translation.y ?? current?.y ?? 0,
         yawDeg: transform ? yawFromQuaternion(transform.rotation) : current?.yawDeg ?? 0,
         speed: current?.speed ?? 0,
-        ageMs,
+        ageMs: tfAgeMs,
         available,
       }));
     };
