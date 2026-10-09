@@ -1,9 +1,14 @@
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   FileText,
+  ListOrdered,
   LocateFixed,
+  Plus,
   RefreshCcw,
   Save,
+  Trash2,
   Undo2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -147,8 +152,11 @@ export function WaypointsEditorPage({
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [undoDepth, setUndoDepth] = useState(0);
+  const [newPointName, setNewPointName] = useState("");
+  const [newPointType, setNewPointType] = useState<"goal" | "waypoint">("goal");
 
   const selectedFile = files.find((file) => file.id === selectedFileId);
+  const isTemplate = selectedFile?.mode === "template" || waypointDocument?.id === "template";
   const dirty = JSON.stringify(draftPoints) !== baselineRef.current;
   const activeOdomTopic = topics.find(
     (topic) => topic.topic === "/odometry" && topic.schemaName === "nav_msgs/msg/Odometry",
@@ -156,7 +164,7 @@ export function WaypointsEditorPage({
 
   const displayRows = useMemo(() => {
     if (!waypointDocument) return [];
-    if (!waypointDocument.formal) return draftPoints.map((point) => ({
+    if (isTemplate || !waypointDocument.formal) return draftPoints.map((point) => ({
       point,
       templateName: point.name,
       templateType: point.type,
@@ -169,7 +177,7 @@ export function WaypointsEditorPage({
       templateType: templatePoint.type,
       missing: !pointsByName.has(templatePoint.name),
     }));
-  }, [draftPoints, waypointDocument]);
+  }, [draftPoints, isTemplate, waypointDocument]);
 
   const loadDocument = useCallback(async (fileId: string) => {
     setBusy(true);
@@ -214,6 +222,7 @@ export function WaypointsEditorPage({
   }, [files, loadDocument, selectedFileId]);
 
   useEffect(() => {
+    if (isTemplate) return;
     const element = canvasWrapRef.current;
     if (!element) return;
     const update = () => setCanvasSize({
@@ -224,7 +233,7 @@ export function WaypointsEditorPage({
     const observer = new ResizeObserver(update);
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
+  }, [isTemplate]);
 
   useEffect(() => {
     const unsubTf = bridge.subscribe("/tf", (payload) => {
@@ -275,6 +284,7 @@ export function WaypointsEditorPage({
   const actualPoints = useMemo(() => draftPoints, [draftPoints]);
 
   useEffect(() => {
+    if (isTemplate) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const devicePixelRatio = window.devicePixelRatio || 1;
@@ -358,7 +368,7 @@ export function WaypointsEditorPage({
       context.fill();
       context.stroke();
     }
-  }, [actualPoints, canvasSize, fontScale, pose, selectedName]);
+  }, [actualPoints, canvasSize, fontScale, isTemplate, pose, selectedName]);
 
   const pushUndo = useCallback(() => {
     undoStackRef.current = [...undoStackRef.current.slice(-99), clonePoints(draftPoints)];
@@ -369,6 +379,84 @@ export function WaypointsEditorPage({
     pushUndo();
     setDraftPoints((current) => current.map((point) => point.name === name ? { ...point, ...patch } : point));
   }, [pushUndo]);
+
+  const handleAddTemplatePoint = useCallback(() => {
+    const trimmed = newPointName.trim();
+    if (!trimmed) {
+      setError(locale === "en" ? "Please enter a point name" : "请输入点位名称");
+      return;
+    }
+    if (draftPoints.some((p) => p.name === trimmed)) {
+      setError(locale === "en" ? `Point '${trimmed}' already exists` : `点位 '${trimmed}' 已存在`);
+      return;
+    }
+    pushUndo();
+    setDraftPoints((prev) => [
+      ...prev,
+      {
+        name: trimmed,
+        type: newPointType,
+        x: 0,
+        y: 0,
+        z: 0,
+        yaw_deg: 0,
+        extra: {},
+      },
+    ]);
+    setSelectedName(trimmed);
+    setNewPointName("");
+    setError(undefined);
+  }, [draftPoints, locale, newPointName, newPointType, pushUndo]);
+
+  const updateTemplatePointName = useCallback((index: number, newName: string) => {
+    pushUndo();
+    setDraftPoints((prev) => prev.map((p, i) => i === index ? { ...p, name: newName } : p));
+  }, [pushUndo]);
+
+  const updateTemplatePointType = useCallback((index: number, nextType: "goal" | "waypoint") => {
+    pushUndo();
+    setDraftPoints((prev) => prev.map((p, i) => i === index ? { ...p, type: nextType } : p));
+  }, [pushUndo]);
+
+  const moveTemplatePoint = useCallback((index: number, direction: -1 | 1) => {
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= draftPoints.length) return;
+    pushUndo();
+    setDraftPoints((prev) => {
+      const next = [...prev];
+      const temp = next[index];
+      next[index] = next[targetIndex];
+      next[targetIndex] = temp;
+      return next;
+    });
+  }, [draftPoints.length, pushUndo]);
+
+  const deleteTemplatePoint = useCallback((index: number) => {
+    const pointToDelete = draftPoints[index];
+    if (!pointToDelete) return;
+    if (!window.confirm(locale === "en" ? `Delete template point '${pointToDelete.name}'?` : `确定删除模板点位 '${pointToDelete.name}'？`)) return;
+    pushUndo();
+    setDraftPoints((prev) => prev.filter((_, i) => i !== index));
+    if (selectedName === pointToDelete.name) {
+      setSelectedName(undefined);
+    }
+  }, [draftPoints, locale, pushUndo, selectedName]);
+
+  const templateStats = useMemo(() => {
+    if (!isTemplate) return { total: 0, goals: 0, waypoints: 0, hasDuplicates: false, hasEmpty: false };
+    const names = draftPoints.map((p) => p.name.trim());
+    const hasEmpty = names.some((n) => !n);
+    const hasDuplicates = new Set(names).size !== names.length;
+    const goals = draftPoints.filter((p) => p.type === "goal").length;
+    const waypoints = draftPoints.filter((p) => p.type === "waypoint").length;
+    return {
+      total: draftPoints.length,
+      goals,
+      waypoints,
+      hasDuplicates,
+      hasEmpty,
+    };
+  }, [draftPoints, isTemplate]);
 
   const undo = useCallback(() => {
     const previous = undoStackRef.current.pop();
@@ -384,6 +472,16 @@ export function WaypointsEditorPage({
 
   const save = useCallback(async () => {
     if (!waypointDocument || !dirty || busy) return;
+    if (isTemplate) {
+      if (templateStats.hasEmpty) {
+        setError(locale === "en" ? "Point names cannot be empty" : "点位名称不能为空");
+        return;
+      }
+      if (templateStats.hasDuplicates) {
+        setError(locale === "en" ? "Duplicate point names are not allowed" : "模板中存在重复的点位名称");
+        return;
+      }
+    }
     if (!window.confirm(locale === "en"
       ? `Overwrite ${waypointDocument.id} (${selectedFile?.file_name ?? waypointDocument.id})?`
       : `确认覆盖 ${waypointDocument.id}（${selectedFile?.file_name ?? waypointDocument.id}）？`)) return;
@@ -408,7 +506,7 @@ export function WaypointsEditorPage({
     } finally {
       setBusy(false);
     }
-  }, [busy, draftPoints, dirty, locale, selectedFile?.file_name, waypointDocument]);
+  }, [busy, draftPoints, dirty, isTemplate, locale, selectedFile?.file_name, templateStats, waypointDocument]);
 
   const onPointerDown = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
     const transform = transformRef.current;
@@ -461,7 +559,10 @@ export function WaypointsEditorPage({
           ))}
         </select>
         <span className="waypoints-file-meta">
-          {waypointDocument?.frame_id ?? selectedFile?.frame_id ?? "odom"} · {waypointDocument?.formal ? (locale === "en" ? "formal" : "正式") : (locale === "en" ? "debug" : "调试")}
+          {isTemplate
+            ? (locale === "en" ? `template · ${draftPoints.length} points` : `规则模板 · 共 ${draftPoints.length} 个点`)
+            : `${waypointDocument?.frame_id ?? selectedFile?.frame_id ?? "odom"} · ${waypointDocument?.formal ? (locale === "en" ? "formal" : "正式") : (locale === "en" ? "debug" : "调试")}`
+          }
         </span>
         <span className="spacer" />
         <button className="icon-action" onClick={reload} disabled={busy} title={locale === "en" ? "Reload file" : "重新加载文件"} aria-label={locale === "en" ? "Reload file" : "重新加载文件"}>
@@ -478,7 +579,137 @@ export function WaypointsEditorPage({
         </span>
       </div>
 
-      <div className="waypoints-workspace">
+      {isTemplate ? (
+        <div className="waypoints-workspace template-workspace">
+          <div className="waypoints-template-pane">
+            <div className="waypoints-template-toolbar">
+              <div className="waypoints-section-title">
+                <ListOrdered /> {locale === "en" ? "Template sequence" : "模板航点序列"}
+              </div>
+              <div className="waypoints-template-add-bar">
+                <input
+                  type="text"
+                  placeholder={locale === "en" ? "New point name (e.g. A5)" : "新点位名称 (例如 A5)"}
+                  value={newPointName}
+                  onChange={(e) => setNewPointName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleAddTemplatePoint(); }}
+                  spellCheck={false}
+                />
+                <select value={newPointType} onChange={(e) => setNewPointType(e.target.value as "goal" | "waypoint")}>
+                  <option value="goal">goal</option>
+                  <option value="waypoint">waypoint</option>
+                </select>
+                <button type="button" onClick={handleAddTemplatePoint}>
+                  <Plus /> {locale === "en" ? "Add point" : "添加点位"}
+                </button>
+              </div>
+            </div>
+
+            <div className="waypoints-template-list">
+              {draftPoints.length === 0 ? (
+                <p className="empty-hint">{locale === "en" ? "No points in template" : "模板中暂无点位"}</p>
+              ) : (
+                draftPoints.map((point, index) => (
+                  <div
+                    key={`${index}-${point.name}`}
+                    className={`waypoints-template-row ${selectedName === point.name ? "active" : ""}`}
+                    onClick={() => setSelectedName(point.name)}
+                  >
+                    <span className="template-row-idx">#{index + 1}</span>
+                    <input
+                      className="template-name-input"
+                      value={point.name}
+                      onChange={(e) => updateTemplatePointName(index, e.target.value)}
+                      placeholder={locale === "en" ? "Point name" : "点位名称"}
+                      spellCheck={false}
+                    />
+                    <select
+                      className="template-type-select"
+                      value={point.type}
+                      onChange={(e) => updateTemplatePointType(index, e.target.value as "goal" | "waypoint")}
+                    >
+                      <option value="goal">goal</option>
+                      <option value="waypoint">waypoint</option>
+                    </select>
+                    <div className="template-row-actions">
+                      <button
+                        type="button"
+                        className="icon-action"
+                        title={locale === "en" ? "Move up" : "上移"}
+                        disabled={index === 0}
+                        onClick={(e) => { e.stopPropagation(); moveTemplatePoint(index, -1); }}
+                        aria-label={locale === "en" ? "Move up" : "上移"}
+                      >
+                        <ArrowUp />
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-action"
+                        title={locale === "en" ? "Move down" : "下移"}
+                        disabled={index === draftPoints.length - 1}
+                        onClick={(e) => { e.stopPropagation(); moveTemplatePoint(index, 1); }}
+                        aria-label={locale === "en" ? "Move down" : "下移"}
+                      >
+                        <ArrowDown />
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-action delete"
+                        title={locale === "en" ? "Delete point" : "删除点位"}
+                        onClick={(e) => { e.stopPropagation(); deleteTemplatePoint(index); }}
+                        aria-label={locale === "en" ? "Delete point" : "删除点位"}
+                      >
+                        <Trash2 />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <aside className="waypoints-inspector">
+            <div className="waypoints-section-title">{locale === "en" ? "Template specs & stats" : "模板规范与统计"}</div>
+            <div className="template-stats-content">
+              <div className="template-stat-item">
+                <span>{locale === "en" ? "Total points" : "总点数"}</span>
+                <strong>{templateStats.total}</strong>
+              </div>
+              <div className="template-stat-item">
+                <span>{locale === "en" ? "Goals" : "作业/目标点 (goal)"}</span>
+                <strong>{templateStats.goals}</strong>
+              </div>
+              <div className="template-stat-item">
+                <span>{locale === "en" ? "Waypoints" : "途经点 (waypoint)"}</span>
+                <strong>{templateStats.waypoints}</strong>
+              </div>
+
+              {templateStats.hasDuplicates && (
+                <div className="template-warning-box">
+                  <AlertTriangle />
+                  <span>{locale === "en" ? "Duplicate point names found! Please ensure all names are unique." : "检测到重名点位！请确保每个点名称唯一。"}</span>
+                </div>
+              )}
+
+              {templateStats.hasEmpty && (
+                <div className="template-warning-box">
+                  <AlertTriangle />
+                  <span>{locale === "en" ? "Empty point names found! All points must have a name." : "存在未命名的点位！点位名称不能为空。"}</span>
+                </div>
+              )}
+
+              <div className="template-guide-box">
+                <p>
+                  {locale === "en"
+                    ? "template.yaml defines the formal competition skeleton: official names, types, and sequence order. Points in formal odom_waypoints.yaml must match this template."
+                    : "template.yaml 规定正式比赛（formal）的标准航点名称、类型与执行顺序。在 formal 模式下录入或加载的航点文件必须完全符合此模板。"}
+                </p>
+              </div>
+            </div>
+          </aside>
+        </div>
+      ) : (
+        <div className="waypoints-workspace">
         <aside className="waypoints-list">
           <div className="waypoints-section-title">{locale === "en" ? "Points" : "航点"}</div>
           {busy && <p className="empty-hint">{locale === "en" ? "Loading..." : "加载中..."}</p>}
@@ -545,6 +776,7 @@ export function WaypointsEditorPage({
           </div>
         </aside>
       </div>
+      )}
 
       {(error || notice) && (
         <div className={`waypoints-feedback ${error ? "error-line" : ""}`} role={error ? "alert" : "status"}>
