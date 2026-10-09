@@ -9,7 +9,14 @@ import { getSceneTheme, onSceneTheme } from "./sceneTheme";
 
 const AXIS_LEN = 0.45;
 const DEFAULT_AXIS_WIDTH_PX = 1.5;
-const LABEL_HEIGHT = 0.02;
+const DEFAULT_LABEL_HEIGHT = 0.02;
+
+export function computeTfLabelHeight(fontScale: number, viewportHeight: number, fovDeg: number): number {
+  if (viewportHeight <= 0) return DEFAULT_LABEL_HEIGHT;
+  const targetPx = 16 * fontScale;
+  const tanHalfFov = Math.tan((fovDeg * Math.PI) / 360);
+  return (2 * targetPx * tanHalfFov) / viewportHeight;
+}
 // RGB = XYZ 行业惯例（数据色，不受 UI 单色约束）
 const AXIS_COLORS = [0xe0524f, 0x4fe052, 0x527ae0];
 
@@ -78,6 +85,7 @@ export class TfAxesRenderer {
   #groups = new Map<string, THREE.Group>();
   #offSceneTheme: () => void;
   #lineWidth = DEFAULT_AXIS_WIDTH_PX;
+  #labelHeight = DEFAULT_LABEL_HEIGHT;
 
   constructor() {
     // 主题变化时清空重建，标签取到新主题的纹理
@@ -94,6 +102,21 @@ export class TfAxesRenderer {
     for (const group of this.#groups.values()) {
       group.traverse((object) => {
         if (object instanceof LineSegments2) object.material.linewidth = lineWidth;
+      });
+    }
+  }
+
+  updateProjection(effectiveFontScale: number, viewportHeight: number, fovDeg: number): void {
+    this.#labelHeight = computeTfLabelHeight(effectiveFontScale, viewportHeight, fovDeg);
+    for (const group of this.#groups.values()) {
+      group.traverse((object) => {
+        if (object instanceof THREE.Sprite) {
+          const map = object.material.map;
+          if (map?.image) {
+            const img = map.image as HTMLCanvasElement;
+            object.scale.set((img.width / img.height) * this.#labelHeight, this.#labelHeight, 1);
+          }
+        }
       });
     }
   }
@@ -117,7 +140,7 @@ export class TfAxesRenderer {
           }),
         );
         const img = tex.image as HTMLCanvasElement;
-        sprite.scale.set((img.width / img.height) * LABEL_HEIGHT, LABEL_HEIGHT, 1);
+        sprite.scale.set((img.width / img.height) * this.#labelHeight, this.#labelHeight, 1);
         sprite.position.set(0.06, 0.06, 0.1);
         group.add(sprite);
         this.#groups.set(frame, group);

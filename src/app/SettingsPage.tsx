@@ -330,6 +330,34 @@ export function SettingsPage({
                   </button>
                 </div>
               </div>
+              <label className="settings-row settings-slider">
+                <span>{t("fontScale")}</span>
+                <input
+                  type="range"
+                  min={0.75}
+                  max={1.5}
+                  step={0.05}
+                  value={settings.fontScale}
+                  onChange={(event) =>
+                    onSettingsChange({
+                      ...settings,
+                      fontScale: Math.round(Number(event.target.value) * 100) / 100,
+                    })
+                  }
+                />
+                <output>{Math.round(settings.fontScale * 100)}%</output>
+                {settings.fontScale !== 1 && (
+                  <button
+                    type="button"
+                    className="chip-btn"
+                    onClick={() => onSettingsChange({ ...settings, fontScale: 1 })}
+                    title={t("resetFontScale")}
+                    style={{ marginLeft: 8 }}
+                  >
+                    <RotateCcw style={{ width: 12, height: 12 }} />
+                  </button>
+                )}
+              </label>
             </section>
           </>
         )}

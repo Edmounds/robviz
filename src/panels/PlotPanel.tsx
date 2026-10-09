@@ -56,6 +56,7 @@ export function PlotPanel({
   bridge,
   topics,
   theme = "dark",
+  fontScale = 1,
   initialSeries,
   onSeriesChange,
   onClose,
@@ -64,6 +65,7 @@ export function PlotPanel({
   bridge: WorkerBridge;
   topics: TopicInfo[];
   theme?: "dark" | "light";
+  fontScale?: number;
   initialSeries?: PlotSeriesConfig[];
   onSeriesChange?: (series: PlotSeriesConfig[]) => void;
   onClose: () => void;
@@ -133,10 +135,12 @@ export function PlotPanel({
     const current = seriesRef.current;
     if (!element || current.length === 0) return;
     const dark = themeRef.current === "dark";
+    const axisFont = `${Math.max(9, Math.round(11 * fontScale))}px system-ui, -apple-system, sans-serif`;
     const axis = {
       stroke: dark ? "rgba(245,245,245,0.74)" : "rgba(10,10,10,0.74)",
       grid: { stroke: dark ? "rgba(245,245,245,0.14)" : "rgba(10,10,10,0.14)", width: 1 },
       ticks: { stroke: dark ? "rgba(245,245,245,0.36)" : "rgba(10,10,10,0.36)", width: 1 },
+      font: axisFont,
     };
     uplotRef.current = new uPlot(
       {
@@ -160,7 +164,7 @@ export function PlotPanel({
       [[], ...current.map(() => [])] as uPlot.AlignedData,
       element,
     );
-  }, []);
+  }, [fontScale]);
 
   const addEntry = useCallback(
     (config: PlotSeriesConfig) => {
@@ -239,7 +243,7 @@ export function PlotPanel({
 
   useEffect(() => {
     rebuild();
-  }, [theme, rebuild]);
+  }, [theme, fontScale, rebuild]);
 
   useEffect(() => {
     const subscriptions = subscriptionsRef.current;

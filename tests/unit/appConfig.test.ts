@@ -17,7 +17,7 @@ describe("appConfig", () => {
       version: 2,
       activeSessionId: session.id,
       theme: "dark",
-      settings: { language: "zh-CN", disabledPluginIds: [] },
+      settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] },
       sessions: [session],
     };
     const values = new Map<string, string>();
@@ -47,7 +47,7 @@ describe("appConfig", () => {
       version: 2,
       activeSessionId: second.id,
       theme: "light",
-      settings: { language: "en", disabledPluginIds: ["example-odom-hud"] },
+      settings: { language: "en", fontScale: 1.25, disabledPluginIds: ["example-odom-hud"] },
       sessions: [first, second],
     };
 
@@ -61,7 +61,7 @@ describe("appConfig", () => {
       version: 2,
       activeSessionId: first.id,
       theme: "dark",
-      settings: { language: "zh-CN", disabledPluginIds: [] },
+      settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] },
       sessions: [first, second],
     };
 
@@ -76,7 +76,7 @@ describe("appConfig", () => {
     const session = { ...createDefaultSession("robot", "Robot"), mediaUrl: "wss://video.example/ws",
       panels: [{ id: "depth", kind: "image", state: { topic: "/camera/depth", preferRaw: true, useWebRtc: false } }] };
     const config: AppConfig = { version: 2, activeSessionId: session.id, theme: "dark",
-      settings: { language: "zh-CN", disabledPluginIds: [] }, sessions: [session] };
+      settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] }, sessions: [session] };
     const storage = new Map<string, string>();
     saveAppConfigToStorage(config, { setItem: (key, value) => storage.set(key, value) });
     expect(parseAppConfig(storage.get(APP_CONFIG_STORAGE_KEY)!).sessions[0]).toEqual(session);
@@ -89,7 +89,7 @@ describe("appConfig", () => {
         "old-teleop": { id: "old-teleop", params: { panelId: "old-teleop", kind: "teleop", custom: 1 } },
       } } };
     const config = { version: 2, activeSessionId: old.id, theme: "dark",
-      settings: { language: "zh-CN", disabledPluginIds: ["teleop"] }, sessions: [old] };
+      settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: ["teleop"] }, sessions: [old] };
     const migrated = parseAppConfig(JSON.stringify(config));
     expect(migrated.sessions[0].panels).toEqual([
       { id: "old-teleop", kind: "plugin-section:teleop:teleop", state: { retained: true } },
@@ -106,7 +106,7 @@ describe("appConfig", () => {
   it("does not add teleop to workspaces where it was closed", () => {
     const session = createDefaultSession("robot", "Robot");
     const config = { version: 2, activeSessionId: session.id, theme: "dark",
-      settings: { language: "zh-CN", disabledPluginIds: [] }, sessions: [session] };
+      settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] }, sessions: [session] };
     expect(parseAppConfig(JSON.stringify(config)).sessions[0].panels).toEqual(session.panels);
   });
 
@@ -125,7 +125,7 @@ describe("appConfig", () => {
       version: 2,
       activeSessionId: session.id,
       theme: "dark",
-      settings: { language: "zh-CN", disabledPluginIds: [] },
+      settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] },
       sessions: [session],
     };
 
@@ -156,7 +156,7 @@ describe("appConfig", () => {
 
     expect(migrated.version).toBe(2);
     expect(migrated.theme).toBe("light");
-    expect(migrated.settings).toEqual({ language: "en", disabledPluginIds: ["example-odom-hud"] });
+    expect(migrated.settings).toEqual({ language: "en", fontScale: 1, disabledPluginIds: ["example-odom-hud"] });
     expect(migrated.sessions).toHaveLength(1);
     expect(migrated.activeSessionId).toBe(migrated.sessions[0].id);
     expect(migrated.sessions[0]).toMatchObject({
@@ -193,9 +193,27 @@ describe("appConfig", () => {
       version: 2,
       activeSessionId: "missing",
       theme: "dark",
-      settings: { language: "zh-CN", disabledPluginIds: [] },
+      settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] },
       sessions: [createDefaultSession("robot-a", "Robot A")],
     }))).toThrow("activeSessionId");
+  });
+
+  it("validates fontScale bounds in v2 workspaces", () => {
+    const session = createDefaultSession("robot-a", "Robot A");
+    expect(() => parseAppConfig(JSON.stringify({
+      version: 2,
+      activeSessionId: session.id,
+      theme: "dark",
+      settings: { language: "zh-CN", fontScale: 0.5, disabledPluginIds: [] },
+      sessions: [session],
+    }))).toThrow("settings.fontScale");
+    expect(() => parseAppConfig(JSON.stringify({
+      version: 2,
+      activeSessionId: session.id,
+      theme: "dark",
+      settings: { language: "zh-CN", fontScale: 1.8, disabledPluginIds: [] },
+      sessions: [session],
+    }))).toThrow("settings.fontScale");
   });
 
   it("keeps an opaque dock layout for dockview to validate", () => {
@@ -204,7 +222,7 @@ describe("appConfig", () => {
       version: 2,
       activeSessionId: session.id,
       theme: "dark",
-      settings: { language: "zh-CN", disabledPluginIds: [] },
+      settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] },
       sessions: [{ ...session, dockLayout: { unexpected: true } }],
     }));
 

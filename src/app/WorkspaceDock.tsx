@@ -16,8 +16,8 @@ import {
   type DockviewReadyEvent,
   type IDockviewPanelProps,
   type SerializedDockview,
-  themeAbyss,
-  themeLight,
+  themeAbyssSpaced,
+  themeLightSpaced,
 } from "dockview-react";
 import "dockview-react/dist/styles/dockview.css";
 
@@ -33,6 +33,7 @@ interface WorkspaceDockProps {
   panels: WorkspacePanel[];
   layout?: unknown;
   theme: "dark" | "light";
+  gap?: number;
   titleForKind: (kind: string) => string;
   renderPanel: (panel: WorkspacePanel) => ReactNode;
   onPanelClosed: (id: string) => void;
@@ -174,6 +175,7 @@ export function WorkspaceDock({
   panels,
   layout,
   theme,
+  gap = 8,
   titleForKind,
   renderPanel,
   onPanelClosed,
@@ -200,6 +202,13 @@ export function WorkspaceDock({
   onInvalidLayoutRef.current = onInvalidLayout;
 
   const components = useMemo(() => ({ "workspace-panel": WorkspaceDockPanel }), []);
+  const dockviewTheme = useMemo(() => {
+    const base = theme === "dark" ? themeAbyssSpaced : themeLightSpaced;
+    return {
+      ...base,
+      gap,
+    };
+  }, [theme, gap]);
 
   const handleReady = useCallback((event: DockviewReadyEvent) => {
     const api = event.api;
@@ -308,7 +317,7 @@ export function WorkspaceDock({
           <DockviewReact
             components={components}
             onReady={handleReady}
-            theme={theme === "dark" ? themeAbyss : themeLight}
+            theme={dockviewTheme}
             rightHeaderActionsComponent={WorkspaceHeaderActions}
             disableFloatingGroups
             singleTabMode="default"

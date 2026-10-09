@@ -13,6 +13,7 @@ function fullConfig(): LayoutConfig {
       language: "en",
       groundVisible: false,
       tfAxesLineWidth: 3,
+      fontScale: 1.2,
       disabledPluginIds: ["example-odom-hud"],
     },
     workspace: {
@@ -62,6 +63,7 @@ describe("layoutConfig", () => {
       language: "zh-CN",
       groundVisible: true,
       tfAxesLineWidth: 1.5,
+      fontScale: 1,
       disabledPluginIds: [],
     });
     expect(parsed.workspace).toEqual({
@@ -147,6 +149,14 @@ describe("layoutConfig", () => {
       ...base,
       settings: { tfAxesLineWidth: 7 },
     }))).toThrow("settings.tfAxesLineWidth");
+    expect(() => parseLayout(JSON.stringify({
+      ...base,
+      settings: { fontScale: 0.5 },
+    }))).toThrow("settings.fontScale");
+    expect(() => parseLayout(JSON.stringify({
+      ...base,
+      settings: { fontScale: 2.0 },
+    }))).toThrow("settings.fontScale");
     expect(() => parseLayout(JSON.stringify({
       ...base,
       workspace: { sidebarPercent: 101 },

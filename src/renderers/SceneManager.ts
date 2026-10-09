@@ -60,6 +60,101 @@ interface CameraFlight {
   duration: number;
 }
 
+export function computeTfBounds(
+  tf: TfBuffer,
+  fixedFrame: string,
+  time: TimeSec,
+  axisLen = 0.45,
+): THREE.Box3 | null {
+  const frames = tf.frames();
+  if (frames.length === 0) return null;
+
+  let hasValidNonFixed = false;
+  const validFrames: string[] = [];
+  for (const frame of frames) {
+    if (frame === fixedFrame) continue;
+    const t = tf.lookup(fixedFrame, frame, time);
+    if (!t) continue;
+    if (
+      !Number.isFinite(t.translation.x) ||
+      !Number.isFinite(t.translation.y) ||
+      !Number.isFinite(t.translation.z) ||
+      !Number.isFinite(t.rotation.x) ||
+      !Number.isFinite(t.rotation.y) ||
+      !Number.isFinite(t.rotation.z) ||
+      !Number.isFinite(t.rotation.w)
+    ) {
+      continue;
+    }
+    hasValidNonFixed = true;
+    validFrames.push(frame);
+  }
+
+  if (!hasValidNonFixed) return null;
+  validFrames.push(fixedFrame);
+
+  const box = new THREE.Box3();
+  const v = new THREE.Vector3();
+  const q = new THREE.Quaternion();
+  const tip = new THREE.Vector3();
+
+  for (const frame of validFrames) {
+    if (frame === fixedFrame) {
+      v.set(0, 0, 0);
+      q.identity();
+    } else {
+      const t = tf.lookup(fixedFrame, frame, time)!;
+      v.set(t.translation.x, t.translation.y, t.translation.z);
+      q.set(t.rotation.x, t.rotation.y, t.rotation.z, t.rotation.w);
+    }
+
+    box.expandByPoint(v);
+
+    tip.set(axisLen, 0, 0).applyQuaternion(q).add(v);
+    box.expandByPoint(tip);
+    tip.set(0, axisLen, 0).applyQuaternion(q).add(v);
+    box.expandByPoint(tip);
+    tip.set(0, 0, axisLen).applyQuaternion(q).add(v);
+    box.expandByPoint(tip);
+  }
+
+  if (box.isEmpty()) return null;
+  if (!Number.isFinite(box.min.x) || !Number.isFinite(box.max.x)) return null;
+  return box;
+}
+
+export function computeFitCameraDistance(
+  box: THREE.Box3,
+  fovDeg: number,
+  aspect: number,
+  margin = 1.2,
+  center?: THREE.Vector3,
+): { center: THREE.Vector3; dist: number } {
+  const targetCenter = center ? center.clone() : box.getCenter(new THREE.Vector3());
+  let radius: number;
+  if (center) {
+    const corners = [
+      new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+      new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+      new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+      new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+      new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+      new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+      new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+      new THREE.Vector3(box.max.x, box.max.y, box.max.z),
+    ];
+    radius = corners.reduce((max, corner) => Math.max(max, corner.distanceTo(targetCenter)), 0);
+  } else {
+    radius = box.getSize(new THREE.Vector3()).length() / 2;
+  }
+
+  const effRadius = Math.max(radius, 0.2);
+  const tanV = Math.tan((fovDeg * Math.PI) / 360);
+  const tanEff = Math.min(1, Math.max(0.1, aspect)) * tanV;
+  const dist = Math.max(0.4, (effRadius / tanEff) * margin);
+  return { center: targetCenter, dist };
+}
+
 export class SceneManager {
   #renderer: THREE.WebGLRenderer;
   #scene = new THREE.Scene();
@@ -92,6 +187,9 @@ export class SceneManager {
   #flight?: CameraFlight;
   #followFrame?: string;
   #followLast?: THREE.Vector3;
+  #autoFitTf = false;
+  #userInteracted = false;
+  #effectiveFontScale = 1;
   onStats?: (stats: SceneStats) => void;
   /** 每帧渲染前调用（挂 WorkerBridge.flushFrame），返回 true 表示有新数据 */
   onBeforeRender?: () => boolean;
@@ -123,9 +221,11 @@ export class SceneManager {
     this.#controls.addEventListener("change", () => {
       this.#dirty = true;
     });
-    // 用户开始拖动即取消进行中的相机飞行
+    // 用户开始拖动即取消进行中的相机飞行与待执行的自动适配
     this.#controls.addEventListener("start", () => {
       this.#flight = undefined;
+      this.#userInteracted = true;
+      this.#autoFitTf = false;
     });
 
     this.#grid = this.#buildGrid();
@@ -148,6 +248,7 @@ export class SceneManager {
       this.#renderer.setSize(w, h, false);
       this.#camera.aspect = w / h;
       this.#camera.updateProjectionMatrix();
+      this.#tfAxes.updateProjection(this.#effectiveFontScale, h, this.#camera.fov);
       this.#dirty = true;
     };
     resize();
@@ -174,6 +275,22 @@ export class SceneManager {
   /** 框选工具激活时关闭轨道控制 */
   setControlsEnabled(enabled: boolean): void {
     this.#controls.enabled = enabled;
+  }
+
+  enableAutoFitTf(): void {
+    this.#autoFitTf = true;
+  }
+
+  setFontScale(scale: number): void {
+    this.#effectiveFontScale = scale;
+    const h = this.#renderer.domElement.clientHeight || 600;
+    this.#tfAxes.updateProjection(scale, h, this.#camera.fov);
+    for (const display of this.#displays.values()) {
+      if (typeof (display as { setFontScale?: (s: number) => void }).setFontScale === "function") {
+        (display as { setFontScale?: (s: number) => void }).setFontScale!(scale);
+      }
+    }
+    this.#dirty = true;
   }
 
   setGridVisible(visible: boolean): void {
@@ -239,10 +356,10 @@ export class SceneManager {
   // ---- 相机动画 ----
 
   /**
-   * 相机平滑飞行。position 省略时保持当前机位与目标的偏移（只移观察中心）。
+   * 相机平滑飞行（内部实现，不取消 autoFitTf）。position 省略时保持当前机位与目标的偏移（只移观察中心）。
    * prefers-reduced-motion 下瞬移。
    */
-  flyTo(target: THREE.Vector3, position?: THREE.Vector3, durationMs = 600): void {
+  #flyTo(target: THREE.Vector3, position?: THREE.Vector3, durationMs = 600): void {
     const toTarget = target.clone();
     const toPos =
       position?.clone() ??
@@ -264,9 +381,29 @@ export class SceneManager {
     this.#dirty = true;
   }
 
-  /** 飞回默认机位 */
+  /**
+   * 相机平滑飞行。显式调用取消待执行的 TF 自动适配。
+   */
+  flyTo(target: THREE.Vector3, position?: THREE.Vector3, durationMs = 600): void {
+    this.#autoFitTf = false;
+    this.#flyTo(target, position, durationMs);
+  }
+
+  /** 飞回默认机位（显式调用取消待执行的 TF 自动适配） */
   resetView(): void {
-    this.flyTo(HOME_TARGET, HOME_POSITION, 700);
+    this.#autoFitTf = false;
+    this.#flyTo(HOME_TARGET, HOME_POSITION, 700);
+  }
+
+  /** 重新适配当前 TF 视野，无有效 TF 时回默认机位 */
+  resetViewToTf(): void {
+    this.#autoFitTf = false;
+    const bounds = computeTfBounds(this.#tf, this.#fixedFrame, this.#renderTime());
+    if (bounds) {
+      this.flyToFit(bounds, 700);
+    } else {
+      this.resetView();
+    }
   }
 
   /** 当前相机位姿（配置文件保存用） */
@@ -279,20 +416,36 @@ export class SceneManager {
   /** 恢复相机位姿（配置文件加载用，瞬时不做动画） */
   setCameraState(state: { position: [number, number, number]; target: [number, number, number] }): void {
     this.#flight = undefined;
+    this.#autoFitTf = false;
     this.#camera.position.set(...state.position);
     this.#controls.target.set(...state.target);
     this.#dirty = true;
   }
 
-  /** 飞到能看全包围盒的视距（保持当前观察方向） */
-  flyToFit(box: THREE.Box3): void {
+  /** 飞到能看全包围盒的视距（保持当前观察方向），显式调用取消待执行的 TF 自动适配 */
+  flyToFit(box: THREE.Box3, durationMs = 800): void {
     if (box.isEmpty()) return;
-    const center = box.getCenter(new THREE.Vector3());
-    const radius = box.getSize(new THREE.Vector3()).length() / 2;
-    const dist = Math.max(2, (radius / Math.tan((this.#camera.fov * Math.PI) / 360)) * 1.2);
-    const dir = this.#camera.position.clone().sub(this.#controls.target).normalize();
+    this.#autoFitTf = false;
+    const aspect = this.#camera.aspect || 1;
+    let center: THREE.Vector3 | undefined;
+    if (this.#followFrame) {
+      const tf = this.#tf.lookup(this.#fixedFrame, this.#followFrame, this.#renderTime());
+      if (tf) {
+        const pos = new THREE.Vector3(tf.translation.x, tf.translation.y, tf.translation.z);
+        if (this.#followLast) {
+          center = pos.clone().add(this.#controls.target.clone().sub(this.#followLast));
+        } else {
+          center = pos;
+          this.#followLast = pos.clone();
+        }
+      } else if (this.#followLast) {
+        center = this.#controls.target;
+      }
+    }
+    const { center: fitCenter, dist } = computeFitCameraDistance(box, this.#camera.fov, aspect, 1.2, center);
+    let dir = this.#camera.position.clone().sub(this.#controls.target).normalize();
     if (dir.lengthSq() < 0.5) dir.set(1, -1, 1).normalize();
-    this.flyTo(center, center.clone().add(dir.multiplyScalar(dist)), 800);
+    this.#flyTo(fitCenter, fitCenter.clone().add(dir.multiplyScalar(dist)), durationMs);
   }
 
   /** App 在每条 TF 消息后调用：驱动平滑延迟自适应 */
@@ -326,6 +479,9 @@ export class SceneManager {
   addDisplay(topic: string, display: Display): void {
     this.removeDisplay(topic);
     this.#displays.set(topic, display);
+    if (typeof (display as { setFontScale?: (s: number) => void }).setFontScale === "function") {
+      (display as { setFontScale?: (s: number) => void }).setFontScale!(this.#effectiveFontScale);
+    }
     this.#scene.add(display.root);
     this.#dirty = true;
   }
@@ -368,6 +524,19 @@ export class SceneManager {
   #tick(): void {
     // 大负载在渲染帧开头统一消费（与渲染对齐，最新帧优先）
     if (this.onBeforeRender?.()) this.#dirty = true;
+
+    // 首次有效 TF 自动视野适配
+    if (this.#autoFitTf && !this.#userInteracted) {
+      const el = this.#renderer.domElement;
+      if (el.clientWidth > 0 && el.clientHeight > 0) {
+        const bounds = computeTfBounds(this.#tf, this.#fixedFrame, this.#renderTime());
+        if (bounds) {
+          this.#autoFitTf = false;
+          this.flyToFit(bounds, 800);
+        }
+      }
+    }
+
     this.#tickFollow();
     // 相机飞行补间
     if (this.#flight) {
@@ -408,7 +577,14 @@ export class SceneManager {
     if (!tf) return; // TF 断链：保持最后位置，断链提示由渲染层负责
     const pos = new THREE.Vector3(tf.translation.x, tf.translation.y, tf.translation.z);
     if (this.#flight) {
-      // 飞行接管相机期间只更新基准，不叠加位移
+      // 飞行接管相机期间只更新基准，不叠加位移；如果已有基准，同步飞行终点位移
+      if (this.#followLast) {
+        const delta = pos.clone().sub(this.#followLast);
+        if (delta.lengthSq() > 1e-12) {
+          this.#flight.toTarget.add(delta);
+          this.#flight.toPos.add(delta);
+        }
+      }
     } else if (this.#followLast) {
       const delta = pos.clone().sub(this.#followLast);
       if (delta.lengthSq() > 1e-12) {
@@ -417,8 +593,8 @@ export class SceneManager {
         this.#dirty = true;
       }
     } else {
-      // 开始跟踪（或坐标系切换后）：平滑飞到目标
-      this.flyTo(pos);
+      // 开始跟踪（或坐标系切换后）：平滑飞到目标（内部初始化，不取消 autoFitTf）
+      this.#flyTo(pos);
     }
     this.#followLast = pos;
   }

@@ -366,7 +366,7 @@ export function ImagePanel({
               type="button"
               className={`panel-btn ${activeWebRtc ? "active" : ""}`}
               style={{
-                fontSize: 11,
+                fontSize: "var(--fs-meta)",
                 padding: "2px 6px",
                 marginLeft: 4,
                 background: activeWebRtc ? "#0284c7" : "#334155",
@@ -392,7 +392,7 @@ export function ImagePanel({
             type="button"
             className="panel-btn"
             style={{
-              fontSize: 11,
+              fontSize: "var(--fs-meta)",
               padding: "2px 6px",
               marginLeft: 4,
               background: "#ef4444",

@@ -11,6 +11,7 @@ export const DEFAULT_APP_SETTINGS = {
   language: "zh-CN" as const,
   groundVisible: true,
   tfAxesLineWidth: 1.5,
+  fontScale: 1,
   disabledPluginIds: [] as string[],
 };
 
@@ -25,6 +26,7 @@ const appSettingsSchema = z
     language: z.enum(["zh-CN", "en"]).default(DEFAULT_APP_SETTINGS.language),
     groundVisible: z.boolean().default(DEFAULT_APP_SETTINGS.groundVisible),
     tfAxesLineWidth: z.number().min(1).max(6).default(DEFAULT_APP_SETTINGS.tfAxesLineWidth),
+    fontScale: z.number().min(0.75).max(1.5).default(DEFAULT_APP_SETTINGS.fontScale),
     disabledPluginIds: z.array(z.string()).default([]),
   })
   .default(DEFAULT_APP_SETTINGS);

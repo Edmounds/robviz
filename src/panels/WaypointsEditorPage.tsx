@@ -120,10 +120,12 @@ export function WaypointsEditorPage({
   bridge,
   tf,
   topics,
+  fontScale = 1,
 }: {
   bridge: WorkerBridge;
   tf: TfBuffer;
   topics: Array<{ topic: string; schemaName: string }>;
+  fontScale?: number;
 }) {
   const { locale } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -314,7 +316,7 @@ export function WaypointsEditorPage({
     }
     context.stroke();
 
-    context.font = "11px ui-monospace, monospace";
+    context.font = `${Math.max(9, Math.round(11 * fontScale))}px ui-monospace, monospace`;
     context.fillStyle = muted;
     context.fillText("odom x", 8, canvasSize.height - 8);
     context.save();
@@ -356,7 +358,7 @@ export function WaypointsEditorPage({
       context.fill();
       context.stroke();
     }
-  }, [actualPoints, canvasSize, pose, selectedName]);
+  }, [actualPoints, canvasSize, fontScale, pose, selectedName]);
 
   const pushUndo = useCallback(() => {
     undoStackRef.current = [...undoStackRef.current.slice(-99), clonePoints(draftPoints)];

@@ -31,6 +31,17 @@ interface Entry {
   object: THREE.Object3D;
   /** TEXT 类型缓存内容，变了才重建 canvas 纹理 */
   textCache?: string;
+  rawTextHeight?: number;
+  textAspect?: number;
+}
+
+export function computeMarkerTextScale(
+  rawHeight: number,
+  aspect: number,
+  fontScale: number,
+): [number, number, number] {
+  const height = (rawHeight || 0.3) * fontScale;
+  return [height * aspect, height, 1];
 }
 
 function material(color: ColorRGBA): THREE.MeshBasicMaterial {
@@ -64,6 +75,18 @@ export class MarkerRenderer implements Display {
   frameId: string | undefined; // 未使用（tick 自管 TF），保留接口
   #entries = new Map<string, Entry>();
   #frameGroups = new Map<string, THREE.Group>();
+  #fontScale = 1;
+
+  setFontScale(scale: number): void {
+    if (this.#fontScale === scale) return;
+    this.#fontScale = scale;
+    for (const entry of this.#entries.values()) {
+      if (entry.rawTextHeight !== undefined && entry.textAspect !== undefined) {
+        const [sx, sy, sz] = computeMarkerTextScale(entry.rawTextHeight, entry.textAspect, this.#fontScale);
+        entry.object.scale.set(sx, sy, sz);
+      }
+    }
+  }
 
   update(payload: MessagePayload): void {
     if (payload.kind !== "raw") return;
@@ -103,10 +126,12 @@ export class MarkerRenderer implements Display {
 
   #upsert(key: string, m: Marker): void {
     const prev = this.#entries.get(key);
-    // TEXT 且内容未变：只更新位姿，避免每帧重建 canvas 纹理
+    // TEXT 且内容未变：只更新位姿与尺寸，避免每帧重建 canvas 纹理
     if (prev && m.type === 9 && prev.textCache === m.text && prev.frameId === m.header.frame_id) {
       this.#applyPose(prev.object, m);
-      prev.object.scale.setScalar(m.scale.z);
+      prev.rawTextHeight = m.scale.z || 0.3;
+      const [sx, sy, sz] = computeMarkerTextScale(prev.rawTextHeight, prev.textAspect ?? 1, this.#fontScale);
+      prev.object.scale.set(sx, sy, sz);
       return;
     }
     if (prev) this.#remove(key);
@@ -114,10 +139,16 @@ export class MarkerRenderer implements Display {
     if (!object) return;
     this.#applyPose(object, m);
     this.#frameGroup(m.header.frame_id).add(object);
+    const rawTextHeight = m.type === 9 ? (m.scale.z || 0.3) : undefined;
+    const textAspect = m.type === 9 && object instanceof THREE.Sprite && object.material.map?.image
+      ? (object.material.map.image as HTMLCanvasElement).width / (object.material.map.image as HTMLCanvasElement).height
+      : undefined;
     this.#entries.set(key, {
       frameId: m.header.frame_id,
       object,
       textCache: m.type === 9 ? m.text : undefined,
+      rawTextHeight,
+      textAspect,
     });
   }
 
@@ -240,8 +271,10 @@ export class MarkerRenderer implements Display {
         const sprite = new THREE.Sprite(
           new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }),
         );
-        // scale.z 为文字高度（米）
-        sprite.scale.set(((m.scale.z || 0.3) * canvas.width) / canvas.height, m.scale.z || 0.3, 1);
+        const rawHeight = m.scale.z || 0.3;
+        const aspect = canvas.width / canvas.height;
+        const [sx, sy, sz] = computeMarkerTextScale(rawHeight, aspect, this.#fontScale);
+        sprite.scale.set(sx, sy, sz);
         return sprite;
       }
       default:

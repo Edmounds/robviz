@@ -114,7 +114,7 @@ function XmlEditor({
           EditorView.lineWrapping,
           EditorView.theme({
             "&": { height: "100%", background: "transparent" },
-            ".cm-scroller": { fontFamily: "var(--mono)", fontSize: "12px" },
+            ".cm-scroller": { fontFamily: "var(--mono)", fontSize: "var(--fs-ui)" },
             ".cm-gutters": {
               background: "var(--surface-soft)",
               color: "var(--text-faint)",

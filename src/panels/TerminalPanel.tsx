@@ -23,6 +23,7 @@ export default function TerminalPanel({
   theme,
   visible,
   height,
+  fontScale = 1,
   onHeightChange,
   onHide,
 }: {
@@ -30,6 +31,7 @@ export default function TerminalPanel({
   theme: "dark" | "light";
   visible: boolean;
   height: number;
+  fontScale?: number;
   onHeightChange: (height: number) => void;
   onHide: () => void;
 }) {
@@ -42,6 +44,7 @@ export default function TerminalPanel({
   const sessionOpenRef = useRef(false);
   const sessionHostRef = useRef<string | undefined>(undefined);
   const initialThemeRef = useRef(theme);
+  const initialFontScaleRef = useRef(fontScale);
   const visibleRef = useRef(visible);
   visibleRef.current = visible;
 
@@ -187,7 +190,7 @@ export default function TerminalPanel({
     const terminal = new Terminal({
       cursorBlink: true,
       fontFamily: 'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace',
-      fontSize: 12,
+      fontSize: Math.max(9, Math.round(12 * initialFontScaleRef.current)),
       lineHeight: 1.2,
       scrollback: 5_000,
       theme:
@@ -226,6 +229,22 @@ export default function TerminalPanel({
       fitRef.current = undefined;
     };
   }, [closeSocket]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    const targetSize = Math.max(9, Math.round(12 * fontScale));
+    if (terminal.options.fontSize !== targetSize) {
+      terminal.options.fontSize = targetSize;
+      if (visibleRef.current) {
+        fitRef.current?.fit();
+        const socket = socketRef.current;
+        if (socket?.readyState === WebSocket.OPEN && sessionOpenRef.current) {
+          socket.send(JSON.stringify({ type: "resize", cols: terminal.cols, rows: terminal.rows }));
+        }
+      }
+    }
+  }, [fontScale]);
 
   useEffect(() => {
     const terminal = terminalRef.current;

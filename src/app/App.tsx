@@ -138,7 +138,7 @@ function createDefaultAppConfig(): AppConfig {
     version: 2,
     activeSessionId: session.id,
     theme: "dark",
-    settings: { language: "zh-CN", disabledPluginIds: [] },
+    settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] },
     sessions: [session],
   };
 }
@@ -166,6 +166,8 @@ interface RobotSessionAppProps {
   active: boolean;
   globalTheme: Theme;
   globalSettings: AppConfig["settings"];
+  effectiveFontScale: number;
+  panelGap: number;
   onSessionChange: (session: RobotSessionConfig) => void;
   onConnectionStateChange: (id: string, state: ConnectionState) => void;
   onThemeChange: (theme: Theme) => void;
@@ -180,6 +182,8 @@ function RobotSessionApp({
   active = true,
   globalTheme,
   globalSettings,
+  effectiveFontScale,
+  panelGap,
   onSessionChange,
   onConnectionStateChange,
   onThemeChange,
@@ -216,6 +220,7 @@ function RobotSessionApp({
   const [settings, setSettings] = useState<LayoutConfig["settings"]>(
     {
       language: globalSettings.language,
+      fontScale: globalSettings.fontScale ?? 1,
       disabledPluginIds: globalSettings.disabledPluginIds,
       groundVisible: session.scene.groundVisible,
       tfAxesLineWidth: session.scene.tfAxesLineWidth,
@@ -285,6 +290,7 @@ function RobotSessionApp({
     tfAxesLineWidth: settings.tfAxesLineWidth,
     pcdTool,
     navTool,
+    effectiveFontScale,
   });
   sceneMountStateRef.current = {
     active,
@@ -294,6 +300,7 @@ function RobotSessionApp({
     tfAxesLineWidth: settings.tfAxesLineWidth,
     pcdTool,
     navTool,
+    effectiveFontScale,
   };
 
   const resolvedPlugins = useMemo(
@@ -411,13 +418,14 @@ function RobotSessionApp({
     sceneRef.current = scene;
     scene.onStats = setSceneStats;
     scene.onDisplayError = (topic, message) => setLastError(`${topic} ${message}`);
+    scene.enableAutoFitTf();
+    scene.setFontScale(mountState.effectiveFontScale);
     scene.fixedFrame = mountState.fixedFrame;
     scene.setFollowFrame(mountState.followFrame);
     scene.setGridVisible(mountState.groundVisible);
     scene.setTfAxesLineWidth(mountState.tfAxesLineWidth);
     scene.setControlsEnabled(mountState.pcdTool === "orbit" && !mountState.navTool);
     scene.setActive(mountState.active);
-    if (savedCameraRef.current) scene.setCameraState(savedCameraRef.current);
     setSceneGeneration((current) => current + 1);
 
     return () => {
@@ -460,6 +468,10 @@ function RobotSessionApp({
     });
   }, [active, panels, ready]);
 
+  useEffect(() => {
+    sceneRef.current?.setFontScale(effectiveFontScale);
+  }, [effectiveFontScale]);
+
   // 主题：同步 CSS 令牌、3D 场景配色与持久化
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -477,22 +489,26 @@ function RobotSessionApp({
     setSettings((current) => {
       if (
         current.language === globalSettings.language &&
+        current.fontScale === globalSettings.fontScale &&
         current.disabledPluginIds.join("\0") === globalSettings.disabledPluginIds.join("\0")
       ) return current;
       return {
         ...current,
         language: globalSettings.language,
+        fontScale: globalSettings.fontScale ?? 1,
         disabledPluginIds: globalSettings.disabledPluginIds,
       };
     });
   }, [globalSettings]);
 
   useEffect(() => {
+    if (!active) return;
     onGlobalSettingsChange({
       language: settings.language,
+      fontScale: settings.fontScale,
       disabledPluginIds: settings.disabledPluginIds,
     });
-  }, [settings.language, settings.disabledPluginIds, onGlobalSettingsChange]);
+  }, [active, settings.language, settings.fontScale, settings.disabledPluginIds, onGlobalSettingsChange]);
 
   useEffect(() => {
     onConnectionStateChange(session.id, connState);
@@ -1065,7 +1081,7 @@ function RobotSessionApp({
                   {tool.title(pluginCtx)}
                 </button>
               ))}
-              <button onClick={() => sceneRef.current?.resetView()} title={t("resetViewHint")}>
+              <button onClick={() => sceneRef.current?.resetViewToTf()} title={t("resetViewTfHint")}>
                 {t("resetView")}
               </button>
               <button
@@ -1219,6 +1235,7 @@ function RobotSessionApp({
             bridge={bridgeRef.current!}
             topics={topics}
             theme={theme}
+            fontScale={effectiveFontScale}
             initialSeries={(storedPanel.state as { series?: Array<{ topic: string; field: string }> } | undefined)?.series}
             onSeriesChange={(series) => updatePanelState(panel.id, { series })}
             onClose={() => removePanel(panel.id)}
@@ -1242,7 +1259,7 @@ function RobotSessionApp({
       );
     }
     return <div className="workspace-panel"><p className="empty-hint">{t("unknownPanel", { kind: panel.kind })}</p></div>;
-  }, [active, attachSceneCanvas, cancelNav, closePcd, connState, dataTopics, desired, displayFactories, followFrame, frames, lastError, navPreview, navTool, onNavDown, onNavMove, onNavUp, onSelectDown, onSelectMove, onSelectUp, onViewportDoubleClick, panels, pcd, pcdBusy, pcdExport, pcdTool, pcdUndo, pluginCtx, ready, removePanel, resolvedPlugins.panels, resolvedPlugins.sections, resolvedPlugins.viewportTools, sceneStats, selectRect, services, session.mediaUrl, settings.groundVisible, streamStats, t, tfTree, theme, toggleTopic, topics, updatePanelState, updatePointCloudSettings]);
+  }, [active, attachSceneCanvas, cancelNav, closePcd, connState, dataTopics, desired, displayFactories, effectiveFontScale, followFrame, frames, lastError, navPreview, navTool, onNavDown, onNavMove, onNavUp, onSelectDown, onSelectMove, onSelectUp, onViewportDoubleClick, panels, pcd, pcdBusy, pcdExport, pcdTool, pcdUndo, pluginCtx, ready, removePanel, resolvedPlugins.panels, resolvedPlugins.sections, resolvedPlugins.viewportTools, sceneStats, selectRect, services, session.mediaUrl, settings.groundVisible, streamStats, t, tfTree, theme, toggleTopic, topics, updatePanelState, updatePointCloudSettings]);
 
   return (
     <I18nProvider locale={settings.language}>
@@ -1406,6 +1423,7 @@ function RobotSessionApp({
             panels={visiblePanels}
             layout={dockLayout}
             theme={theme}
+            gap={panelGap}
             titleForKind={panelTitle}
             renderPanel={(panel) => (
               <ErrorBoundary name={panelTitle(panel.kind)} onReset={() => removePanel(panel.id)}>
@@ -1437,7 +1455,12 @@ function RobotSessionApp({
         {mode === "waypoints" && ready && (
           <ErrorBoundary name={t("waypointsEditor")}>
             <Suspense fallback={<div className="page-loading">{t("waypointsEditor")}</div>}>
-              <WaypointsEditorPage bridge={bridgeRef.current!} tf={tfRef.current!} topics={topics} />
+              <WaypointsEditorPage
+                bridge={bridgeRef.current!}
+                tf={tfRef.current!}
+                topics={topics}
+                fontScale={effectiveFontScale}
+              />
             </Suspense>
           </ErrorBoundary>
         )}
@@ -1472,6 +1495,7 @@ function RobotSessionApp({
             bridgeUrl={activeBridgeUrl}
             theme={theme}
             visible={terminalVisible}
+            fontScale={effectiveFontScale}
             height={terminalHeight}
             onHeightChange={setTerminalHeight}
             onHide={() => setTerminalVisible(false)}
@@ -1490,6 +1514,38 @@ export default function App() {
   const [connectionStates, setConnectionStates] = useState<Record<string, ConnectionState>>({});
   const [runtimeGeneration, setRuntimeGeneration] = useState(0);
   const [configError, setConfigError] = useState<string>();
+  const [windowSize, setWindowSize] = useState(() => ({
+    width: typeof window !== "undefined" ? window.innerWidth : 1440,
+    height: typeof window !== "undefined" ? window.innerHeight : 900,
+  }));
+
+  useEffect(() => {
+    const handleResize = () => {
+      setWindowSize({ width: window.innerWidth, height: window.innerHeight });
+    };
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  const autoScale = useMemo(() => {
+    const raw = Math.min(windowSize.width / 1440, windowSize.height / 900);
+    return Math.max(0.9, Math.min(1, raw));
+  }, [windowSize.width, windowSize.height]);
+
+  const fontScaleSetting = config.settings.fontScale ?? 1;
+  const effectiveFontScale = autoScale * fontScaleSetting;
+  const isSmallScreen = windowSize.width < 1100 || windowSize.height < 700;
+  const panelGap = isSmallScreen ? 6 : 8;
+
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--auto-scale", autoScale.toFixed(4));
+    root.style.setProperty("--font-scale", fontScaleSetting.toFixed(4));
+    root.style.setProperty("--effective-font-scale", effectiveFontScale.toFixed(4));
+    root.style.setProperty("--panel-gap", `${panelGap}px`);
+    root.style.setProperty("--panel-radius", "12px");
+    root.style.setProperty("--dv-border-radius", "12px");
+  }, [autoScale, fontScaleSetting, effectiveFontScale, panelGap]);
   const editingSessionIdRef = useRef<string | undefined>(undefined);
   const [editingSessionId, setEditingSessionId] = useState<string>();
   const [editingSessionName, setEditingSessionName] = useState("");
@@ -1549,6 +1605,7 @@ export default function App() {
   const updateGlobalSettings = useCallback((settings: AppConfig["settings"]) => {
     setConfig((current) => (
       current.settings.language === settings.language &&
+      current.settings.fontScale === settings.fontScale &&
       current.settings.disabledPluginIds.join("\0") === settings.disabledPluginIds.join("\0")
         ? current
         : { ...current, settings }
@@ -1703,6 +1760,8 @@ export default function App() {
                 active={active}
                 globalTheme={config.theme}
                 globalSettings={config.settings}
+                effectiveFontScale={effectiveFontScale}
+                panelGap={panelGap}
                 onSessionChange={updateSession}
                 onConnectionStateChange={updateConnectionState}
                 onThemeChange={updateTheme}

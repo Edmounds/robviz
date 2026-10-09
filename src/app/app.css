@@ -17,14 +17,24 @@
     "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
 
-  /* 字阶：三级制（正文 13 / 控件与数据 12 / 辅助 11），杜绝 0.5px 碎片字号 */
-  --fs-body: 13px;
-  --fs-ui: 12px;
-  --fs-meta: 11px;
+  /* 字阶：受有效比例驱动 */
+  --auto-scale: 1;
+  --font-scale: 1;
+  --effective-font-scale: 1;
 
-  /* 控件统一圆角与最小热区（Fitts 定律：热区宁大勿小） */
+  /* 板块圆角与留白令牌（VSCode 风格） */
+  --panel-radius: 12px;
+  --panel-gap: 8px;
+  --dv-border-radius: 12px;
+
+  /* 字阶：受有效比例驱动 */
+  --fs-body: calc(13px * var(--effective-font-scale, 1));
+  --fs-ui: calc(12px * var(--effective-font-scale, 1));
+  --fs-meta: calc(11px * var(--effective-font-scale, 1));
+
+  /* 控件统一圆角与最小热区（随字体增大自适应增高，保证 >= 24px） */
   --radius-ctl: 6px;
-  --ctl-min-h: 24px;
+  --ctl-min-h: max(24px, calc(24px * var(--effective-font-scale, 1)));
 }
 
 /* 亮色主题（03-ui-design.md：令牌体系保证可切换，组件不硬编码深色值） */
@@ -458,6 +468,7 @@ body {
 }
 
 .workspace-dock {
+  --dv-border-radius: var(--panel-radius, 12px);
   --dv-group-view-background-color: var(--canvas);
   --dv-tabs-and-actions-container-background-color: var(--surface-soft);
   --dv-activegroup-visiblepanel-tab-background-color: var(--canvas);
@@ -467,14 +478,49 @@ body {
   --dv-inactivegroup-visiblepanel-tab-color: var(--text-muted);
   --dv-inactivegroup-hiddenpanel-tab-color: var(--text-faint);
   --dv-tab-divider-color: var(--border-soft);
-  --dv-sash-color: var(--border-soft);
-  --dv-active-sash-color: var(--foreground);
+  --dv-sash-color: transparent;
+  --dv-active-sash-color: var(--border-strong);
   --dv-drag-over-background-color: color-mix(in srgb, var(--foreground) 12%, transparent);
   --dv-drag-over-border-color: var(--foreground);
-  --dv-tabs-and-actions-container-height: 30px;
+  --dv-tabs-and-actions-container-height: max(28px, calc(30px * var(--effective-font-scale, 1)));
   --dv-tabs-and-actions-container-font-size: var(--fs-ui);
   --dv-tab-font-size: var(--fs-ui);
+  padding: var(--panel-gap, 8px);
+  background: var(--canvas);
   overflow: hidden;
+}
+
+/* VSCode 风格板块效果：圆角与细边框 */
+.dockview-theme-abyss-spaced .dv-groupview,
+.dockview-theme-light-spaced .dv-groupview {
+  border-radius: var(--panel-radius, 12px) !important;
+  border: 1px solid var(--border-soft) !important;
+  overflow: hidden !important;
+}
+
+.dockview-theme-abyss-spaced .dv-resize-container,
+.dockview-theme-light-spaced .dv-resize-container {
+  border-radius: var(--panel-radius, 12px) !important;
+}
+
+.dockview-theme-abyss-spaced .dv-render-overlay,
+.dockview-theme-light-spaced .dv-render-overlay {
+  border-bottom-left-radius: var(--panel-radius, 12px) !important;
+  border-bottom-right-radius: var(--panel-radius, 12px) !important;
+  overflow: hidden !important;
+}
+
+.dockview-theme-abyss-spaced .dv-tabs-and-actions-container,
+.dockview-theme-light-spaced .dv-tabs-and-actions-container {
+  border-top-left-radius: var(--panel-radius, 12px) !important;
+  border-top-right-radius: var(--panel-radius, 12px) !important;
+}
+
+.dockview-theme-abyss-spaced .dv-content-container,
+.dockview-theme-light-spaced .dv-content-container {
+  border-bottom-left-radius: var(--panel-radius, 12px) !important;
+  border-bottom-right-radius: var(--panel-radius, 12px) !important;
+  overflow: hidden !important;
 }
 
 .workspace-panel {
@@ -483,6 +529,7 @@ body {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  border-radius: inherit;
   background: var(--canvas);
 }
 
@@ -572,7 +619,10 @@ body {
   max-height: 60vh;
   flex-direction: column;
   overflow: hidden;
-  border-top: 1px solid var(--border-soft);
+  border-top-left-radius: var(--panel-radius, 12px);
+  border-top-right-radius: var(--panel-radius, 12px);
+  border: 1px solid var(--border-soft);
+  border-bottom: none;
   background: var(--canvas);
 }
 
@@ -1943,8 +1993,14 @@ body {
 .settings-page {
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr);
-  width: 100%;
-  height: 100%;
+  width: calc(100% - 2 * var(--panel-gap, 8px));
+  height: calc(100% - 2 * var(--panel-gap, 8px));
+  margin: var(--panel-gap, 8px);
+  border-radius: var(--panel-radius, 12px);
+  border: 1px solid var(--border-soft);
+  background: var(--canvas);
+  overflow: hidden;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -2345,27 +2401,23 @@ button:disabled {
 
 .urdf-editor-page {
   display: grid;
-  grid-template-rows: 38px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
+  padding: var(--panel-gap, 8px);
+  gap: var(--panel-gap, 8px);
   overflow: hidden;
-}
-
-.urdf-toolbar,
-.source-toolbar,
-.joint-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 
 .urdf-toolbar {
   min-width: 0;
   padding: 4px 8px;
   overflow-x: auto;
-  border-bottom: 1px solid var(--border-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--panel-radius, 12px);
+  background: var(--surface-soft);
   scrollbar-width: thin;
 }
 
@@ -2429,6 +2481,9 @@ button:disabled {
   height: 100%;
   min-width: 0;
   min-height: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--panel-radius, 12px);
+  overflow: hidden;
 }
 
 .urdf-viewport canvas {
@@ -2498,7 +2553,10 @@ button:disabled {
   height: 100%;
   min-width: 0;
   min-height: 0;
-  border-left: 1px solid var(--border-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--panel-radius, 12px);
+  background: var(--canvas);
+  overflow: hidden;
 }
 
 .inspector-tabs {
@@ -2542,11 +2600,13 @@ button:disabled {
 /* ---- Waypoints editor ---- */
 .waypoints-editor-page {
   display: grid;
-  grid-template-rows: 38px minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
+  padding: var(--panel-gap, 8px);
+  gap: var(--panel-gap, 8px);
   overflow: hidden;
 }
 
@@ -2557,7 +2617,9 @@ button:disabled {
   gap: 7px;
   padding: 4px 8px;
   overflow-x: auto;
-  border-bottom: 1px solid var(--border-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--panel-radius, 12px);
+  background: var(--surface-soft);
 }
 
 .waypoints-toolbar > svg {
@@ -2619,6 +2681,7 @@ button:disabled {
   grid-template-columns: minmax(170px, 220px) minmax(0, 1fr) minmax(190px, 250px);
   min-width: 0;
   min-height: 0;
+  gap: var(--panel-gap, 8px);
 }
 
 .waypoints-list,
@@ -2626,7 +2689,9 @@ button:disabled {
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  border-right: 1px solid var(--border-soft);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--panel-radius, 12px);
+  background: var(--canvas);
 }
 
 .waypoints-inspector {
@@ -2694,6 +2759,8 @@ button:disabled {
   position: relative;
   min-width: 0;
   min-height: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--panel-radius, 12px);
   overflow: hidden;
   background: var(--canvas);
 }

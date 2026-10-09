@@ -64,6 +64,7 @@ const appConfigSchema = z
     theme: z.enum(["dark", "light"]).default("dark"),
     settings: z.object({
       language: z.enum(["zh-CN", "en"]).default("zh-CN"),
+      fontScale: z.number().min(0.75).max(1.5).default(1),
       disabledPluginIds: z.array(z.string()).default([]),
     }),
     sessions: z.array(robotSessionSchema).min(1),
@@ -258,6 +259,7 @@ function migrateV1(raw: unknown): AppConfig {
     theme: legacy.theme,
     settings: {
       language: legacy.settings.language,
+      fontScale: legacy.settings.fontScale,
       disabledPluginIds: legacy.settings.disabledPluginIds,
     },
     sessions: [session],
