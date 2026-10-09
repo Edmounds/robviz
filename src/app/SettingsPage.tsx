@@ -37,42 +37,112 @@ function ImageStreamSettingsForm({
   onChange: (patch: Partial<ImageStreamSettings>) => void;
 }) {
   const isEn = locale === "en";
+  const isWebRtc = value.transport === "webrtc";
+
   return (
     <section className="settings-section image-settings-stream">
       <h2>{name === "rgb" ? "RGB" : (isEn ? "Native Depth" : "原始深度")}</h2>
+
+      <div className="settings-row">
+        <span>{isEn ? "Transport Mode" : "传输模式"}</span>
+        <div className="segmented-control">
+          <button
+            type="button"
+            className={isWebRtc ? "active" : ""}
+            onClick={() => onChange({ transport: "webrtc" })}
+          >
+            WebRTC (H.264)
+          </button>
+          <button
+            type="button"
+            className={!isWebRtc ? "active" : ""}
+            onClick={() => onChange({ transport: "jpeg" })}
+          >
+            JPEG
+          </button>
+        </div>
+      </div>
+
       <label className="settings-row settings-slider">
-        <span>{isEn ? "Bandwidth" : "带宽"}</span>
+        <span>{isEn ? "Bandwidth Budget" : "带宽预算"}</span>
         <input
           type="number"
-          min={0.01}
+          min={0.1}
           max={1000}
-          step={0.05}
+          step={0.5}
           value={value.bandwidth_mbps}
           onChange={(event) => onChange({ bandwidth_mbps: Number(event.target.value) })}
         />
         <output>Mbps</output>
       </label>
-      <label className="settings-row settings-toggle">
-        <span><strong>{isEn ? "Automatic JPEG quality" : "自动 JPEG 质量"}</strong><small>{isEn ? "Reduce quality before dropping frames" : "先降低质量，再丢帧"}</small></span>
-        <input type="checkbox" checked={value.auto_quality} onChange={(event) => onChange({ auto_quality: event.target.checked })} />
-      </label>
+
       <label className="settings-row settings-slider">
-        <span>{isEn ? "JPEG quality" : "JPEG 质量"}</span>
+        <span>{isEn ? "Max Frame Rate" : "帧率上限"}</span>
         <input
-          type="range"
-          min={30}
-          max={95}
+          type="number"
+          min={1}
+          max={60}
           step={1}
-          value={value.quality}
-          onChange={(event) => onChange({ quality: Number(event.target.value) })}
+          value={value.max_fps}
+          onChange={(event) => onChange({ max_fps: Number(event.target.value) })}
         />
-        <output>{value.quality}</output>
+        <output>FPS</output>
       </label>
-      <div className="settings-grid-row">
-        <label><span>{isEn ? "Width" : "宽度"}</span><input type="number" min={64} max={3840} step={1} value={value.width} onChange={(event) => onChange({ width: Number(event.target.value) })} /></label>
-        <label><span>{isEn ? "Height" : "高度"}</span><input type="number" min={48} max={2160} step={1} value={value.height} onChange={(event) => onChange({ height: Number(event.target.value) })} /></label>
-        <label><span>FPS</span><input type="number" min={0.1} max={60} step={0.5} value={value.max_fps} onChange={(event) => onChange({ max_fps: Number(event.target.value) })} /></label>
-      </div>
+
+      {isWebRtc ? (
+        <label className="settings-row settings-slider">
+          <span>{isEn ? "Target Bitrate" : "目标码率"}</span>
+          <input
+            type="number"
+            min={0.1}
+            max={value.bandwidth_mbps}
+            step={0.1}
+            value={value.target_bitrate_mbps}
+            onChange={(event) => onChange({ target_bitrate_mbps: Number(event.target.value) })}
+          />
+          <output>Mbps</output>
+        </label>
+      ) : (
+        <>
+          <label className="settings-row settings-toggle">
+            <span>
+              <strong>{isEn ? "Automatic JPEG quality" : "自动 JPEG 质量"}</strong>
+              <small>{isEn ? "Reduce quality before dropping frames" : "在最低质量前优先降画质以维持帧率"}</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={value.auto_quality}
+              onChange={(event) => onChange({ auto_quality: event.target.checked })}
+            />
+          </label>
+          <label className="settings-row settings-slider">
+            <span>{isEn ? "JPEG Target Quality" : "JPEG 目标质量"}</span>
+            <input
+              type="range"
+              min={30}
+              max={95}
+              step={1}
+              value={value.quality}
+              onChange={(event) => onChange({ quality: Number(event.target.value) })}
+            />
+            <output>{value.quality}</output>
+          </label>
+          {value.auto_quality && (
+            <label className="settings-row settings-slider">
+              <span>{isEn ? "JPEG Minimum Quality" : "JPEG 最低质量"}</span>
+              <input
+                type="range"
+                min={30}
+                max={value.quality}
+                step={1}
+                value={value.min_quality}
+                onChange={(event) => onChange({ min_quality: Number(event.target.value) })}
+              />
+              <output>{value.min_quality}</output>
+            </label>
+          )}
+        </>
+      )}
     </section>
   );
 }

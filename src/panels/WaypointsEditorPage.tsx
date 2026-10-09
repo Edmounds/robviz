@@ -9,7 +9,6 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
-import { ImagePanel } from "./ImagePanel";
 import type { TfBuffer } from "../core/TfBuffer";
 import type { Odometry, TFMessage } from "../core/types";
 import type {
@@ -25,8 +24,6 @@ import {
 } from "../core/waypointApi";
 import { useI18n } from "../app/i18n";
 
-const RGB_PREVIEW_TOPIC = "/fruit_perception/camera/annotated_image/compressed";
-const DEPTH_PREVIEW_TOPIC = "/fruit_perception/camera/native_depth/compressed";
 const FRESHNESS_LIMIT_MS = 1_500;
 
 interface PoseSample {
@@ -123,12 +120,10 @@ export function WaypointsEditorPage({
   bridge,
   tf,
   topics,
-  active = true,
 }: {
   bridge: WorkerBridge;
   tf: TfBuffer;
   topics: Array<{ topic: string; schemaName: string }>;
-  active?: boolean;
 }) {
   const { locale } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -547,31 +542,6 @@ export function WaypointsEditorPage({
             <small>{locale === "en" ? `TF age ${formatAge(pose?.ageMs ?? Infinity)} · speed ${formatNumber(pose?.speed ?? NaN)} m/s` : `TF 新鲜度 ${formatAge(pose?.ageMs ?? Infinity)} · 速度 ${formatNumber(pose?.speed ?? NaN)} m/s`}</small>
           </div>
         </aside>
-      </div>
-
-      <div className="waypoints-previews">
-        <ImagePanel
-          key={RGB_PREVIEW_TOPIC}
-          embedded
-          active={active}
-          bridge={bridge}
-          topics={topics}
-          initialTopic={RGB_PREVIEW_TOPIC}
-          fixedTopic={RGB_PREVIEW_TOPIC}
-          initialUseWebRtc={false}
-          onClose={() => undefined}
-        />
-        <ImagePanel
-          key={DEPTH_PREVIEW_TOPIC}
-          embedded
-          active={active}
-          bridge={bridge}
-          topics={topics}
-          initialTopic={DEPTH_PREVIEW_TOPIC}
-          fixedTopic={DEPTH_PREVIEW_TOPIC}
-          initialUseWebRtc={false}
-          onClose={() => undefined}
-        />
       </div>
 
       {(error || notice) && (

@@ -7,7 +7,6 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
 import type { TopicInfo } from "../core/FoxgloveConnection";
-import { requiresRawImage } from "../core/image";
 import { preferredImageTopic, sortedImageTopics } from "../core/imageTopics";
 import { webRtcManager, type WebRtcStreamStats } from "../media/WebRtcStreamClient";
 import { turbo } from "../renderers/colormap";
@@ -175,7 +174,12 @@ export function ImagePanel({
   const isImageTopic = topics.some(
     (cand) => cand.topic === topic && cand.schemaName === "sensor_msgs/msg/Image",
   );
-  const activeWebRtc = useWebRtc && isImageTopic;
+  const isManaged = Boolean(webrtcStats?.transport);
+  const isJpegMode = webrtcStats?.transport === "jpeg";
+  const activeWebRtc = !isJpegMode && useWebRtc && isImageTopic;
+  const activeCompressedTopic = isJpegMode
+    ? (webrtcStats?.compressedTopic ?? `${topic}/compressed`)
+    : topic;
   const mediaUrl = webRtcManager.deriveMediaUrl(
     bridge.url || "ws://localhost:8765",
     configuredMediaUrl,
@@ -214,9 +218,6 @@ export function ImagePanel({
       },
       (stats) => {
         setWebRtcStats(stats);
-        if (stats.sourceEncoding && requiresRawImage(stats.sourceEncoding)) {
-          setUseWebRtc(false);
-        }
       },
     );
     return () => {
@@ -235,15 +236,22 @@ export function ImagePanel({
   }, [active, activeWebRtc, collapsed, mediaUrl, panelId, targetFps, topic]);
 
   useEffect(() => {
-    if (!active || activeWebRtc || !topic || collapsed) return;
+    if (!active || activeWebRtc || !activeCompressedTopic || collapsed) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d")!;
+    let currentTopic = activeCompressedTopic;
+    let activeSub = true;
 
-    const unsub = bridge.subscribe(topic, (payload: MessagePayload) => {
+    const unsub = bridge.subscribe(activeCompressedTopic, (payload: MessagePayload) => {
+      if (!activeSub || currentTopic !== activeCompressedTopic) return;
       if (payload.kind === "compressed_image") {
         frameRef.current = null; // 压缩图不支持逐像素取值
         void createImageBitmap(new Blob([payload.data as unknown as BlobPart])).then((bmp) => {
+          if (!activeSub || currentTopic !== activeCompressedTopic) {
+            bmp.close();
+            return;
+          }
           canvas.width = bmp.width;
           canvas.height = bmp.height;
           ctx.drawImage(bmp, 0, 0);
@@ -273,10 +281,11 @@ export function ImagePanel({
       }
     }, { maxFrequency: IMAGE_MAX_FREQUENCY });
     return () => {
+      activeSub = false;
       unsub();
       frameRef.current = null;
     };
-  }, [active, activeWebRtc, bridge, collapsed, topic]);
+  }, [active, activeCompressedTopic, activeWebRtc, bridge, collapsed]);
 
   const onMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const frame = frameRef.current;
@@ -333,7 +342,7 @@ export function ImagePanel({
             ))}
           </select>
         )}
-        {isImageTopic && (
+        {isImageTopic && !isManaged && (
           <>
             <select
               value={targetFps}
@@ -373,6 +382,31 @@ export function ImagePanel({
             </button>
           </>
         )}
+        {isManaged && (
+          <span className="panel-meta" style={{ color: "#38bdf8", fontWeight: 600 }}>
+            {isJpegMode ? "JPEG" : "WebRTC"}
+          </span>
+        )}
+        {activeWebRtc && webrtcStats?.status === "error" && (
+          <button
+            type="button"
+            className="panel-btn"
+            style={{
+              fontSize: 11,
+              padding: "2px 6px",
+              marginLeft: 4,
+              background: "#ef4444",
+              color: "#fff",
+              border: "none",
+              borderRadius: 3,
+              cursor: "pointer",
+            }}
+            title="重新连接 WebRTC 流"
+            onClick={() => webRtcManager.reconnect(topic, mediaUrl)}
+          >
+            重连
+          </button>
+        )}
         <span className="panel-meta">{displayMeta}</span>
     </>
   );
@@ -384,10 +418,30 @@ export function ImagePanel({
             autoPlay
             playsInline
             muted
-            style={{ width: "100%", height: "100%", objectFit: "contain", display: "block", background: "#000" }}
+            style={{
+              maxWidth: "100%",
+              maxHeight: "100%",
+              width: "100%",
+              height: "100%",
+              objectFit: "contain",
+              display: "block",
+              background: "#000",
+            }}
           />
         ) : (
-          <canvas ref={canvasRef} onMouseMove={onMove} onMouseLeave={() => setHover(undefined)} />
+          <canvas
+            ref={canvasRef}
+            style={{
+              maxWidth: "100%",
+              maxHeight: "100%",
+              width: "auto",
+              height: "auto",
+              objectFit: "contain",
+              display: "block",
+            }}
+            onMouseMove={onMove}
+            onMouseLeave={() => setHover(undefined)}
+          />
         )}
         {hover && !activeWebRtc && (
           <div className="pixel-tip" style={{ left: hover.x + 12, top: hover.y + 12 }}>

@@ -19,6 +19,8 @@ export interface WebRtcStreamStats {
   encoder: string;
   status: "idle" | "connecting" | "streaming" | "congested" | "error" | "stopped";
   statusText?: string;
+  transport?: "webrtc" | "jpeg";
+  compressedTopic?: string;
 }
 
 export type WebRtcStatsCallback = (stats: WebRtcStreamStats) => void;
@@ -41,7 +43,6 @@ class TopicPeer {
   private viewers = new Map<string, ViewerHandle>();
   private targetFps = 10;
   private statsTimer: number | null = null;
-  private retryTimer: ReturnType<typeof setTimeout> | null = null;
 
   private lastBytes = 0;
   private lastFrames = 0;
@@ -76,7 +77,7 @@ class TopicPeer {
     viewer.onStats(this.currentStats);
 
     this.updateMaxFps();
-    if (!this.ws && this.retryTimer === null) {
+    if (!this.ws) {
       this.connect();
     }
   }
@@ -150,6 +151,16 @@ class TopicPeer {
                    typeof msg.candidate === "string" && Number.isInteger(msg.sdpMLineIndex) &&
                    msg.sdpMLineIndex >= 0 && msg.sdpMLineIndex < 16) {
           await this.handleIce(msg.candidate, msg.sdpMLineIndex);
+        } else if (msg.type === "meta") {
+          const streamMeta = msg.topic === this.topic ? msg : msg.streams?.[this.topic];
+          if (streamMeta) {
+            this.currentStats = {
+              ...this.currentStats,
+              transport: streamMeta.transport,
+              compressedTopic: streamMeta.compressedTopic,
+            };
+            this.notifyStats();
+          }
         } else if (msg.type === "stats" && msg.topic === this.topic) {
           if (Number.isFinite(msg.encoderBitrateKbps)) {
             this.currentStats = {
@@ -162,20 +173,20 @@ class TopicPeer {
           if (msg.code === "unsupported_encoding" && typeof msg.encoding === "string") {
             this.currentStats = { ...this.currentStats, sourceEncoding: msg.encoding };
           }
-          this.updateStatus("error", String(msg.message || "Video stream unavailable"));
+          this.fail(String(msg.message || "Video stream unavailable"));
         }
       } catch (err) {
         console.warn("[WebRtc] Message error:", err);
-        if (this.ws === ws) this.updateStatus("error", String(err));
+        if (this.ws === ws) this.fail(String(err));
       }
     };
 
     ws.onerror = () => {
-      if (this.ws === ws) this.retry("Signaling WebSocket error");
+      if (this.ws === ws) this.fail("Signaling WebSocket error");
     };
 
     ws.onclose = () => {
-      if (this.ws === ws) this.retry("Gateway connection closed");
+      if (this.ws === ws) this.fail("Gateway connection closed");
     };
   }
 
@@ -217,7 +228,7 @@ class TopicPeer {
     pc.onconnectionstatechange = () => {
       if (!isCurrent()) return;
       if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
-        this.retry(`Video peer ${pc.connectionState}`);
+        this.fail(`Video peer ${pc.connectionState}`);
       }
     };
 
@@ -235,7 +246,7 @@ class TopicPeer {
         ws.send(JSON.stringify({ type: "answer", topic: this.topic, sdp: answer.sdp }));
       }
     } catch (err) {
-      if (isCurrent()) this.retry(`Video negotiation failed: ${String(err)}`);
+      if (isCurrent()) this.fail(`Video negotiation failed: ${String(err)}`);
     }
   }
 
@@ -370,23 +381,17 @@ class TopicPeer {
     ws?.close();
   }
 
-  private retry(message: string) {
+  private fail(message: string) {
     this.closeTransport();
-    if (!this.hasViewers) return;
     this.updateStatus("error", message);
-    if (this.retryTimer === null) {
-      this.retryTimer = setTimeout(() => {
-        this.retryTimer = null;
-        if (this.hasViewers) this.connect();
-      }, 1000);
-    }
+  }
+
+  reconnect() {
+    this.closeTransport();
+    this.connect();
   }
 
   disconnect() {
-    if (this.retryTimer !== null) {
-      clearTimeout(this.retryTimer);
-      this.retryTimer = null;
-    }
     try {
       if (this.ws?.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({ type: "unwatch", topic: this.topic }));
@@ -458,6 +463,12 @@ class WebRtcStreamManager {
     const key = `${wsUrl}::${topic}`;
     const peer = this.peers.get(key);
     peer?.setViewerFps(viewerId, fps);
+  }
+
+  reconnect(topic: string, wsUrl: string) {
+    const key = `${wsUrl}::${topic}`;
+    const peer = this.peers.get(key);
+    peer?.reconnect();
   }
 }
 

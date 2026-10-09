@@ -1437,7 +1437,7 @@ function RobotSessionApp({
         {mode === "waypoints" && ready && (
           <ErrorBoundary name={t("waypointsEditor")}>
             <Suspense fallback={<div className="page-loading">{t("waypointsEditor")}</div>}>
-              <WaypointsEditorPage bridge={bridgeRef.current!} tf={tfRef.current!} topics={topics} active={active} />
+              <WaypointsEditorPage bridge={bridgeRef.current!} tf={tfRef.current!} topics={topics} />
             </Suspense>
           </ErrorBoundary>
         )}

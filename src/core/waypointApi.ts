@@ -46,12 +46,13 @@ export interface WaypointDocument {
 }
 
 export interface ImageStreamSettings {
+  transport: "webrtc" | "jpeg";
   bandwidth_mbps: number;
-  auto_quality: boolean;
-  quality: number;
-  width: number;
-  height: number;
   max_fps: number;
+  target_bitrate_mbps: number;
+  quality: number;
+  min_quality: number;
+  auto_quality: boolean;
 }
 
 export interface ImageSettings {
