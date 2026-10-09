@@ -3,19 +3,23 @@ import {
   ArrowDown,
   ArrowUp,
   FileText,
+  Layers,
+  List,
   ListOrdered,
-  LocateFixed,
+  MapPin,
+  Maximize2,
   Plus,
   RefreshCcw,
   Save,
+  Sliders,
   Trash2,
   Undo2,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { WorkerBridge } from "../bridge/WorkerBridge";
-import type { TfBuffer } from "../core/TfBuffer";
-import type { Odometry, TFMessage } from "../core/types";
+import { useI18n } from "../app/i18n";
 import type {
   WaypointDocument,
   WaypointFileInfo,
@@ -27,28 +31,18 @@ import {
   saveWaypointDocument,
   WaypointApiError,
 } from "../core/waypointApi";
-import { useI18n } from "../app/i18n";
-
-const FRESHNESS_LIMIT_MS = 1_500;
-
-interface PoseSample {
-  x: number;
-  y: number;
-  yawDeg: number;
-  speed: number;
-  ageMs: number;
-  available: boolean;
-}
+import {
+  canvasToWorld,
+  fitViewToBounds,
+  panView,
+  placeWaypointLabels,
+  worldToCanvas,
+  zoomViewAtAnchor,
+  type View2DTransform,
+} from "../core/view2d";
 
 interface CanvasSize {
   width: number;
-  height: number;
-}
-
-interface MapTransform {
-  minX: number;
-  maxY: number;
-  scale: number;
   height: number;
 }
 
@@ -56,58 +50,13 @@ function clonePoints(points: WaypointPoint[]): WaypointPoint[] {
   return points.map((point) => ({ ...point, extra: { ...point.extra } }));
 }
 
-function yawFromQuaternion(rotation: { x: number; y: number; z: number; w: number }): number {
-  return Math.atan2(
-    2 * (rotation.w * rotation.z + rotation.x * rotation.y),
-    1 - 2 * (rotation.y * rotation.y + rotation.z * rotation.z),
-  ) * 180 / Math.PI;
-}
-
-function formatNumber(value: number): string {
-  return Number.isFinite(value) ? value.toFixed(3) : "N/A";
-}
-
-function formatAge(ageMs: number): string {
-  if (!Number.isFinite(ageMs)) return "N/A";
-  return `${Math.max(0, Math.round(ageMs))} ms`;
-}
-
-function makeMapTransform(
-  points: WaypointPoint[],
-  pose: PoseSample | undefined,
-  size: CanvasSize,
-): MapTransform {
-  const xs = points.map((point) => point.x);
-  const ys = points.map((point) => point.y);
-  if (pose?.available) {
-    xs.push(pose.x);
-    ys.push(pose.y);
-  }
-  const centerX = xs.length > 0 ? (Math.min(...xs) + Math.max(...xs)) / 2 : 0;
-  const centerY = ys.length > 0 ? (Math.min(...ys) + Math.max(...ys)) / 2 : 0;
-  const rangeX = Math.max(4, (xs.length > 0 ? Math.max(...xs) - Math.min(...xs) : 4) * 1.25);
-  const rangeY = Math.max(4, (ys.length > 0 ? Math.max(...ys) - Math.min(...ys) : 4) * 1.25);
-  const scale = Math.max(1, Math.min(size.width / rangeX, size.height / rangeY));
-  return {
-    minX: centerX - size.width / scale / 2,
-    maxY: centerY + size.height / scale / 2,
-    scale,
-    height: size.height,
-  };
-}
-
-function worldToCanvas(transform: MapTransform, x: number, y: number): [number, number] {
-  return [(x - transform.minX) * transform.scale, (transform.maxY - y) * transform.scale];
-}
-
-function canvasToWorld(transform: MapTransform, x: number, y: number): { x: number; y: number } {
-  return {
-    x: transform.minX + x / transform.scale,
-    y: transform.maxY - y / transform.scale,
-  };
-}
-
-function PointValue({ value, onChange }: { value: number; onChange: (value: number) => void }) {
+function PointValue({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (value: number) => void;
+}) {
   return (
     <input
       type="number"
@@ -122,54 +71,81 @@ function PointValue({ value, onChange }: { value: number; onChange: (value: numb
 }
 
 export function WaypointsEditorPage({
-  bridge,
-  tf,
-  topics,
   fontScale = 1,
 }: {
-  bridge: WorkerBridge;
-  tf: TfBuffer;
-  topics: Array<{ topic: string; schemaName: string }>;
   fontScale?: number;
 }) {
   const { locale } = useI18n();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
-  const transformRef = useRef<MapTransform | undefined>(undefined);
+  const viewRef = useRef<View2DTransform | undefined>(undefined);
   const dragPointRef = useRef<string | undefined>(undefined);
+  const isPanningRef = useRef(false);
+  const panStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const undoStackRef = useRef<WaypointPoint[][]>([]);
   const baselineRef = useRef("");
-  const lastTfWallRef = useRef(0);
-  const lastOdomWallRef = useRef(0);
+
   const [files, setFiles] = useState<WaypointFileInfo[]>([]);
-  const [selectedFileId, setSelectedFileId] = useState("odom");
+  const [selectedFileId, setSelectedFileId] = useState(() => {
+    if (typeof window !== "undefined" && window.location?.search) {
+      const p = new URLSearchParams(window.location.search).get("file");
+      if (p) return p;
+    }
+    return "odom";
+  });
   const [waypointDocument, setWaypointDocument] = useState<WaypointDocument | undefined>(undefined);
   const [draftPoints, setDraftPoints] = useState<WaypointPoint[]>([]);
   const [selectedName, setSelectedName] = useState<string | undefined>(undefined);
-  const [pose, setPose] = useState<PoseSample | undefined>(undefined);
   const [canvasSize, setCanvasSize] = useState<CanvasSize>({ width: 640, height: 420 });
+  const [viewTransform, setViewTransform] = useState<View2DTransform>({
+    centerX: 0,
+    centerY: 0,
+    scale: 50,
+    width: 640,
+    height: 420,
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [undoDepth, setUndoDepth] = useState(0);
   const [newPointName, setNewPointName] = useState("");
   const [newPointType, setNewPointType] = useState<"goal" | "waypoint">("goal");
+  const [crowdedListOpen, setCrowdedListOpen] = useState(false);
+  const [mobileTab, setMobileTab] = useState<"list" | "map" | "inspector">(() => {
+    if (typeof window !== "undefined" && window.location?.search) {
+      const tab = new URLSearchParams(window.location.search).get("tab");
+      if (tab === "list" || tab === "map" || tab === "inspector") return tab;
+    }
+    return "map";
+  });
+  const [isNarrow, setIsNarrow] = useState(false);
+
+  viewRef.current = viewTransform;
 
   const selectedFile = files.find((file) => file.id === selectedFileId);
   const isTemplate = selectedFile?.mode === "template" || waypointDocument?.id === "template";
   const dirty = JSON.stringify(draftPoints) !== baselineRef.current;
-  const activeOdomTopic = topics.find(
-    (topic) => topic.topic === "/odometry" && topic.schemaName === "nav_msgs/msg/Odometry",
-  )?.topic ?? topics.find((topic) => topic.schemaName === "nav_msgs/msg/Odometry")?.topic;
+
+  // 响应式检测
+  useEffect(() => {
+    const checkWidth = () => {
+      setIsNarrow(window.innerWidth < 860);
+    };
+    checkWidth();
+    window.addEventListener("resize", checkWidth);
+    return () => window.removeEventListener("resize", checkWidth);
+  }, []);
 
   const displayRows = useMemo(() => {
     if (!waypointDocument) return [];
-    if (isTemplate || !waypointDocument.formal) return draftPoints.map((point) => ({
-      point,
-      templateName: point.name,
-      templateType: point.type,
-      missing: false,
-    }));
+    if (isTemplate || !waypointDocument.formal) {
+      return draftPoints.map((point) => ({
+        point,
+        templateName: point.name,
+        templateType: point.type,
+        missing: false,
+      }));
+    }
     const pointsByName = new Map(draftPoints.map((point) => [point.name, point]));
     return waypointDocument.template.map((templatePoint) => ({
       point: pointsByName.get(templatePoint.name),
@@ -179,6 +155,33 @@ export function WaypointsEditorPage({
     }));
   }, [draftPoints, isTemplate, waypointDocument]);
 
+  // 自适应视图
+  const canvasSizeRef = useRef<CanvasSize>({ width: 640, height: 420 });
+
+  const fitView = useCallback((points: WaypointPoint[], size?: CanvasSize) => {
+    const currentSize = size ?? canvasSizeRef.current;
+    if (points.length === 0) {
+      setViewTransform({
+        centerX: 0,
+        centerY: 0,
+        scale: 50,
+        width: currentSize.width,
+        height: currentSize.height,
+      });
+      return;
+    }
+    const xs = points.map((p) => p.x);
+    const ys = points.map((p) => p.y);
+    const bounds = {
+      minX: Math.min(...xs),
+      maxX: Math.max(...xs),
+      minY: Math.min(...ys),
+      maxY: Math.max(...ys),
+    };
+    const nextView = fitViewToBounds(bounds, currentSize.width, currentSize.height, 60);
+    setViewTransform(nextView);
+  }, []);
+
   const loadDocument = useCallback(async (fileId: string) => {
     setBusy(true);
     setError(undefined);
@@ -186,11 +189,13 @@ export function WaypointsEditorPage({
     try {
       const next = await fetchWaypointDocument(fileId);
       setWaypointDocument(next);
-      setDraftPoints(clonePoints(next.points));
+      const cloned = clonePoints(next.points);
+      setDraftPoints(cloned);
       baselineRef.current = JSON.stringify(next.points);
       undoStackRef.current = [];
       setUndoDepth(0);
       setSelectedName(next.points[0]?.name);
+      fitView(cloned);
     } catch (loadError) {
       setWaypointDocument(undefined);
       setDraftPoints([]);
@@ -198,7 +203,7 @@ export function WaypointsEditorPage({
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [fitView]);
 
   useEffect(() => {
     let cancelled = false;
@@ -206,14 +211,17 @@ export function WaypointsEditorPage({
       .then((nextFiles) => {
         if (cancelled) return;
         setFiles(nextFiles);
-        const preferred = nextFiles.find((file) => file.id === selectedFileId && file.file_available)
-          ?? nextFiles.find((file) => file.file_available);
+        const preferred =
+          nextFiles.find((file) => file.id === selectedFileId && file.file_available) ??
+          nextFiles.find((file) => file.file_available);
         if (preferred) setSelectedFileId(preferred.id);
       })
       .catch((loadError) => {
         if (!cancelled) setError(loadError instanceof Error ? loadError.message : String(loadError));
       });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [selectedFileId]);
 
   useEffect(() => {
@@ -225,160 +233,214 @@ export function WaypointsEditorPage({
     if (isTemplate) return;
     const element = canvasWrapRef.current;
     if (!element) return;
-    const update = () => setCanvasSize({
-      width: Math.max(1, element.clientWidth),
-      height: Math.max(1, element.clientHeight),
-    });
+    const update = () => {
+      const width = element.clientWidth;
+      const height = element.clientHeight;
+      if (width <= 0 || height <= 0) return;
+      canvasSizeRef.current = { width, height };
+      setCanvasSize({ width, height });
+      setViewTransform((current) => ({
+        ...current,
+        width,
+        height,
+      }));
+    };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(element);
     return () => observer.disconnect();
   }, [isTemplate]);
 
-  useEffect(() => {
-    const unsubTf = bridge.subscribe("/tf", (payload) => {
-      if (payload.kind !== "raw") return;
-      const message = payload.message as TFMessage;
-      if (message.transforms.some((item) => item.header.frame_id === "odom" && item.child_frame_id === "base_link")) {
-        lastTfWallRef.current = Date.now();
-      }
-    });
-    const unsubOdom = activeOdomTopic
-      ? bridge.subscribe(activeOdomTopic, (payload) => {
-        if (payload.kind !== "raw") return;
-        const message = payload.message as Odometry;
-        lastOdomWallRef.current = Date.now();
-        const linear = message.twist?.twist?.linear;
-        if (linear && Number.isFinite(linear.x) && Number.isFinite(linear.y)) {
-          setPose((current) => current ? { ...current, speed: Math.hypot(linear.x, linear.y) } : current);
-        }
-      })
-      : undefined;
-    return () => {
-      unsubTf();
-      unsubOdom?.();
-    };
-  }, [activeOdomTopic, bridge]);
-
-  useEffect(() => {
-    const update = () => {
-      const transform = tf.lookup("odom", "base_link", 0);
-      const now = Date.now();
-      const tfAgeMs = lastTfWallRef.current > 0 ? now - lastTfWallRef.current : Infinity;
-      const odomAgeMs = lastOdomWallRef.current > 0 ? now - lastOdomWallRef.current : Infinity;
-      const available = Boolean(transform) && tfAgeMs <= FRESHNESS_LIMIT_MS && odomAgeMs <= FRESHNESS_LIMIT_MS;
-      setPose((current) => ({
-        x: transform?.translation.x ?? current?.x ?? 0,
-        y: transform?.translation.y ?? current?.y ?? 0,
-        yawDeg: transform ? yawFromQuaternion(transform.rotation) : current?.yawDeg ?? 0,
-        speed: current?.speed ?? 0,
-        ageMs: tfAgeMs,
-        available,
-      }));
-    };
-    update();
-    const timer = window.setInterval(update, 200);
-    return () => window.clearInterval(timer);
-  }, [tf]);
-
-  const actualPoints = useMemo(() => draftPoints, [draftPoints]);
-
+  // 绘图循环
   useEffect(() => {
     if (isTemplate) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const devicePixelRatio = window.devicePixelRatio || 1;
-    canvas.width = Math.max(1, Math.round(canvasSize.width * devicePixelRatio));
-    canvas.height = Math.max(1, Math.round(canvasSize.height * devicePixelRatio));
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(1, Math.round(canvasSize.width * dpr));
+    canvas.height = Math.max(1, Math.round(canvasSize.height * dpr));
     canvas.style.width = `${canvasSize.width}px`;
     canvas.style.height = `${canvasSize.height}px`;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    context.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-    context.clearRect(0, 0, canvasSize.width, canvasSize.height);
-    const transform = makeMapTransform(actualPoints, pose, canvasSize);
-    transformRef.current = transform;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, canvasSize.width, canvasSize.height);
+
     const style = getComputedStyle(document.documentElement);
     const foreground = style.getPropertyValue("--foreground").trim() || "#f5f5f5";
-    const muted = style.getPropertyValue("--text-faint").trim() || "#777";
-    const border = style.getPropertyValue("--border-soft").trim() || "#444";
-    const canvasBackground = style.getPropertyValue("--canvas").trim() || "#000";
-    context.fillStyle = canvasBackground;
-    context.fillRect(0, 0, canvasSize.width, canvasSize.height);
+    const textMuted = style.getPropertyValue("--text-muted").trim() || "#888888";
+    const textFaint = style.getPropertyValue("--text-faint").trim() || "#555555";
+    const borderSoft = style.getPropertyValue("--border-soft").trim() || "#333333";
+    const canvasBg = style.getPropertyValue("--canvas").trim() || "#0f0f12";
+    const surfaceSoft = style.getPropertyValue("--surface-soft").trim() || "#1e1e24";
+    const isLight = document.documentElement.getAttribute("data-theme") === "light" ||
+      style.getPropertyValue("--canvas").trim() === "#ffffff" ||
+      style.getPropertyValue("--canvas").trim() === "#fff";
+    const goalColor = isLight ? "#16a34a" : "#22c55e"; // 绿色 goal
+    const waypointColor = isLight ? "#2563eb" : "#3b82f6"; // 蓝色 waypoint
 
-    const gridStep = transform.scale > 80 ? 0.5 : 1;
-    const startX = Math.floor(transform.minX / gridStep) * gridStep;
-    const endX = transform.minX + canvasSize.width / transform.scale;
-    const startY = Math.floor((transform.maxY - canvasSize.height / transform.scale) / gridStep) * gridStep;
-    const endY = transform.maxY;
-    context.lineWidth = 1;
-    context.strokeStyle = border;
-    context.beginPath();
+    ctx.fillStyle = canvasBg;
+    ctx.fillRect(0, 0, canvasSize.width, canvasSize.height);
+
+    const view = viewTransform;
+
+    // 动态网格线
+    const stepCandidates = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20];
+    let gridStep = 1;
+    for (const cand of stepCandidates) {
+      if (cand * view.scale >= 40) {
+        gridStep = cand;
+        break;
+      }
+    }
+
+    const minWorld = canvasToWorld(view, 0, canvasSize.height);
+    const maxWorld = canvasToWorld(view, canvasSize.width, 0);
+
+    const startX = Math.floor(minWorld.x / gridStep) * gridStep;
+    const endX = Math.ceil(maxWorld.x / gridStep) * gridStep;
+    const startY = Math.floor(minWorld.y / gridStep) * gridStep;
+    const endY = Math.ceil(maxWorld.y / gridStep) * gridStep;
+
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = borderSoft;
+    ctx.beginPath();
     for (let x = startX; x <= endX; x += gridStep) {
-      const [px] = worldToCanvas(transform, x, 0);
-      context.moveTo(Math.round(px) + 0.5, 0);
-      context.lineTo(Math.round(px) + 0.5, canvasSize.height);
+      const [px] = worldToCanvas(view, x, 0);
+      const roundedX = Math.round(px) + 0.5;
+      ctx.moveTo(roundedX, 0);
+      ctx.lineTo(roundedX, canvasSize.height);
     }
     for (let y = startY; y <= endY; y += gridStep) {
-      const [, py] = worldToCanvas(transform, 0, y);
-      context.moveTo(0, Math.round(py) + 0.5);
-      context.lineTo(canvasSize.width, Math.round(py) + 0.5);
+      const [, py] = worldToCanvas(view, 0, y);
+      const roundedY = Math.round(py) + 0.5;
+      ctx.moveTo(0, roundedY);
+      ctx.lineTo(canvasSize.width, roundedY);
     }
-    context.stroke();
+    ctx.stroke();
 
-    context.font = `${Math.max(9, Math.round(11 * fontScale))}px ui-monospace, monospace`;
-    context.fillStyle = muted;
-    context.fillText("odom x", 8, canvasSize.height - 8);
-    context.save();
-    context.translate(8, 18);
-    context.rotate(-Math.PI / 2);
-    context.fillText("odom y", 0, 0);
-    context.restore();
+    // 轴提示文字
+    const axisFontSize = Math.max(9, Math.round(11 * fontScale));
+    ctx.font = `${axisFontSize}px ui-monospace, monospace`;
+    ctx.fillStyle = textFaint;
+    ctx.fillText(`odom x (grid ${gridStep}m)`, 10, canvasSize.height - 10);
+    ctx.save();
+    ctx.translate(12, 20);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText(`odom y (grid ${gridStep}m)`, 0, 0);
+    ctx.restore();
 
-    for (const point of actualPoints) {
-      const [px, py] = worldToCanvas(transform, point.x, point.y);
-      const selected = point.name === selectedName;
-      context.fillStyle = point.type === "goal" ? foreground : muted;
-      context.strokeStyle = selected ? foreground : muted;
-      context.lineWidth = selected ? 2 : 1;
-      context.beginPath();
-      context.arc(px, py, selected ? 7 : 5, 0, Math.PI * 2);
-      context.fill();
-      context.stroke();
-      const yawRadians = point.yaw_deg * Math.PI / 180;
-      context.beginPath();
-      context.moveTo(px, py);
-      context.lineTo(px + Math.cos(yawRadians) * 18, py - Math.sin(yawRadians) * 18);
-      context.stroke();
-      context.fillStyle = foreground;
-      context.fillText(point.name, px + 9, py - 8);
+    // 航点位置换算与标签测量
+    const labelFontSize = Math.max(10, Math.round(12 * fontScale));
+    ctx.font = `${labelFontSize}px ui-monospace, monospace`;
+
+    const pointPixList = draftPoints.map((point) => {
+      const [px, py] = worldToCanvas(view, point.x, point.y);
+      return { name: point.name, px, py, point };
+    });
+
+    const measureText = (name: string) => {
+      const m = ctx.measureText(name);
+      return { width: m.width, height: labelFontSize };
+    };
+
+    const placedLabels = placeWaypointLabels(
+      pointPixList,
+      measureText,
+      canvasSize.width,
+      canvasSize.height,
+    );
+
+    // 绘制航点点位与朝向箭头
+    for (const item of pointPixList) {
+      const { px, py, point } = item;
+      const isSelected = point.name === selectedName;
+      const pointColor = point.type === "goal" ? goalColor : waypointColor;
+
+      // 点外圈
+      ctx.beginPath();
+      ctx.arc(px, py, isSelected ? 8 : 6, 0, Math.PI * 2);
+      ctx.fillStyle = pointColor;
+      ctx.fill();
+      ctx.lineWidth = isSelected ? 3 : 1.5;
+      ctx.strokeStyle = isSelected ? foreground : "#ffffff";
+      ctx.stroke();
+
+      // 朝向指示线
+      const yawRad = (point.yaw_deg * Math.PI) / 180;
+      const arrowLen = isSelected ? 22 : 16;
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px + Math.cos(yawRad) * arrowLen, py - Math.sin(yawRad) * arrowLen);
+      ctx.strokeStyle = pointColor;
+      ctx.lineWidth = isSelected ? 2.5 : 1.5;
+      ctx.stroke();
     }
 
-    if (pose?.available) {
-      const [px, py] = worldToCanvas(transform, pose.x, pose.y);
-      const yawRadians = pose.yawDeg * Math.PI / 180;
-      context.fillStyle = "#e6b800";
-      context.strokeStyle = "#e6b800";
-      context.lineWidth = 2;
-      context.beginPath();
-      context.moveTo(px + Math.cos(yawRadians) * 14, py - Math.sin(yawRadians) * 14);
-      context.lineTo(px + Math.cos(yawRadians + 2.5) * 9, py - Math.sin(yawRadians + 2.5) * 9);
-      context.lineTo(px + Math.cos(yawRadians - 2.5) * 9, py - Math.sin(yawRadians - 2.5) * 9);
-      context.closePath();
-      context.fill();
-      context.stroke();
+    // 绘制标签引线与避让标签
+    for (const label of placedLabels) {
+      const isSelected = label.name === selectedName;
+      const targetPoint = draftPoints.find((p) => p.name === label.name);
+      const badgeColor = targetPoint?.type === "goal" ? goalColor : waypointColor;
+
+      // 引线
+      if (label.leaderLine) {
+        ctx.beginPath();
+        ctx.setLineDash([3, 3]);
+        ctx.moveTo(label.leaderLine.fromX, label.leaderLine.fromY);
+        ctx.lineTo(label.leaderLine.toX, label.leaderLine.toY);
+        ctx.strokeStyle = isSelected ? foreground : textMuted;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
+      // 处于拥挤状态时使用紧凑小胶囊，空间充裕时完整绘制
+      const isCompact = label.crowded;
+      const r = label.rect;
+
+      // 标签背景胶囊
+      ctx.fillStyle = isSelected
+        ? (isLight ? "#e2e8f0" : "#27272a")
+        : (isLight ? "#ffffff" : surfaceSoft);
+      ctx.strokeStyle = isSelected ? foreground : badgeColor;
+      ctx.lineWidth = isSelected ? 2 : 1;
+
+      ctx.beginPath();
+      if (ctx.roundRect) {
+        ctx.roundRect(r.x, r.y, r.width, r.height, 3);
+      } else {
+        ctx.rect(r.x, r.y, r.width, r.height);
+      }
+      ctx.fill();
+      ctx.stroke();
+
+      // 标签文字：使用高对比度主前景色
+      ctx.fillStyle = foreground;
+      if (isCompact) {
+        ctx.fillText("…", label.textX, label.textY);
+      } else {
+        ctx.fillText(label.name, label.textX, label.textY);
+      }
     }
-  }, [actualPoints, canvasSize, fontScale, isTemplate, pose, selectedName]);
+  }, [canvasSize, draftPoints, fontScale, isTemplate, selectedName, viewTransform]);
 
   const pushUndo = useCallback(() => {
     undoStackRef.current = [...undoStackRef.current.slice(-99), clonePoints(draftPoints)];
     setUndoDepth(undoStackRef.current.length);
   }, [draftPoints]);
 
-  const updatePoint = useCallback((name: string, patch: Partial<WaypointPoint>) => {
-    pushUndo();
-    setDraftPoints((current) => current.map((point) => point.name === name ? { ...point, ...patch } : point));
-  }, [pushUndo]);
+  const updatePoint = useCallback(
+    (name: string, patch: Partial<WaypointPoint>) => {
+      pushUndo();
+      setDraftPoints((current) =>
+        current.map((point) => (point.name === name ? { ...point, ...patch } : point)),
+      );
+    },
+    [pushUndo],
+  );
 
   const handleAddTemplatePoint = useCallback(() => {
     const trimmed = newPointName.trim();
@@ -466,7 +528,14 @@ export function WaypointsEditorPage({
   }, []);
 
   const reload = useCallback(() => {
-    if (dirty && !window.confirm(locale === "en" ? "Discard unsaved waypoint edits?" : "放弃未保存的航点修改？")) return;
+    if (
+      dirty &&
+      !window.confirm(
+        locale === "en" ? "Discard unsaved waypoint edits?" : "放弃未保存的航点修改？",
+      )
+    ) {
+      return;
+    }
     void loadDocument(selectedFileId);
   }, [dirty, loadDocument, locale, selectedFileId]);
 
@@ -482,9 +551,15 @@ export function WaypointsEditorPage({
         return;
       }
     }
-    if (!window.confirm(locale === "en"
-      ? `Overwrite ${waypointDocument.id} (${selectedFile?.file_name ?? waypointDocument.id})?`
-      : `确认覆盖 ${waypointDocument.id}（${selectedFile?.file_name ?? waypointDocument.id}）？`)) return;
+    if (
+      !window.confirm(
+        locale === "en"
+          ? `Overwrite ${waypointDocument.id} (${selectedFile?.file_name ?? waypointDocument.id})?`
+          : `确认覆盖 ${waypointDocument.id}（${selectedFile?.file_name ?? waypointDocument.id}）？`,
+      )
+    ) {
+      return;
+    }
     setBusy(true);
     setError(undefined);
     setNotice(undefined);
@@ -494,12 +569,20 @@ export function WaypointsEditorPage({
         version: waypointDocument.version,
         points: draftPoints,
       });
-      setWaypointDocument((current) => current ? { ...current, points: clonePoints(draftPoints), version: result.version } : current);
+      setWaypointDocument((current) =>
+        current
+          ? { ...current, points: clonePoints(draftPoints), version: result.version }
+          : current,
+      );
       baselineRef.current = JSON.stringify(draftPoints);
       setNotice(locale === "en" ? `Saved. Backup: ${result.backup}` : `已保存。备份：${result.backup}`);
     } catch (saveError) {
       if (saveError instanceof WaypointApiError && saveError.status === 409) {
-        setError(locale === "en" ? "The waypoint file changed externally. Reload before saving." : "航点文件已被外部修改，请重新加载后再保存。");
+        setError(
+          locale === "en"
+            ? "The waypoint file changed externally. Reload before saving."
+            : "航点文件已被外部修改，请重新加载后再保存。",
+        );
       } else {
         setError(saveError instanceof Error ? saveError.message : String(saveError));
       }
@@ -508,74 +591,305 @@ export function WaypointsEditorPage({
     }
   }, [busy, draftPoints, dirty, isTemplate, locale, selectedFile?.file_name, templateStats, waypointDocument]);
 
-  const onPointerDown = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
-    const transform = transformRef.current;
-    if (!transform) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const y = event.clientY - rect.top;
-    const hit = draftPoints.find((point) => {
-      const [px, py] = worldToCanvas(transform, point.x, point.y);
-      return Math.hypot(px - x, py - y) <= 14;
-    });
-    if (!hit) return;
-    pushUndo();
-    dragPointRef.current = hit.name;
-    setSelectedName(hit.name);
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }, [draftPoints, pushUndo]);
+  // 画布指针与拖动事件
+  const onPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLCanvasElement>) => {
+      const view = viewRef.current;
+      if (!view) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      const clientX = event.clientX - rect.left;
+      const clientY = event.clientY - rect.top;
 
-  const onPointerMove = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
-    const name = dragPointRef.current;
-    const transform = transformRef.current;
-    if (!name || !transform) return;
-    const rect = event.currentTarget.getBoundingClientRect();
-    const next = canvasToWorld(transform, event.clientX - rect.left, event.clientY - rect.top);
-    setDraftPoints((current) => current.map((point) => point.name === name ? { ...point, x: next.x, y: next.y } : point));
-  }, []);
+      // 优先检测是否点中某个航点进行坐标拖拽
+      const hit = draftPoints.find((point) => {
+        const [px, py] = worldToCanvas(view, point.x, point.y);
+        return Math.hypot(px - clientX, py - clientY) <= 15;
+      });
 
-  const stopDragging = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
+      if (hit) {
+        pushUndo();
+        dragPointRef.current = hit.name;
+        setSelectedName(hit.name);
+        isPanningRef.current = false;
+      } else {
+        // 空白处拖拽平移视图
+        isPanningRef.current = true;
+        panStartRef.current = { x: clientX, y: clientY };
+        dragPointRef.current = undefined;
+      }
+
+      event.currentTarget.setPointerCapture(event.pointerId);
+    },
+    [draftPoints, pushUndo],
+  );
+
+  const onPointerMove = useCallback(
+    (event: React.PointerEvent<HTMLCanvasElement>) => {
+      const view = viewRef.current;
+      if (!view) return;
+      const rect = event.currentTarget.getBoundingClientRect();
+      const currentX = event.clientX - rect.left;
+      const currentY = event.clientY - rect.top;
+
+      if (dragPointRef.current) {
+        // 拖拽航点位置
+        const name = dragPointRef.current;
+        const nextWorld = canvasToWorld(view, currentX, currentY);
+        setDraftPoints((current) =>
+          current.map((pt) =>
+            pt.name === name ? { ...pt, x: nextWorld.x, y: nextWorld.y } : pt,
+          ),
+        );
+      } else if (isPanningRef.current) {
+        // 拖拽平移视图
+        const dx = currentX - panStartRef.current.x;
+        const dy = currentY - panStartRef.current.y;
+        panStartRef.current = { x: currentX, y: currentY };
+        setViewTransform((prev) => panView(prev, dx, dy));
+      }
+    },
+    [],
+  );
+
+  const onPointerUp = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
     dragPointRef.current = undefined;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    isPanningRef.current = false;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   }, []);
+
+  // 滚轮与触控板手势局部缩放/平移（原生监听）
+  const lastGestureTimeRef = useRef(0);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const handleNativeWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      if (performance.now() - lastGestureTimeRef.current < 120 && event.ctrlKey) {
+        return;
+      }
+
+      const view = viewRef.current;
+      if (!view) return;
+      const rect = canvas.getBoundingClientRect();
+      const cursorX = event.clientX - rect.left;
+      const cursorY = event.clientY - rect.top;
+
+      if (event.ctrlKey) {
+        // Mac 触控板捏合手势（带 ctrlKey 的 wheel 事件）
+        const zoomFactor = Math.exp(-event.deltaY * 0.01);
+        setViewTransform((prev) => zoomViewAtAnchor(prev, cursorX, cursorY, zoomFactor));
+      } else if (event.deltaMode === 0) {
+        // 像素型滚动（Mac 双指平移）：平移画布
+        setViewTransform((prev) => panView(prev, -event.deltaX, -event.deltaY));
+      } else {
+        // 传统鼠标滚轮：以光标为中心缩放
+        const factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
+        setViewTransform((prev) => zoomViewAtAnchor(prev, cursorX, cursorY, factor));
+      }
+    };
+
+    let gestureStartScale = 1;
+    const handleGestureStart = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      lastGestureTimeRef.current = performance.now();
+      gestureStartScale = 1;
+    };
+
+    const handleGestureChange = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      lastGestureTimeRef.current = performance.now();
+      const ge = e as unknown as { clientX?: number; clientY?: number; scale?: number };
+      const view = viewRef.current;
+      if (!view) return;
+      const rect = canvas.getBoundingClientRect();
+      const cursorX = (ge.clientX ?? (rect.left + rect.width / 2)) - rect.left;
+      const cursorY = (ge.clientY ?? (rect.top + rect.height / 2)) - rect.top;
+      const scale = ge.scale ?? 1;
+      const factor = scale / gestureStartScale;
+      gestureStartScale = scale;
+      if (Math.abs(factor - 1) > 0.001) {
+        setViewTransform((prev) => zoomViewAtAnchor(prev, cursorX, cursorY, factor));
+      }
+    };
+
+    const handleGestureEnd = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      lastGestureTimeRef.current = performance.now();
+    };
+
+    canvas.addEventListener("wheel", handleNativeWheel, { passive: false });
+    canvas.addEventListener("gesturestart", handleGestureStart, { passive: false });
+    canvas.addEventListener("gesturechange", handleGestureChange, { passive: false });
+    canvas.addEventListener("gestureend", handleGestureEnd, { passive: false });
+
+    return () => {
+      canvas.removeEventListener("wheel", handleNativeWheel);
+      canvas.removeEventListener("gesturestart", handleGestureStart);
+      canvas.removeEventListener("gesturechange", handleGestureChange);
+      canvas.removeEventListener("gestureend", handleGestureEnd);
+    };
+  }, []);
+
+  // 缩放控制按钮
+  const handleZoomIn = useCallback(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    setViewTransform((prev) => zoomViewAtAnchor(prev, view.width / 2, view.height / 2, 1.25));
+  }, []);
+
+  const handleZoomOut = useCallback(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    setViewTransform((prev) => zoomViewAtAnchor(prev, view.width / 2, view.height / 2, 0.8));
+  }, []);
+
+  const handleResetFit = useCallback(() => {
+    fitView(draftPoints);
+  }, [draftPoints, fitView]);
 
   return (
     <section className="waypoints-editor-page">
+      {/* 顶部工具栏 */}
       <div className="waypoints-toolbar">
         <FileText />
         <select
           value={selectedFileId}
           onChange={(event) => {
             const next = event.target.value;
-            if (dirty && !window.confirm(locale === "en" ? "Discard unsaved waypoint edits?" : "放弃未保存的航点修改？")) return;
+            if (
+              dirty &&
+              !window.confirm(
+                locale === "en" ? "Discard unsaved waypoint edits?" : "放弃未保存的航点修改？",
+              )
+            ) {
+              return;
+            }
             setSelectedFileId(next);
           }}
           aria-label={locale === "en" ? "Waypoint file" : "航点文件"}
         >
           {files.map((file) => (
             <option key={file.id} value={file.id} disabled={!file.file_available}>
-              {file.label}{file.file_available ? "" : " (N/A)"}
+              {file.label}
+              {file.file_available ? "" : " (N/A)"}
             </option>
           ))}
         </select>
+
         <span className="waypoints-file-meta">
           {isTemplate
-            ? (locale === "en" ? `template · ${draftPoints.length} points` : `规则模板 · 共 ${draftPoints.length} 个点`)
-            : `${waypointDocument?.frame_id ?? selectedFile?.frame_id ?? "odom"} · ${waypointDocument?.formal ? (locale === "en" ? "formal" : "正式") : (locale === "en" ? "debug" : "调试")}`
-          }
+            ? locale === "en"
+              ? `template · ${draftPoints.length} points`
+              : `规则模板 · 共 ${draftPoints.length} 个点`
+            : `${waypointDocument?.frame_id ?? selectedFile?.frame_id ?? "odom"} · ${
+                waypointDocument?.formal
+                  ? locale === "en"
+                    ? "formal"
+                    : "正式"
+                  : locale === "en"
+                    ? "debug"
+                    : "调试"
+              }`}
         </span>
+
+        {/* 窄屏分栏切换 */}
+        {isNarrow && (
+          <nav className="waypoints-mobile-nav" role="tablist">
+            <button
+              className={mobileTab === "list" ? "active" : ""}
+              onClick={() => setMobileTab("list")}
+              title={locale === "en" ? "List view" : "列表视图"}
+            >
+              <List />
+            </button>
+            <button
+              className={mobileTab === "map" ? "active" : ""}
+              onClick={() => setMobileTab("map")}
+              title={locale === "en" ? "Map view" : "网格视图"}
+            >
+              <MapPin />
+            </button>
+            <button
+              className={mobileTab === "inspector" ? "active" : ""}
+              onClick={() => setMobileTab("inspector")}
+              title={locale === "en" ? "Properties view" : "属性视图"}
+            >
+              <Sliders />
+            </button>
+          </nav>
+        )}
+
         <span className="spacer" />
-        <button className="icon-action" onClick={reload} disabled={busy} title={locale === "en" ? "Reload file" : "重新加载文件"} aria-label={locale === "en" ? "Reload file" : "重新加载文件"}>
+
+        {/* 画布缩放按钮 */}
+        <div className="waypoints-zoom-controls">
+          <button
+            className="icon-action"
+            onClick={handleZoomIn}
+            title={locale === "en" ? "Zoom in" : "放大视图"}
+            aria-label={locale === "en" ? "Zoom in" : "放大视图"}
+          >
+            <ZoomIn />
+          </button>
+          <button
+            className="icon-action"
+            onClick={handleZoomOut}
+            title={locale === "en" ? "Zoom out" : "缩小视图"}
+            aria-label={locale === "en" ? "Zoom out" : "缩小视图"}
+          >
+            <ZoomOut />
+          </button>
+          <button
+            className="icon-action"
+            onClick={handleResetFit}
+            title={locale === "en" ? "Fit to view" : "自适应居中"}
+            aria-label={locale === "en" ? "Fit to view" : "自适应居中"}
+          >
+            <Maximize2 />
+          </button>
+        </div>
+
+        <button
+          className="icon-action"
+          onClick={reload}
+          disabled={busy}
+          title={locale === "en" ? "Reload file" : "重新加载文件"}
+          aria-label={locale === "en" ? "Reload file" : "重新加载文件"}
+        >
           <RefreshCcw />
         </button>
+
         <button onClick={() => void save()} disabled={!dirty || busy || !waypointDocument}>
           <Save /> {locale === "en" ? "Save" : "保存"}
         </button>
-        <button className="icon-action" onClick={undo} disabled={undoDepth === 0} title={locale === "en" ? "Undo" : "撤销"} aria-label={locale === "en" ? "Undo" : "撤销"}>
+
+        <button
+          className="icon-action"
+          onClick={undo}
+          disabled={undoDepth === 0}
+          title={locale === "en" ? "Undo" : "撤销"}
+          aria-label={locale === "en" ? "Undo" : "撤销"}
+        >
           <Undo2 />
         </button>
+
         <span className={`waypoints-draft-status ${dirty ? "dirty" : "clean"}`}>
-          {dirty ? (locale === "en" ? "Draft changed" : "草稿已修改") : (locale === "en" ? "Loaded" : "已加载")}
+          {dirty
+            ? locale === "en"
+              ? "Draft changed"
+              : "草稿已修改"
+            : locale === "en"
+              ? "Loaded"
+              : "已加载"}
         </span>
       </div>
 
@@ -709,77 +1023,206 @@ export function WaypointsEditorPage({
           </aside>
         </div>
       ) : (
-        <div className="waypoints-workspace">
+        /* 工作区三栏（窄屏自适应） */
+        <div className={`waypoints-workspace ${isNarrow ? `mobile-tab-${mobileTab}` : ""}`}>
+        {/* 左侧航点列表 */}
         <aside className="waypoints-list">
-          <div className="waypoints-section-title">{locale === "en" ? "Points" : "航点"}</div>
+          <div className="waypoints-section-title">
+            <List /> {locale === "en" ? "Points" : "航点列表"}
+          </div>
           {busy && <p className="empty-hint">{locale === "en" ? "Loading..." : "加载中..."}</p>}
-          {!busy && displayRows.length === 0 && <p className="empty-hint">{locale === "en" ? "No available points" : "暂无可用航点"}</p>}
+          {!busy && displayRows.length === 0 && (
+            <p className="empty-hint">{locale === "en" ? "No available points" : "暂无可用航点"}</p>
+          )}
           {displayRows.map((row) => {
             const name = row.point?.name ?? row.templateName ?? "";
+            const isGoal = (row.point?.type ?? row.templateType) === "goal";
+            const isMissing = row.missing;
+
             return (
               <button
-                className={`waypoint-row ${selectedName === name ? "active" : ""} ${row.missing ? "missing" : ""}`}
+                className={`waypoint-row ${selectedName === name ? "active" : ""} ${
+                  isMissing ? "missing" : isGoal ? "type-goal" : "type-waypoint"
+                }`}
                 key={name}
-                onClick={() => row.point && setSelectedName(row.point.name)}
+                onClick={() => {
+                  if (row.point) {
+                    setSelectedName(row.point.name);
+                    if (isNarrow) setMobileTab("map");
+                  }
+                }}
                 disabled={!row.point}
               >
-                <span className="waypoint-row-mark">{row.point?.type === "goal" ? "G" : row.point ? "W" : "!"}</span>
-                <span>{name}</span>
-                <small>{row.point ? `${row.point.x.toFixed(2)}, ${row.point.y.toFixed(2)}` : (locale === "en" ? "missing" : "缺失")}</small>
+                {/* 分类徽章：保留 G / W / ! */}
+                <span
+                  className={`waypoint-badge ${
+                    isMissing ? "badge-missing" : isGoal ? "badge-goal" : "badge-waypoint"
+                  }`}
+                >
+                  {isMissing ? "!" : isGoal ? "G" : "W"}
+                </span>
+
+                {/* 文本区域：长名称换行完整显示，坐标独立分行 */}
+                <div className="waypoint-row-content">
+                  <span className="waypoint-row-name" title={name}>
+                    {name}
+                  </span>
+                  <span className="waypoint-row-coords">
+                    {row.point
+                      ? `x: ${row.point.x.toFixed(3)}, y: ${row.point.y.toFixed(3)}`
+                      : locale === "en"
+                        ? "missing"
+                        : "缺失"}
+                  </span>
+                </div>
               </button>
             );
           })}
         </aside>
 
+        {/* 中间 2D 航点网格地图 */}
         <div className="waypoints-map-wrap" ref={canvasWrapRef}>
           <canvas
             ref={canvasRef}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
-            onPointerUp={stopDragging}
-            onPointerCancel={stopDragging}
+            onPointerUp={onPointerUp}
+            onPointerCancel={onPointerUp}
             aria-label={locale === "en" ? "Waypoint map" : "航点地图"}
           />
-          {!pose?.available && (
-            <div className="waypoints-map-status">
-              <AlertTriangle /> {locale === "en" ? "odom → base_link unavailable or stale" : "odom → base_link 不可用或已过期"}
-            </div>
-          )}
+
+          {/* 右下角图例 */}
           <div className="waypoints-map-legend">
-            <span><i className="waypoint-legend-point" /> {locale === "en" ? "point" : "航点"}</span>
-            <span><i className="waypoint-legend-robot" /> {locale === "en" ? "robot" : "机器人"}</span>
+            <span>
+              <i className="waypoint-legend-goal" /> {locale === "en" ? "goal (G)" : "目标点 (G)"}
+            </span>
+            <span>
+              <i className="waypoint-legend-waypoint" />{" "}
+              {locale === "en" ? "waypoint (W)" : "途径点 (W)"}
+            </span>
+          </div>
+
+          {/* 密集点展开清单浮层 */}
+          <div className="waypoints-crowded-widget">
+            <button
+              className="crowded-toggle-btn"
+              onClick={() => setCrowdedListOpen((prev) => !prev)}
+              title={locale === "en" ? "View all labels list" : "查看全部标签清单"}
+            >
+              <Layers /> {locale === "en" ? "Labels" : "标签清单"}
+            </button>
+            {crowdedListOpen && (
+              <div className="waypoints-crowded-panel">
+                <div className="crowded-panel-header">
+                  <span>{locale === "en" ? "Point Labels" : "航点完整清单"}</span>
+                  <button className="icon-action" onClick={() => setCrowdedListOpen(false)}>
+                    ×
+                  </button>
+                </div>
+                <div className="crowded-panel-body">
+                  {draftPoints.map((pt) => (
+                    <div
+                      key={pt.name}
+                      className={`crowded-item ${selectedName === pt.name ? "active" : ""}`}
+                      onClick={() => {
+                        setSelectedName(pt.name);
+                        const view = viewRef.current;
+                        if (view) {
+                          setViewTransform((prev) => ({
+                            ...prev,
+                            centerX: pt.x,
+                            centerY: pt.y,
+                          }));
+                        }
+                      }}
+                    >
+                      <span className={pt.type === "goal" ? "text-goal" : "text-waypoint"}>
+                        [{pt.type === "goal" ? "G" : "W"}]
+                      </span>{" "}
+                      {pt.name}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
+        {/* 右侧航点属性编辑 */}
         <aside className="waypoints-inspector">
-          <div className="waypoints-section-title">{locale === "en" ? "Point data" : "航点数据"}</div>
+          <div className="waypoints-section-title">
+            <Sliders /> {locale === "en" ? "Point data" : "航点属性"}
+          </div>
           {(() => {
             const point = draftPoints.find((candidate) => candidate.name === selectedName);
-            if (!point) return <p className="empty-hint">{locale === "en" ? "Select an available point" : "选择一个已有航点"}</p>;
+            if (!point) {
+              return (
+                <p className="empty-hint">
+                  {locale === "en" ? "Select an available point" : "选择一个已有航点"}
+                </p>
+              );
+            }
             return (
               <div className="waypoint-form">
-                <label><span>{locale === "en" ? "Name" : "名称"}</span><input value={point.name} readOnly /></label>
-                <label><span>{locale === "en" ? "Type" : "类型"}</span><select value={point.type} disabled={waypointDocument?.formal} onChange={(event) => updatePoint(point.name, { type: event.target.value as WaypointPoint["type"] })}><option value="waypoint">waypoint</option><option value="goal">goal</option></select></label>
-                <label><span>X (m)</span><PointValue value={point.x} onChange={(value) => updatePoint(point.name, { x: value })} /></label>
-                <label><span>Y (m)</span><PointValue value={point.y} onChange={(value) => updatePoint(point.name, { y: value })} /></label>
-                <label><span>Z (m)</span><PointValue value={point.z} onChange={(value) => updatePoint(point.name, { z: value })} /></label>
-                <label><span>Yaw (deg)</span><PointValue value={point.yaw_deg} onChange={(value) => updatePoint(point.name, { yaw_deg: value })} /></label>
+                <label>
+                  <span>{locale === "en" ? "Name" : "名称"}</span>
+                  <input value={point.name} readOnly />
+                </label>
+                <label>
+                  <span>{locale === "en" ? "Type" : "类型"}</span>
+                  <select
+                    value={point.type}
+                    disabled={waypointDocument?.formal}
+                    onChange={(event) =>
+                      updatePoint(point.name, {
+                        type: event.target.value as WaypointPoint["type"],
+                      })
+                    }
+                  >
+                    <option value="waypoint">waypoint</option>
+                    <option value="goal">goal</option>
+                  </select>
+                </label>
+                <label>
+                  <span>X (m)</span>
+                  <PointValue
+                    value={point.x}
+                    onChange={(value) => updatePoint(point.name, { x: value })}
+                  />
+                </label>
+                <label>
+                  <span>Y (m)</span>
+                  <PointValue
+                    value={point.y}
+                    onChange={(value) => updatePoint(point.name, { y: value })}
+                  />
+                </label>
+                <label>
+                  <span>Z (m)</span>
+                  <PointValue
+                    value={point.z}
+                    onChange={(value) => updatePoint(point.name, { z: value })}
+                  />
+                </label>
+                <label>
+                  <span>Yaw (deg)</span>
+                  <PointValue
+                    value={point.yaw_deg}
+                    onChange={(value) => updatePoint(point.name, { yaw_deg: value })}
+                  />
+                </label>
               </div>
             );
           })()}
-          <div className="waypoints-pose-status">
-            <div className="waypoints-section-title"><LocateFixed /> {locale === "en" ? "Current robot" : "当前机器人"}</div>
-            <div className={pose?.available ? "available" : "unavailable"}>
-              {pose?.available ? `${formatNumber(pose.x)}, ${formatNumber(pose.y)} m · ${formatNumber(pose.yawDeg)}°` : (locale === "en" ? "Unavailable" : "不可用")}
-            </div>
-            <small>{locale === "en" ? `TF age ${formatAge(pose?.ageMs ?? Infinity)} · speed ${formatNumber(pose?.speed ?? NaN)} m/s` : `TF 新鲜度 ${formatAge(pose?.ageMs ?? Infinity)} · 速度 ${formatNumber(pose?.speed ?? NaN)} m/s`}</small>
-          </div>
         </aside>
       </div>
       )}
 
       {(error || notice) && (
-        <div className={`waypoints-feedback ${error ? "error-line" : ""}`} role={error ? "alert" : "status"}>
+        <div
+          className={`waypoints-feedback ${error ? "error-line" : ""}`}
+          role={error ? "alert" : "status"}
+        >
           {error ?? notice}
         </div>
       )}

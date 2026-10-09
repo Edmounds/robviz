@@ -1,11 +1,18 @@
-import { Eye, EyeOff, Pause, Play, Trash2 } from "lucide-react";
+import { Eye, EyeOff, Pause, Play, RotateCcw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
 import type { TopicInfo } from "../core/FoxgloveConnection";
-import { computeSharedRange, relativeArrivalSec, seriesKey } from "../core/plot";
+import {
+  computeRangeInWindow,
+  computeSharedRange,
+  panTimeWindow,
+  relativeArrivalSec,
+  seriesKey,
+  zoomTimeWindow,
+} from "../core/plot";
 import { CollapsiblePanel } from "../app/CollapsiblePanel";
 import { useI18n } from "../app/i18n";
 
@@ -80,6 +87,7 @@ export function PlotPanel({
   const themeRef = useRef(theme);
   const onSeriesChangeRef = useRef(onSeriesChange);
   const nextId = useRef(1);
+  const manualWindowRef = useRef<[number, number] | null>(null);
   themeRef.current = theme;
   onSeriesChangeRef.current = onSeriesChange;
 
@@ -87,6 +95,7 @@ export function PlotPanel({
   const [newTopic, setNewTopic] = useState("");
   const [newField, setNewField] = useState("");
   const [paused, setPaused] = useState(false);
+  const [isManualMode, setIsManualMode] = useState(false);
   const [, setStatusTick] = useState(0);
 
   const commitSeries = useCallback((next: Series[]) => {
@@ -216,16 +225,147 @@ export function PlotPanel({
       if (!plot || current.length === 0) return;
       const joined = uPlot.join(current.map((s) => [s.ts, s.vs] as uPlot.AlignedData)) as uPlot.AlignedData;
       plot.setData(joined);
+
       const latest = current.reduce((max, series) => Math.max(max, series.ts.at(-1) ?? 0), 0);
-      plot.setScale("x", { min: Math.max(0, latest - WINDOW_SEC), max: Math.max(WINDOW_SEC, latest) });
-      const visibleValues = current
-        .filter((series) => series.visible)
-        .map((series) => series.vs.filter((_, index) => (series.ts[index] ?? 0) >= latest - WINDOW_SEC));
-      const [min, max] = computeSharedRange(visibleValues);
-      plot.setScale("y", { min, max });
+
+      if (manualWindowRef.current !== null) {
+        // 手动时间轴模式：保持当前手动窗口，数据继续接收
+        const [wMin, wMax] = manualWindowRef.current;
+        plot.setScale("x", { min: wMin, max: wMax });
+        const [min, max] = computeRangeInWindow(current, manualWindowRef.current);
+        plot.setScale("y", { min, max });
+      } else {
+        // 自动实时跟随模式
+        plot.setScale("x", { min: Math.max(0, latest - WINDOW_SEC), max: Math.max(WINDOW_SEC, latest) });
+        const visibleValues = current
+          .filter((series) => series.visible)
+          .map((series) => series.vs.filter((_, index) => (series.ts[index] ?? 0) >= latest - WINDOW_SEC));
+        const [min, max] = computeSharedRange(visibleValues);
+        plot.setScale("y", { min, max });
+      }
+
       setStatusTick((value) => value + 1);
     }, 100);
     return () => clearInterval(timer);
+  }, []);
+
+  // 恢复自动跟随实时窗口
+  const resetToRealtime = useCallback(() => {
+    manualWindowRef.current = null;
+    setIsManualMode(false);
+    const plot = uplotRef.current;
+    const current = seriesRef.current;
+    if (plot && current.length > 0) {
+      const latest = current.reduce((max, series) => Math.max(max, series.ts.at(-1) ?? 0), 0);
+      plot.setScale("x", { min: Math.max(0, latest - WINDOW_SEC), max: Math.max(WINDOW_SEC, latest) });
+    }
+  }, []);
+
+  // 时间轴滚轮/触控板手势缩放和平移（原生监听，基于 CSS 像素）
+  const lastGestureTimeRef = useRef(0);
+
+  useEffect(() => {
+    const el = plotRef.current;
+    if (!el) return;
+
+    const handleNativeWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const plot = uplotRef.current;
+      if (!plot) return;
+
+      if (performance.now() - lastGestureTimeRef.current < 120 && event.ctrlKey) {
+        return;
+      }
+
+      // 使用 plot.over 获取绘图区在视口中的实际 CSS 像素位置
+      const overRect = plot.over.getBoundingClientRect();
+      const cursorPxX = event.clientX - overRect.left;
+      const cursorTimeSec = plot.posToVal(cursorPxX, "x");
+      if (!Number.isFinite(cursorTimeSec)) return;
+
+      const currentXScale = plot.scales.x;
+      const currentMin = currentXScale.min ?? 0;
+      const currentMax = currentXScale.max ?? WINDOW_SEC;
+      const currentWindow: [number, number] = manualWindowRef.current ?? [currentMin, currentMax];
+
+      if (event.ctrlKey) {
+        // 触控板捏合手势：缩放时间窗
+        const factor = Math.exp(-event.deltaY * 0.01);
+        const next = zoomTimeWindow(currentWindow, cursorTimeSec, factor);
+        manualWindowRef.current = next;
+        setIsManualMode(true);
+        plot.setScale("x", { min: next[0], max: next[1] });
+      } else if (event.deltaMode === 0 && Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+        // 触控板两指水平滑动：平移时间窗（使用 overRect.width CSS 像素宽度）
+        const span = currentWindow[1] - currentWindow[0];
+        const secPerPx = span / Math.max(10, overRect.width);
+        const next = panTimeWindow(currentWindow, event.deltaX * secPerPx);
+        manualWindowRef.current = next;
+        setIsManualMode(true);
+        plot.setScale("x", { min: next[0], max: next[1] });
+      } else {
+        // 传统滚轮：以光标时间为锚点缩放
+        const factor = event.deltaY < 0 ? 0.85 : 1 / 0.85;
+        const next = zoomTimeWindow(currentWindow, cursorTimeSec, factor);
+        manualWindowRef.current = next;
+        setIsManualMode(true);
+        plot.setScale("x", { min: next[0], max: next[1] });
+      }
+    };
+
+    let gestureStartScale = 1;
+    const handleGestureStart = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      lastGestureTimeRef.current = performance.now();
+      gestureStartScale = 1;
+    };
+    const handleGestureChange = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      lastGestureTimeRef.current = performance.now();
+      const plot = uplotRef.current;
+      if (!plot) return;
+      const ge = e as unknown as { clientX?: number; scale?: number };
+      const overRect = plot.over.getBoundingClientRect();
+      const cursorPxX = (ge.clientX ?? (overRect.left + overRect.width / 2)) - overRect.left;
+      const cursorTimeSec = plot.posToVal(cursorPxX, "x");
+      if (!Number.isFinite(cursorTimeSec)) return;
+
+      const currentXScale = plot.scales.x;
+      const currentMin = currentXScale.min ?? 0;
+      const currentMax = currentXScale.max ?? WINDOW_SEC;
+      const currentWindow: [number, number] = manualWindowRef.current ?? [currentMin, currentMax];
+
+      const scale = ge.scale ?? 1;
+      const factor = scale / gestureStartScale;
+      gestureStartScale = scale;
+      if (Math.abs(factor - 1) > 0.001) {
+        const zoomFactor = 1 / factor;
+        const next = zoomTimeWindow(currentWindow, cursorTimeSec, zoomFactor);
+        manualWindowRef.current = next;
+        setIsManualMode(true);
+        plot.setScale("x", { min: next[0], max: next[1] });
+      }
+    };
+    const handleGestureEnd = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      lastGestureTimeRef.current = performance.now();
+    };
+
+    el.addEventListener("wheel", handleNativeWheel, { passive: false });
+    el.addEventListener("gesturestart", handleGestureStart, { passive: false });
+    el.addEventListener("gesturechange", handleGestureChange, { passive: false });
+    el.addEventListener("gestureend", handleGestureEnd, { passive: false });
+
+    return () => {
+      el.removeEventListener("wheel", handleNativeWheel);
+      el.removeEventListener("gesturestart", handleGestureStart);
+      el.removeEventListener("gesturechange", handleGestureChange);
+      el.removeEventListener("gestureend", handleGestureEnd);
+    };
   }, []);
 
   useEffect(() => {
@@ -342,6 +482,17 @@ export function PlotPanel({
         >
           {paused ? <Play /> : <Pause />}
         </button>
+        {isManualMode && (
+          <button
+            className="icon-action"
+            onClick={resetToRealtime}
+            title={t("reset")}
+            aria-label={t("reset")}
+            style={{ color: "var(--accent, #38bdf8)" }}
+          >
+            <RotateCcw />
+          </button>
+        )}
         {seriesList.length > 0 && (
           <button className="icon-action" onClick={clearSeries} title={t("clearAll")} aria-label={t("clearAll")}>
             <Trash2 />

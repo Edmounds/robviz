@@ -147,13 +147,42 @@ function createDefaultAppConfig(): AppConfig {
 }
 
 function readStoredAppConfig(): AppConfig {
+  let config: AppConfig;
   try {
     const saved = localStorage.getItem(APP_CONFIG_STORAGE_KEY);
-    return saved ? parseAppConfig(saved) : createDefaultAppConfig();
+    config = saved ? parseAppConfig(saved) : createDefaultAppConfig();
   } catch (error) {
     console.warn("[layout] 本地配置损坏，恢复默认工作区:", error);
-    return createDefaultAppConfig();
+    config = createDefaultAppConfig();
   }
+
+  // URL search params 支持，用于直接导航与离线测试
+  if (typeof window !== "undefined" && window.location?.search) {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const urlMode = params.get("mode");
+      if (
+        urlMode === "waypoints" ||
+        urlMode === "3d" ||
+        urlMode === "map" ||
+        urlMode === "urdf"
+      ) {
+        for (const session of config.sessions) {
+          session.mode = urlMode;
+        }
+      }
+      const urlFontScale = parseFloat(params.get("fontScale") ?? "");
+      if (Number.isFinite(urlFontScale) && urlFontScale >= 0.5 && urlFontScale <= 2.5) {
+        config.settings.fontScale = urlFontScale;
+      }
+      const urlTheme = params.get("theme");
+      if (urlTheme === "dark" || urlTheme === "light") {
+        config.theme = urlTheme;
+      }
+    } catch {}
+  }
+
+  return config;
 }
 
 function persistAppConfig(config: AppConfig): void {
@@ -1460,13 +1489,10 @@ function RobotSessionApp({
             </Suspense>
           </ErrorBoundary>
         )}
-        {mode === "waypoints" && ready && (
+        {mode === "waypoints" && (
           <ErrorBoundary name={t("waypointsEditor")}>
             <Suspense fallback={<div className="page-loading">{t("waypointsEditor")}</div>}>
               <WaypointsEditorPage
-                bridge={bridgeRef.current!}
-                tf={tfRef.current!}
-                topics={topics}
                 fontScale={effectiveFontScale}
               />
             </Suspense>

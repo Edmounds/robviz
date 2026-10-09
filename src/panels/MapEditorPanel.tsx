@@ -282,23 +282,92 @@ export function MapEditorPanel({ bridge, theme }: { bridge: WorkerBridge; theme?
     redraw();
   }, [fillRect, pushUndo, redraw]);
 
-  const onWheel = useCallback(
-    (e: React.WheelEvent) => {
-      const canvas = canvasRef.current!;
+  const lastGestureTimeRef = useRef(0);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const handleNativeWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (performance.now() - lastGestureTimeRef.current < 120 && e.ctrlKey) {
+        return;
+      }
+
       const rect = canvas.getBoundingClientRect();
       const mx = e.clientX - rect.left;
       const my = e.clientY - rect.top;
       const v = viewRef.current;
-      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-      const next = Math.min(64, Math.max(0.2, v.scale * factor));
-      // 以光标为中心缩放
-      v.ox = mx - ((mx - v.ox) / v.scale) * next;
-      v.oy = my - ((my - v.oy) / v.scale) * next;
-      v.scale = next;
+
+      if (e.ctrlKey) {
+        // Mac 捏合缩放
+        const factor = Math.exp(-e.deltaY * 0.01);
+        const next = Math.min(64, Math.max(0.2, v.scale * factor));
+        v.ox = mx - ((mx - v.ox) / v.scale) * next;
+        v.oy = my - ((my - v.oy) / v.scale) * next;
+        v.scale = next;
+      } else if (e.deltaMode === 0) {
+        // 双指平移
+        v.ox -= e.deltaX;
+        v.oy -= e.deltaY;
+      } else {
+        // 传统滚轮
+        const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+        const next = Math.min(64, Math.max(0.2, v.scale * factor));
+        v.ox = mx - ((mx - v.ox) / v.scale) * next;
+        v.oy = my - ((my - v.oy) / v.scale) * next;
+        v.scale = next;
+      }
       redraw();
-    },
-    [redraw],
-  );
+    };
+
+    let gestureStartScale = 1;
+    const handleGestureStart = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      lastGestureTimeRef.current = performance.now();
+      gestureStartScale = 1;
+    };
+    const handleGestureChange = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      lastGestureTimeRef.current = performance.now();
+      const ge = e as unknown as { clientX?: number; clientY?: number; scale?: number };
+      const rect = canvas.getBoundingClientRect();
+      const mx = (ge.clientX ?? (rect.left + rect.width / 2)) - rect.left;
+      const my = (ge.clientY ?? (rect.top + rect.height / 2)) - rect.top;
+      const v = viewRef.current;
+      const scale = ge.scale ?? 1;
+      const factor = scale / gestureStartScale;
+      gestureStartScale = scale;
+      if (Math.abs(factor - 1) > 0.001) {
+        const next = Math.min(64, Math.max(0.2, v.scale * factor));
+        v.ox = mx - ((mx - v.ox) / v.scale) * next;
+        v.oy = my - ((my - v.oy) / v.scale) * next;
+        v.scale = next;
+        redraw();
+      }
+    };
+    const handleGestureEnd = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      lastGestureTimeRef.current = performance.now();
+    };
+
+    canvas.addEventListener("wheel", handleNativeWheel, { passive: false });
+    canvas.addEventListener("gesturestart", handleGestureStart, { passive: false });
+    canvas.addEventListener("gesturechange", handleGestureChange, { passive: false });
+    canvas.addEventListener("gestureend", handleGestureEnd, { passive: false });
+
+    return () => {
+      canvas.removeEventListener("wheel", handleNativeWheel);
+      canvas.removeEventListener("gesturestart", handleGestureStart);
+      canvas.removeEventListener("gesturechange", handleGestureChange);
+      canvas.removeEventListener("gestureend", handleGestureEnd);
+    };
+  }, [redraw]);
 
   // ---- 导入/导出 ----
 
@@ -458,7 +527,6 @@ export function MapEditorPanel({ bridge, theme }: { bridge: WorkerBridge; theme?
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
-          onWheel={onWheel}
           onContextMenu={(e) => e.preventDefault()}
         />
         {!mapInfo && (

@@ -51,4 +51,20 @@ export function terminalGatewayPlugin(): Plugin {
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), terminalGatewayPlugin()],
+  server: {
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:8000",
+        changeOrigin: true,
+      },
+    },
+  },
+  preview: {
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:8000",
+        changeOrigin: true,
+      },
+    },
+  },
 });

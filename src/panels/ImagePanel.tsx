@@ -3,6 +3,7 @@
  * raw Image（rgb8/bgr8/mono8/mono16/16UC1/32FC1，深度图 turbo 上色）。
  * 悬停显示像素坐标 + 值（深度显示米数），视觉调参用。
  */
+import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
@@ -171,6 +172,116 @@ export function ImagePanel({
   targetFpsRef.current = targetFps;
   const [useWebRtc, setUseWebRtc] = useState(initialUseWebRtc);
   const [webrtcStats, setWebRtcStats] = useState<WebRtcStreamStats | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const isDraggingRef = useRef(false);
+  const dragStartRef = useRef({ x: 0, y: 0 });
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, [topic]);
+
+  const handleZoomIn = useCallback(() => {
+    setZoom((z) => Math.min(10, z * 1.25));
+  }, []);
+
+  const handleZoomOut = useCallback(() => {
+    setZoom((z) => Math.max(0.5, z * 0.8));
+  }, []);
+
+  const handleResetFit = useCallback(() => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  }, []);
+
+  const lastGestureTimeRef = useRef(0);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const handleNativeWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (performance.now() - lastGestureTimeRef.current < 120 && e.ctrlKey) {
+        return;
+      }
+
+      if (e.ctrlKey) {
+        // Mac 捏合缩放
+        const factor = Math.exp(-e.deltaY * 0.01);
+        setZoom((z) => Math.max(0.5, Math.min(10, z * factor)));
+      } else if (e.deltaMode === 0) {
+        // 两指平移
+        setPan((p) => ({ x: p.x - e.deltaX, y: p.y - e.deltaY }));
+      } else {
+        // 传统滚轮
+        const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+        setZoom((z) => Math.max(0.5, Math.min(10, z * factor)));
+      }
+    };
+
+    let gestureStartScale = 1;
+    const handleGestureStart = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      lastGestureTimeRef.current = performance.now();
+      gestureStartScale = 1;
+    };
+    const handleGestureChange = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      lastGestureTimeRef.current = performance.now();
+      const ge = e as unknown as { scale?: number };
+      const scale = ge.scale ?? 1;
+      const factor = scale / gestureStartScale;
+      gestureStartScale = scale;
+      if (Math.abs(factor - 1) > 0.001) {
+        setZoom((z) => Math.max(0.5, Math.min(10, z * factor)));
+      }
+    };
+    const handleGestureEnd = (e: Event) => {
+      e.preventDefault();
+      e.stopPropagation();
+      lastGestureTimeRef.current = performance.now();
+    };
+
+    el.addEventListener("wheel", handleNativeWheel, { passive: false });
+    el.addEventListener("gesturestart", handleGestureStart, { passive: false });
+    el.addEventListener("gesturechange", handleGestureChange, { passive: false });
+    el.addEventListener("gestureend", handleGestureEnd, { passive: false });
+
+    return () => {
+      el.removeEventListener("wheel", handleNativeWheel);
+      el.removeEventListener("gesturestart", handleGestureStart);
+      el.removeEventListener("gesturechange", handleGestureChange);
+      el.removeEventListener("gestureend", handleGestureEnd);
+    };
+  }, []);
+
+  const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    isDraggingRef.current = true;
+    dragStartRef.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  }, [pan.x, pan.y]);
+
+  const onPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isDraggingRef.current) return;
+    setPan({
+      x: e.clientX - dragStartRef.current.x,
+      y: e.clientY - dragStartRef.current.y,
+    });
+  }, []);
+
+  const onPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    isDraggingRef.current = false;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    }
+  }, []);
 
   const isImageTopic = topics.some(
     (cand) => cand.topic === topic && cand.schemaName === "sensor_msgs/msg/Image",
@@ -300,8 +411,9 @@ export function ImagePanel({
 
   const onMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const frame = frameRef.current;
-    const canvas = canvasRef.current!;
-    if (!frame) {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!frame || !canvas || !container) {
       setHover(undefined);
       return;
     }
@@ -312,9 +424,10 @@ export function ImagePanel({
       setHover(undefined);
       return;
     }
+    const containerRect = container.getBoundingClientRect();
     setHover({
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
+      x: e.clientX - containerRect.left,
+      y: e.clientY - containerRect.top,
       text: `(${px}, ${py}) ${pixelText(frame, px, py)}`,
     });
   }, []);
@@ -418,42 +531,98 @@ export function ImagePanel({
             重连
           </button>
         )}
+        <div className="panel-actions" style={{ display: "inline-flex", gap: 3, marginLeft: 4 }}>
+          <button
+            type="button"
+            className="panel-btn icon-action"
+            title="放大"
+            aria-label="放大"
+            onClick={handleZoomIn}
+          >
+            <ZoomIn />
+          </button>
+          <button
+            type="button"
+            className="panel-btn icon-action"
+            title="缩小"
+            aria-label="缩小"
+            onClick={handleZoomOut}
+          >
+            <ZoomOut />
+          </button>
+          <button
+            type="button"
+            className="panel-btn icon-action"
+            title="自适应"
+            aria-label="自适应"
+            onClick={handleResetFit}
+          >
+            <Maximize2 />
+          </button>
+        </div>
         <span className="panel-meta">{displayMeta}</span>
     </>
   );
   const content = (
-      <div className="panel-body image-body">
-        {activeWebRtc ? (
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            style={{
-              maxWidth: "100%",
-              maxHeight: "100%",
-              width: "100%",
-              height: "100%",
-              objectFit: "contain",
-              display: "block",
-              background: "#000",
-            }}
-          />
-        ) : (
-          <canvas
-            ref={canvasRef}
-            style={{
-              maxWidth: "100%",
-              maxHeight: "100%",
-              width: "auto",
-              height: "auto",
-              objectFit: "contain",
-              display: "block",
-            }}
-            onMouseMove={onMove}
-            onMouseLeave={() => setHover(undefined)}
-          />
-        )}
+      <div
+        className="panel-body image-body"
+        ref={containerRef}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        style={{
+          overflow: "hidden",
+          position: "relative",
+          touchAction: "none",
+        }}
+      >
+        <div
+          className="image-transform-layer"
+          style={{
+            transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+            transformOrigin: "center center",
+            width: "100%",
+            height: "100%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            cursor: isDraggingRef.current ? "grabbing" : "grab",
+          }}
+        >
+          {activeWebRtc ? (
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              style={{
+                maxWidth: "100%",
+                maxHeight: "100%",
+                width: "100%",
+                height: "100%",
+                objectFit: "contain",
+                display: "block",
+                background: "#000",
+                pointerEvents: "none",
+              }}
+            />
+          ) : (
+            <canvas
+              ref={canvasRef}
+              style={{
+                maxWidth: "100%",
+                maxHeight: "100%",
+                width: "auto",
+                height: "auto",
+                objectFit: "contain",
+                display: "block",
+              }}
+              onMouseMove={onMove}
+              onMouseLeave={() => setHover(undefined)}
+            />
+          )}
+        </div>
         {hover && !activeWebRtc && (
           <div className="pixel-tip" style={{ left: hover.x + 12, top: hover.y + 12 }}>
             {hover.text}

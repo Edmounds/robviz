@@ -47,6 +47,11 @@ export function stopHandledPointerDown(
   if (event.defaultPrevented) event.stopImmediatePropagation();
 }
 
+export function preventGestureDefault(event: Event): void {
+  event.preventDefault();
+  event.stopPropagation();
+}
+
 function easeInOutCubic(t: number): number {
   return t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
 }
@@ -215,6 +220,9 @@ export class SceneManager {
     this.#camera.position.copy(HOME_POSITION);
 
     canvas.addEventListener("pointerdown", stopHandledPointerDown, { capture: true });
+    canvas.addEventListener("gesturestart", preventGestureDefault, { passive: false });
+    canvas.addEventListener("gesturechange", preventGestureDefault, { passive: false });
+    canvas.style.touchAction = "none";
     this.#controls = new OrbitControls(this.#camera, canvas);
     this.#controls.enableDamping = true;
     this.#controls.dampingFactor = 0.12;
@@ -512,6 +520,8 @@ export class SceneManager {
     this.#tfAxes.dispose();
     for (const topic of [...this.#displays.keys()]) this.removeDisplay(topic);
     this.#renderer.domElement.removeEventListener("pointerdown", stopHandledPointerDown, true);
+    this.#renderer.domElement.removeEventListener("gesturestart", preventGestureDefault);
+    this.#renderer.domElement.removeEventListener("gesturechange", preventGestureDefault);
     this.#controls.dispose();
     this.#grid.traverse((object) => {
       const geometry = (object as THREE.LineSegments).geometry;
