@@ -115,10 +115,20 @@ export function renameAppSession(config: AppConfig, id: string, draft: string): 
 export function getDefaultMediaUrl(foxgloveUrl: string): string {
   try {
     const parsed = new URL(foxgloveUrl);
+    const pageHost = typeof window !== "undefined" && window.location
+      ? window.location.hostname
+      : "";
+    const localHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+    const host = localHosts.has(parsed.hostname) && pageHost && !localHosts.has(pageHost)
+      ? pageHost
+      : parsed.hostname;
     const proto = parsed.protocol === "wss:" ? "wss:" : "ws:";
-    return `${proto}//${parsed.hostname}:8787/ws`;
+    return `${proto}//${host}:8787/ws`;
   } catch {
-    return "ws://localhost:8787/ws";
+    const pageHost = typeof window !== "undefined" && window.location
+      ? window.location.hostname
+      : "localhost";
+    return `ws://${pageHost || "localhost"}:8787/ws`;
   }
 }
 

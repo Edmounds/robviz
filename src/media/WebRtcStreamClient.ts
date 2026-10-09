@@ -418,11 +418,21 @@ class WebRtcStreamManager {
     }
     try {
       const parsed = new URL(foxgloveUrl);
+      const pageHost = typeof window !== "undefined" && window.location
+        ? window.location.hostname
+        : "";
+      const localHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+      const host = localHosts.has(parsed.hostname) && pageHost && !localHosts.has(pageHost)
+        ? pageHost
+        : parsed.hostname;
       const proto = parsed.protocol === "wss:" ? "wss:" : "ws:";
       const port = 8787;
-      return `${proto}//${parsed.hostname}:${port}/ws`;
+      return `${proto}//${host}:${port}/ws`;
     } catch {
-      return "ws://localhost:8787/ws";
+      const pageHost = typeof window !== "undefined" && window.location
+        ? window.location.hostname
+        : "localhost";
+      return `ws://${pageHost || "localhost"}:8787/ws`;
     }
   }
 
