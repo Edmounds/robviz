@@ -15,7 +15,6 @@ export const DEFAULT_CORE_PANELS = [
   { id: "3d", kind: "3d" },
   { id: "topics", kind: "topics" },
   { id: "echo", kind: "echo" },
-  { id: "services", kind: "services" },
   { id: "tf-tree", kind: "tf-tree" },
 ] as const;
 
@@ -186,7 +185,7 @@ function createMigratedDockLayout(
     type: "branch" as const,
     data: [
       leaf(["topics"], Math.round(height / 2), "topics"),
-      leaf(["echo", "services", "tf-tree"], Math.round(height / 2), "tf-tree"),
+      leaf(["echo", "tf-tree"], Math.round(height / 2), "tf-tree"),
     ],
     size: sidebarWidth,
   };
@@ -307,6 +306,19 @@ function migrateTeleopPanels(config: AppConfig): AppConfig {
   return config;
 }
 
+function purgeServicesPanels(config: AppConfig): AppConfig {
+  for (const session of config.sessions) {
+    session.panels = session.panels.filter((panel) => panel.kind !== "services" && panel.id !== "services");
+    const layout = session.dockLayout;
+    if (!layout || typeof layout !== "object" || !("panels" in layout)) continue;
+    const dockPanels = layout.panels;
+    if (dockPanels && typeof dockPanels === "object" && !Array.isArray(dockPanels)) {
+      delete (dockPanels as Record<string, unknown>)["services"];
+    }
+  }
+  return config;
+}
+
 export function parseAppConfig(text: string): AppConfig {
   let raw: unknown;
   try {
@@ -316,7 +328,7 @@ export function parseAppConfig(text: string): AppConfig {
   }
 
   if (typeof raw === "object" && raw !== null && "version" in raw && raw.version === 1) {
-    return migrateTeleopPanels(migrateV1(raw));
+    return purgeServicesPanels(migrateTeleopPanels(migrateV1(raw)));
   }
 
   const result = appConfigSchema.safeParse(raw);
@@ -325,5 +337,5 @@ export function parseAppConfig(text: string): AppConfig {
     const path = issue?.path.join(".") || "(根)";
     throw new Error(`配置格式不合法: ${path}: ${issue?.message ?? "unknown"}`);
   }
-  return migrateTeleopPanels(result.data);
+  return purgeServicesPanels(migrateTeleopPanels(result.data));
 }

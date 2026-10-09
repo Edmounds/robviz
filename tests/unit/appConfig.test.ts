@@ -228,4 +228,35 @@ describe("appConfig", () => {
 
     expect(parsed.sessions[0].dockLayout).toEqual({ unexpected: true });
   });
+
+  it("purges deprecated services panels from parsed configurations", () => {
+    const session = createDefaultSession("robot-a", "Robot A");
+    const raw = {
+      version: 2,
+      activeSessionId: session.id,
+      theme: "dark",
+      settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] },
+      sessions: [
+        {
+          ...session,
+          panels: [
+            ...session.panels,
+            { id: "services", kind: "services" },
+          ],
+          dockLayout: {
+            panels: {
+              services: { id: "services" },
+              topics: { id: "topics" },
+            },
+          },
+        },
+      ],
+    };
+
+    const parsed = parseAppConfig(JSON.stringify(raw));
+    expect(parsed.sessions[0].panels.some((p) => p.kind === "services" || p.id === "services")).toBe(false);
+    const dockPanels = (parsed.sessions[0].dockLayout as { panels: Record<string, unknown> }).panels;
+    expect("services" in dockPanels).toBe(false);
+    expect("topics" in dockPanels).toBe(true);
+  });
 });

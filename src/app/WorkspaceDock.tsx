@@ -113,7 +113,7 @@ function buildDefaultLayout(
   const byKind = new Map(panels.map((panel) => [panel.kind, panel]));
   const threeD = byKind.get("3d");
   const topics = byKind.get("topics");
-  const utilityKinds = ["echo", "services", "tf-tree"];
+  const utilityKinds = ["echo", "tf-tree"];
 
   if (threeD) addPanel(api, threeD, titleForKind(threeD.kind));
   if (topics) {
@@ -162,7 +162,7 @@ function buildDefaultLayout(
 
 function positionForAddedPanel(api: DockviewApi, panel: WorkspacePanel) {
   if (panel.kind.startsWith("plugin-section:")) {
-    const utility = ["tf-tree", "services", "echo"]
+    const utility = ["tf-tree", "echo"]
       .map((id) => api.getPanel(id))
       .find((candidate) => candidate !== undefined);
     if (utility) return { referencePanel: utility } as const;

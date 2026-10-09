@@ -74,23 +74,141 @@ body,
 
 .app-shell {
   display: grid;
-  grid-template-rows: 32px minmax(0, 1fr);
+  grid-template-rows: 40px minmax(0, 1fr);
   width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
 }
 
+.app-shell-header {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  min-width: 0;
+  height: 40px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--surface-soft);
+  overflow: hidden;
+}
+
+.app-shell-nav {
+  display: flex;
+  align-items: stretch;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.app-shell-header .brand {
+  display: inline-flex;
+  align-items: center;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  padding: 0 14px;
+  color: var(--foreground);
+  flex-shrink: 0;
+  user-select: none;
+}
+
 .session-tabs {
   display: flex;
   align-items: stretch;
   min-width: 0;
-  padding-left: 8px;
+  flex: 1;
+  padding-left: 0;
   overflow-x: auto;
   overflow-y: hidden;
-  border-bottom: 1px solid var(--border-soft);
-  background: var(--surface-soft);
   scrollbar-width: thin;
+}
+
+.app-shell-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  flex-shrink: 0;
+}
+
+.topbar-connection-group,
+.topbar-config-group,
+.topbar-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.topbar-connection-group input {
+  width: 200px;
+  height: 28px;
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-ctl);
+  color: var(--foreground);
+  font-family: var(--mono);
+  font-size: var(--fs-ui);
+  padding: 0 8px;
+}
+
+.topbar-connection-group button,
+.topbar-config-group button {
+  background: transparent;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-ctl);
+  color: var(--foreground-soft);
+  font-size: var(--fs-ui);
+  min-height: 28px;
+  padding: 4px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 200ms ease, border-color 200ms ease;
+}
+
+.topbar-connection-group button:hover,
+.topbar-config-group button:hover {
+  color: var(--foreground);
+  border-color: var(--foreground);
+}
+
+.topbar-connection-group .status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-ui);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.topbar-connection-group .status .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid var(--text-faint);
+  background: transparent;
+}
+
+.topbar-connection-group .status.open {
+  color: var(--foreground);
+}
+
+.topbar-connection-group .status.open .dot {
+  border-color: var(--foreground);
+  background: var(--foreground);
+}
+
+.topbar-connection-group .status.connecting {
+  color: var(--status-warn);
+}
+
+.topbar-connection-group .status.connecting .dot {
+  border-color: var(--status-warn);
+  background: var(--status-warn);
+}
+
+.topbar-connection-group .status.closed .dot {
+  border-color: var(--status-error);
+  background: var(--status-error);
 }
 
 .session-tab {
@@ -491,6 +609,26 @@ body {
 }
 
 /* VSCode 风格板块效果：圆角与细边框 */
+.dockview-theme-abyss-spaced,
+.dockview-theme-light-spaced {
+  --dv-tabs-and-actions-container-font-size: var(--fs-ui) !important;
+  --dv-tab-font-size: var(--fs-ui) !important;
+  --dv-tabs-and-actions-container-height: max(28px, calc(30px * var(--effective-font-scale, 1))) !important;
+}
+
+.dockview-theme-abyss-spaced .dv-tab,
+.dockview-theme-light-spaced .dv-tab,
+.dockview-theme-abyss-spaced .dv-default-tab,
+.dockview-theme-light-spaced .dv-default-tab {
+  font-size: var(--fs-ui) !important;
+}
+
+.dockview-theme-abyss-spaced .dv-default-tab-action,
+.dockview-theme-light-spaced .dv-default-tab-action {
+  width: max(14px, calc(16px * var(--effective-font-scale, 1))) !important;
+  height: max(14px, calc(16px * var(--effective-font-scale, 1))) !important;
+}
+
 .dockview-theme-abyss-spaced .dv-groupview,
 .dockview-theme-light-spaced .dv-groupview {
   border-radius: var(--panel-radius, 12px) !important;
@@ -540,8 +678,8 @@ body {
 
 .dock-maximize-action {
   display: inline-flex;
-  width: 28px;
-  height: 28px;
+  width: max(24px, calc(28px * var(--effective-font-scale, 1)));
+  height: max(24px, calc(28px * var(--effective-font-scale, 1)));
   align-items: center;
   justify-content: center;
   padding: 0;
@@ -557,8 +695,8 @@ body {
 }
 
 .dock-maximize-action svg {
-  width: 14px;
-  height: 14px;
+  width: max(12px, calc(14px * var(--effective-font-scale, 1)));
+  height: max(12px, calc(14px * var(--effective-font-scale, 1)));
 }
 
 .dock-panel-content {

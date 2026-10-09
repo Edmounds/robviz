@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Grid3X3, Moon, PanelTopOpen, Pencil, Plus, Settings, SquareTerminal, Sun, X } from "lucide-react";
 import * as THREE from "three";
 
@@ -29,7 +30,6 @@ import { ImagePanel } from "../panels/ImagePanel";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { PointCloudSettingsPanel } from "../panels/PointCloudSettingsPanel";
 import { EchoTopicSection } from "../panels/EchoTopicSection";
-import { ServiceSection } from "../panels/ServiceSection";
 import { TfTreeSection } from "../panels/TfTreeSection";
 import { EditableCloudRenderer } from "../renderers/EditableCloudRenderer";
 import { GridRenderer } from "../renderers/GridRenderer";
@@ -164,6 +164,7 @@ function persistAppConfig(config: AppConfig): void {
 interface RobotSessionAppProps {
   session: RobotSessionConfig;
   active: boolean;
+  headerActionsSlot?: HTMLDivElement | null;
   globalTheme: Theme;
   globalSettings: AppConfig["settings"];
   effectiveFontScale: number;
@@ -180,6 +181,7 @@ interface RobotSessionAppProps {
 function RobotSessionApp({
   session,
   active = true,
+  headerActionsSlot,
   globalTheme,
   globalSettings,
   effectiveFontScale,
@@ -269,7 +271,7 @@ function RobotSessionApp({
   const [navTool, setNavTool] = useState<NavTool>();
   const [navPreview, setNavPreview] = useState<{ x: number; y: number; yawDeg: number; len: number }>();
   const [panels, setPanels] = useState<DockPanel[]>(() =>
-    session.panels.map((panel) => ({ ...panel })),
+    session.panels.filter((panel) => panel.kind !== "services").map((panel) => ({ ...panel })),
   );
   const [dockLayout, setDockLayout] = useState<SerializedDockview | undefined>(
     session.dockLayout as SerializedDockview | undefined,
@@ -1047,7 +1049,6 @@ function RobotSessionApp({
     if (kind === "3d") return t("view3d");
     if (kind === "topics") return t("topics");
     if (kind === "echo") return t("echoTopic");
-    if (kind === "services") return t("services");
     if (kind === "tf-tree") return t("tfTree");
     if (kind === "image") return t("imagePanel");
     if (kind === "plot") return t("plotPanel");
@@ -1192,13 +1193,6 @@ function RobotSessionApp({
     if (panel.kind === "echo" && ready) {
       return <div className="workspace-panel utility-panel"><EchoTopicSection bridge={bridgeRef.current!} topics={topics} /></div>;
     }
-    if (panel.kind === "services" && ready) {
-      return (
-        <div className="workspace-panel utility-panel">
-          <ServiceSection bridge={bridgeRef.current!} services={services} connState={connState} />
-        </div>
-      );
-    }
     if (panel.kind === "tf-tree") {
       return (
         <div className="workspace-panel utility-panel">
@@ -1263,9 +1257,75 @@ function RobotSessionApp({
 
   return (
     <I18nProvider locale={settings.language}>
+    {active && headerActionsSlot && createPortal(
+      <>
+        <div className="topbar-connection-group">
+          <input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && connect()}
+            spellCheck={false}
+          />
+          <button onClick={connect}>{t("connect")}</button>
+          <span className={`status ${connState}`}>
+            <span className="dot" />
+            {connState === "open" ? t("connected") : connState === "connecting" ? t("connecting") : t("disconnected")}
+          </span>
+        </div>
+        <div className="topbar-config-group">
+          <button onClick={saveConfig} title={t("saveConfigHint")}>
+            {t("saveConfig")}
+          </button>
+          <button onClick={saveConfigAsFile} title={t("saveConfigAsFileHint")}>
+            {t("saveConfigAsFile")}
+          </button>
+          <button onClick={() => configFileRef.current?.click()} title={t("loadConfigHint")}>
+            {t("loadConfig")}
+          </button>
+          <input
+            ref={configFileRef}
+            type="file"
+            accept=".json,application/json"
+            style={{ display: "none" }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) void openConfigFile(f);
+              e.target.value = "";
+            }}
+          />
+        </div>
+        <div className="topbar-actions-group">
+          <button
+            className={`icon-btn ${terminalVisible ? "active" : ""}`}
+            onClick={toggleTerminal}
+            title={t("terminal")}
+            aria-label={t("terminal")}
+            aria-pressed={terminalVisible}
+          >
+            <SquareTerminal />
+          </button>
+          <button
+            className="icon-btn"
+            onClick={toggleTheme}
+            title={theme === "dark" ? t("switchLight") : t("switchDark")}
+            aria-label={t("switchTheme")}
+          >
+            {theme === "dark" ? <Sun /> : <Moon />}
+          </button>
+          <button
+            className={`icon-btn ${mode === "settings" ? "active" : ""}`}
+            onClick={() => setMode((current) => (current === "settings" ? (sessionModeRef.current || "3d") : "settings"))}
+            title={t("settings")}
+            aria-label={t("settings")}
+          >
+            <Settings />
+          </button>
+        </div>
+      </>,
+      headerActionsSlot,
+    )}
     <div className="app">
       <header className="topbar">
-        <span className="brand">RobViz</span>
         <nav className="mode-tabs">
           <button className={mode === "3d" ? "active" : ""} onClick={() => setMode("3d")}>
             {t("view3d")}
@@ -1290,7 +1350,6 @@ function RobotSessionApp({
                 ["3d", t("view3d")],
                 ["topics", t("topics")],
                 ["echo", t("echoTopic")],
-                ["services", t("services")],
                 ["tf-tree", t("tfTree")],
                 ["image", t("imagePanel")],
                 ["plot", t("plotPanel")],
@@ -1323,38 +1382,6 @@ function RobotSessionApp({
             </div>
           </details>
         )}
-        <input
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && connect()}
-          spellCheck={false}
-        />
-        <button onClick={connect}>{t("connect")}</button>
-        <span className={`status ${connState}`}>
-          <span className="dot" />
-          {connState === "open" ? t("connected") : connState === "connecting" ? t("connecting") : t("disconnected")}
-        </span>
-        <span className="spacer" />
-        <button onClick={saveConfig} title={t("saveConfigHint")}>
-          {t("saveConfig")}
-        </button>
-        <button onClick={saveConfigAsFile} title={t("saveConfigAsFileHint")}>
-          {t("saveConfigAsFile")}
-        </button>
-        <button onClick={() => configFileRef.current?.click()} title={t("loadConfigHint")}>
-          {t("loadConfig")}
-        </button>
-        <input
-          ref={configFileRef}
-          type="file"
-          accept=".json,application/json"
-          style={{ display: "none" }}
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) void openConfigFile(f);
-            e.target.value = "";
-          }}
-        />
         {mode === "3d" && hasThreeDPanel && (
           <>
             <label className="field">
@@ -1390,31 +1417,6 @@ function RobotSessionApp({
             </select>
           </label>
         )}
-        <button
-          className={`icon-btn ${terminalVisible ? "active" : ""}`}
-          onClick={toggleTerminal}
-          title={t("terminal")}
-          aria-label={t("terminal")}
-          aria-pressed={terminalVisible}
-        >
-          <SquareTerminal />
-        </button>
-        <button
-          className="icon-btn"
-          onClick={toggleTheme}
-          title={theme === "dark" ? t("switchLight") : t("switchDark")}
-          aria-label={t("switchTheme")}
-        >
-          {theme === "dark" ? <Sun /> : <Moon />}
-        </button>
-        <button
-          className={`icon-btn ${mode === "settings" ? "active" : ""}`}
-          onClick={() => setMode("settings")}
-          title={t("settings")}
-          aria-label={t("settings")}
-        >
-          <Settings />
-        </button>
       </header>
 
       <main className={`main mode-${mode}`}>
@@ -1546,6 +1548,7 @@ export default function App() {
     root.style.setProperty("--panel-radius", "12px");
     root.style.setProperty("--dv-border-radius", "12px");
   }, [autoScale, fontScaleSetting, effectiveFontScale, panelGap]);
+  const [headerActionsSlot, setHeaderActionsSlot] = useState<HTMLDivElement | null>(null);
   const editingSessionIdRef = useRef<string | undefined>(undefined);
   const [editingSessionId, setEditingSessionId] = useState<string>();
   const [editingSessionName, setEditingSessionName] = useState("");
@@ -1670,85 +1673,91 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      <div className="session-tabs" role="tablist" aria-label={t("machines")}>
-        {config.sessions.map((session) => {
-          const active = session.id === config.activeSessionId;
-          const state = connectionStates[session.id] ?? "connecting";
-          return (
-            <div
-              key={session.id}
-              className={`session-tab ${active ? "active" : ""}`}
-              role="tab"
-              aria-selected={active}
-              tabIndex={active ? 0 : -1}
-              onClick={() => setConfig((current) => ({ ...current, activeSessionId: session.id }))}
-              onDoubleClick={(event) => {
-                event.stopPropagation();
-                beginRenameSession(session);
-              }}
-              onKeyDown={(event) => {
-                if (event.key !== "F2") return;
-                event.preventDefault();
-                beginRenameSession(session);
-              }}
-            >
-              <span className={`session-status ${state}`} aria-hidden="true" />
-              {editingSessionId === session.id ? (
-                <input
-                  className="session-name-input"
-                  value={editingSessionName}
-                  autoFocus
-                  aria-label={t("renameMachine")}
-                  onChange={(event) => setEditingSessionName(event.target.value)}
-                  onClick={(event) => event.stopPropagation()}
-                  onDoubleClick={(event) => event.stopPropagation()}
-                  onKeyDown={(event) => {
+      <header className="app-shell-header">
+        <div className="app-shell-nav">
+          <span className="brand">RobViz</span>
+          <div className="session-tabs" role="tablist" aria-label={t("machines")}>
+            {config.sessions.map((session) => {
+              const active = session.id === config.activeSessionId;
+              const state = connectionStates[session.id] ?? "connecting";
+              return (
+                <div
+                  key={session.id}
+                  className={`session-tab ${active ? "active" : ""}`}
+                  role="tab"
+                  aria-selected={active}
+                  tabIndex={active ? 0 : -1}
+                  onClick={() => setConfig((current) => ({ ...current, activeSessionId: session.id }))}
+                  onDoubleClick={(event) => {
                     event.stopPropagation();
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      commitRenameSession(session.id);
-                    } else if (event.key === "Escape") {
-                      event.preventDefault();
-                      cancelRenameSession(session.id);
-                    }
+                    beginRenameSession(session);
                   }}
-                  onBlur={() => commitRenameSession(session.id)}
-                />
-              ) : (
-                <span className="session-label" title={session.url}>
-                  <span className="session-name">{session.name}</span>
-                  <span className="session-target">{connectionTargetLabel(session.url)}</span>
-                </span>
-              )}
-              <button
-                className="session-rename"
-                title={t("renameMachine")}
-                aria-label={t("renameMachine")}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  beginRenameSession(session);
-                }}
-              >
-                <Pencil />
-              </button>
-              {config.sessions.length > 1 && (
-                <button
-                  className="session-close"
-                  title={t("closeMachine")}
-                  aria-label={t("closeMachine")}
-                  onClick={(event) => { event.stopPropagation(); closeSession(session.id); }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "F2") return;
+                    event.preventDefault();
+                    beginRenameSession(session);
+                  }}
                 >
-                  <X />
-                </button>
-              )}
-            </div>
-          );
-        })}
-        <button className="session-add" onClick={addSession} title={t("addMachine")} aria-label={t("addMachine")}>
-          <Plus />
-        </button>
-        {configError && <span className="session-error" role="alert">{configError}</span>}
-      </div>
+                  <span className={`session-status ${state}`} aria-hidden="true" />
+                  {editingSessionId === session.id ? (
+                    <input
+                      className="session-name-input"
+                      value={editingSessionName}
+                      autoFocus
+                      aria-label={t("renameMachine")}
+                      onChange={(event) => setEditingSessionName(event.target.value)}
+                      onClick={(event) => event.stopPropagation()}
+                      onDoubleClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => {
+                        event.stopPropagation();
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          commitRenameSession(session.id);
+                        } else if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelRenameSession(session.id);
+                        }
+                      }}
+                      onBlur={() => commitRenameSession(session.id)}
+                    />
+                  ) : (
+                    <span className="session-label" title={session.url}>
+                      <span className="session-name">{session.name}</span>
+                      <span className="session-target">{connectionTargetLabel(session.url)}</span>
+                    </span>
+                  )}
+                  <button
+                    className="session-rename"
+                    title={t("renameMachine")}
+                    aria-label={t("renameMachine")}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      beginRenameSession(session);
+                    }}
+                  >
+                    <Pencil />
+                  </button>
+                  {config.sessions.length > 1 && (
+                    <button
+                      className="session-close"
+                      title={t("closeMachine")}
+                      aria-label={t("closeMachine")}
+                      onClick={(event) => { event.stopPropagation(); closeSession(session.id); }}
+                    >
+                      <X />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+            <button className="session-add" onClick={addSession} title={t("addMachine")} aria-label={t("addMachine")}>
+              <Plus />
+            </button>
+            {configError && <span className="session-error" role="alert">{configError}</span>}
+          </div>
+        </div>
+        <div className="app-shell-actions" ref={setHeaderActionsSlot} />
+      </header>
       <div className="session-stack">
         {config.sessions.map((session) => {
           const active = session.id === config.activeSessionId;
@@ -1758,6 +1767,7 @@ export default function App() {
                 key={`${runtimeGeneration}:${session.id}`}
                 session={session}
                 active={active}
+                headerActionsSlot={headerActionsSlot}
                 globalTheme={config.theme}
                 globalSettings={config.settings}
                 effectiveFontScale={effectiveFontScale}

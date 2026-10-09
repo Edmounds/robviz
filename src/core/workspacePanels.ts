@@ -9,7 +9,6 @@ const SINGLETON_PANEL_KINDS = new Set([
   "topics",
   "echo",
   "teleop",
-  "services",
   "tf-tree",
 ]);
 
