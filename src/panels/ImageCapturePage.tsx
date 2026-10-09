@@ -54,6 +54,7 @@ export function ImageCapturePage({
   useEffect(() => {
     setCaptureInfo(null);
     setGwConnected(false);
+    setIsSaving(false);
     setLastSaved(null);
     setLastError(null);
     setUnconfirmedError(null);
@@ -75,6 +76,7 @@ export function ImageCapturePage({
       onConnectionChange: (connected) => {
         if (clientRef.current === client) {
           setGwConnected(connected);
+          if (connected) setLastError(null);
         }
       },
       onError: (err) => {
@@ -109,6 +111,7 @@ export function ImageCapturePage({
     }
 
     setIsSaving(true);
+    setLastSaved(null);
     setLastError(null);
     setUnconfirmedError(null);
 

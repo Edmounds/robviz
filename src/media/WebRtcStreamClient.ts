@@ -43,6 +43,7 @@ class TopicPeer {
   private viewers = new Map<string, ViewerHandle>();
   private targetFps = 10;
   private statsTimer: number | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   private lastBytes = 0;
   private lastFrames = 0;
@@ -124,7 +125,7 @@ class TopicPeer {
       ws = new WebSocket(this.wsUrl);
       this.ws = ws;
     } catch (err) {
-      this.updateStatus("error", `Failed to open ${this.wsUrl}: ${String(err)}`);
+      this.retryGateway(`Failed to open ${this.wsUrl}: ${String(err)}`);
       return;
     }
 
@@ -182,11 +183,11 @@ class TopicPeer {
     };
 
     ws.onerror = () => {
-      if (this.ws === ws) this.fail("Signaling WebSocket error");
+      if (this.ws === ws) this.retryGateway("Signaling WebSocket error");
     };
 
     ws.onclose = () => {
-      if (this.ws === ws) this.fail("Gateway connection closed");
+      if (this.ws === ws) this.retryGateway("Gateway connection closed");
     };
   }
 
@@ -374,11 +375,25 @@ class TopicPeer {
   }
 
   private closeTransport() {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     const ws = this.ws;
     this.ws = null; // 先失效，忽略旧 socket/异步 SDP 的迟到回调
     this.closePeer();
     this.pendingIceCandidates.length = 0;
     ws?.close();
+  }
+
+  private retryGateway(message: string) {
+    this.closeTransport();
+    if (!this.hasViewers) return;
+    this.updateStatus("connecting", `${message}. Waiting for video gateway...`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.hasViewers) this.connect();
+    }, 1000);
   }
 
   private fail(message: string) {

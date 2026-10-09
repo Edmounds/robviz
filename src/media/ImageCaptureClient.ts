@@ -55,6 +55,7 @@ export class ImageCaptureClient {
     }
   >();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private isDisposed = false;
   private requestCounter = 0;
 
@@ -70,6 +71,7 @@ export class ImageCaptureClient {
       this.ws = new WebSocket(this.wsUrl);
     } catch (err) {
       this.callbacks.onError?.(err instanceof Error ? err.message : String(err));
+      this.scheduleReconnect();
       return;
     }
 
@@ -141,7 +143,16 @@ export class ImageCaptureClient {
     this.ws.onclose = () => {
       this.cleanupWs();
       this.callbacks.onConnectionChange?.(false);
+      this.scheduleReconnect();
     };
+  }
+
+  private scheduleReconnect(): void {
+    if (this.isDisposed || this.reconnectTimer) return;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, 1000);
   }
 
   public fetchInfo(): void {
@@ -200,6 +211,10 @@ export class ImageCaptureClient {
 
   public close(): void {
     this.isDisposed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.ws) {
       if (this.ws.readyState === WebSocket.OPEN) {
         try {
