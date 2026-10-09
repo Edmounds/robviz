@@ -59,6 +59,9 @@ const UrdfEditorPage = lazy(() => import("../panels/UrdfEditorPage"));
 const WaypointsEditorPage = lazy(() =>
   import("../panels/WaypointsEditorPage").then((module) => ({ default: module.WaypointsEditorPage })),
 );
+const ImageCapturePage = lazy(() =>
+  import("../panels/ImageCapturePage").then((module) => ({ default: module.ImageCapturePage })),
+);
 const TerminalPanel = lazy(() => import("../panels/TerminalPanel"));
 const MapEditorPanel = lazy(() =>
   import("../panels/MapEditorPanel").then((module) => ({ default: module.MapEditorPanel })),
@@ -216,7 +219,7 @@ function RobotSessionApp({
   const [ready, setReady] = useState(false);
   const [sceneCanvas, setSceneCanvas] = useState<HTMLCanvasElement | null>(null);
   const [sceneGeneration, setSceneGeneration] = useState(0);
-  const [mode, setMode] = useState<"3d" | "map" | "urdf" | "waypoints" | "settings">(session.mode);
+  const [mode, setMode] = useState<"3d" | "map" | "urdf" | "waypoints" | "capture" | "settings">(session.mode);
   const [settingsTab, setSettingsTab] = useState<"general" | "3d" | "images" | "plugins">("general");
   const [theme, setTheme] = useState<Theme>(globalTheme);
   const [settings, setSettings] = useState<LayoutConfig["settings"]>(
@@ -1339,6 +1342,9 @@ function RobotSessionApp({
           <button className={mode === "waypoints" ? "active" : ""} onClick={() => setMode("waypoints")}>
             {t("waypointsEditor")}
           </button>
+          <button className={mode === "capture" ? "active" : ""} onClick={() => setMode("capture")}>
+            {t("imageCollect")}
+          </button>
         </nav>
         {mode === "3d" && (
           <details className="panel-menu">
@@ -1461,6 +1467,22 @@ function RobotSessionApp({
                 bridge={bridgeRef.current!}
                 tf={tfRef.current!}
                 topics={topics}
+                fontScale={effectiveFontScale}
+              />
+            </Suspense>
+          </ErrorBoundary>
+        )}
+        {mode === "capture" && ready && (
+          <ErrorBoundary name={t("imageCollect")}>
+            <Suspense fallback={<div className="page-loading">{t("imageCollect")}</div>}>
+              <ImageCapturePage
+                bridge={bridgeRef.current!}
+                topics={topics}
+                active={active}
+                bridgeUrl={activeBridgeUrl}
+                mediaUrl={session.mediaUrl}
+                connectionState={connState}
+                theme={theme}
                 fontScale={effectiveFontScale}
               />
             </Suspense>

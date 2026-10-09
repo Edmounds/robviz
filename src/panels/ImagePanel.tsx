@@ -159,6 +159,7 @@ export function ImagePanel({
   const panelId = useId();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const frameRef = useRef<RawFrame>(null);
   const preferRawRef = useRef(initialPreferRaw);
   const [topic, setTopic] = useState(fixedTopic ?? initialTopic ?? "");
@@ -203,8 +204,10 @@ export function ImagePanel({
     if (preferred !== topic) setTopic(preferred);
   }, [fixedTopic, initialTopic, topic, topics]);
 
+  const shouldWatchGateway = Boolean(active && !collapsed && topic && isImageTopic && useWebRtc);
+
   useEffect(() => {
-    if (!active || !activeWebRtc || !topic || collapsed) return;
+    if (!shouldWatchGateway) return;
     const videoEl = videoRef.current;
     const unsub = webRtcManager.watch(
       topic,
@@ -212,6 +215,7 @@ export function ImagePanel({
       panelId,
       targetFpsRef.current,
       (stream) => {
+        streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
         }
@@ -223,17 +227,24 @@ export function ImagePanel({
     return () => {
       unsub();
       setWebRtcStats(null);
+      streamRef.current = null;
       if (videoEl) {
         videoEl.srcObject = null;
       }
     };
-  }, [active, activeWebRtc, collapsed, mediaUrl, panelId, topic]);
+  }, [mediaUrl, panelId, shouldWatchGateway, topic]);
 
   useEffect(() => {
-    if (active && activeWebRtc && topic && !collapsed) {
+    if (activeWebRtc && videoRef.current && streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+    }
+  }, [activeWebRtc]);
+
+  useEffect(() => {
+    if (shouldWatchGateway) {
       webRtcManager.setFps(topic, mediaUrl, panelId, targetFps);
     }
-  }, [active, activeWebRtc, collapsed, mediaUrl, panelId, targetFps, topic]);
+  }, [mediaUrl, panelId, shouldWatchGateway, targetFps, topic]);
 
   useEffect(() => {
     if (!active || activeWebRtc || !activeCompressedTopic || collapsed) return;

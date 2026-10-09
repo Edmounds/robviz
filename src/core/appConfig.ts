@@ -35,7 +35,7 @@ const robotSessionSchema = z.object({
   name: z.string().min(1),
   url: z.string(),
   mediaUrl: z.string().optional(),
-  mode: z.enum(["3d", "map", "urdf", "waypoints"]).default("3d"),
+  mode: z.enum(["3d", "map", "urdf", "waypoints", "capture"]).default("3d"),
   fixedFrame: z.string(),
   scene: z.object({
     groundVisible: z.boolean().default(DEFAULT_APP_SETTINGS.groundVisible),

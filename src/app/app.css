@@ -3709,6 +3709,172 @@ button:disabled {
   animation: fade-in 240ms ease;
 }
 
+/* ---- 图像采集页 ---- */
+.capture-page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: var(--panel-gap, 8px);
+  gap: var(--panel-gap, 8px);
+  overflow: hidden;
+}
+
+.capture-toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  overflow-x: auto;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--panel-radius, 12px);
+  background: var(--surface-soft);
+}
+
+.capture-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  flex: none;
+  min-height: 32px;
+  padding: 4px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-ctl);
+  background: var(--foreground);
+  color: var(--canvas);
+  font: 600 var(--fs-ui) var(--sans);
+  cursor: pointer;
+  transition: opacity 180ms ease, background 180ms ease;
+}
+
+.capture-action-btn:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.capture-action-btn:disabled {
+  opacity: 0.4;
+  cursor: default !important;
+}
+
+.capture-action-btn svg {
+  width: 16px;
+  height: 16px;
+}
+
+.capture-meta-group {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+
+.capture-stat-item strong {
+  color: var(--foreground-soft);
+  font-weight: 500;
+}
+
+.capture-stat-item code {
+  font-family: var(--mono);
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--canvas) 60%, transparent);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.capture-dir-item {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capture-feedback-area {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-meta);
+}
+
+.feedback-saving {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.feedback-success {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #10b981;
+  font-weight: 500;
+}
+
+.feedback-success svg {
+  width: 14px;
+  height: 14px;
+}
+
+.feedback-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--status-error);
+  font-weight: 500;
+}
+
+.feedback-error svg {
+  width: 14px;
+  height: 14px;
+}
+
+.feedback-warning {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--status-warn);
+  font-weight: 500;
+}
+
+.feedback-warning svg {
+  width: 14px;
+  height: 14px;
+}
+
+.capture-offline-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--panel-radius, 12px);
+  background: color-mix(in srgb, var(--status-warn) 15%, var(--canvas));
+  border: 1px solid var(--status-warn);
+  color: var(--status-warn);
+  font-size: var(--fs-ui);
+}
+
+.capture-offline-banner svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+
+.capture-viewport-container {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--panel-radius, 12px);
+  overflow: hidden;
+  background: var(--canvas);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
