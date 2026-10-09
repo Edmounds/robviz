@@ -56,6 +56,9 @@ const PCD_KEY = "__pcd__";
 const THEME_KEY = "robviz.theme";
 const TERMINAL_HEIGHT_KEY = "robviz.terminal.height";
 const UrdfEditorPage = lazy(() => import("../panels/UrdfEditorPage"));
+const WaypointsEditorPage = lazy(() =>
+  import("../panels/WaypointsEditorPage").then((module) => ({ default: module.WaypointsEditorPage })),
+);
 const TerminalPanel = lazy(() => import("../panels/TerminalPanel"));
 const MapEditorPanel = lazy(() =>
   import("../panels/MapEditorPanel").then((module) => ({ default: module.MapEditorPanel })),
@@ -207,7 +210,7 @@ function RobotSessionApp({
   const [ready, setReady] = useState(false);
   const [sceneCanvas, setSceneCanvas] = useState<HTMLCanvasElement | null>(null);
   const [sceneGeneration, setSceneGeneration] = useState(0);
-  const [mode, setMode] = useState<"3d" | "map" | "urdf" | "settings">(session.mode);
+  const [mode, setMode] = useState<"3d" | "map" | "urdf" | "waypoints" | "settings">(session.mode);
   const [settingsTab, setSettingsTab] = useState<"general" | "3d" | "plugins">("general");
   const [theme, setTheme] = useState<Theme>(globalTheme);
   const [settings, setSettings] = useState<LayoutConfig["settings"]>(
@@ -1241,6 +1244,9 @@ function RobotSessionApp({
           <button className={mode === "urdf" ? "active" : ""} onClick={() => setMode("urdf")}>
             {t("urdfEditor")}
           </button>
+          <button className={mode === "waypoints" ? "active" : ""} onClick={() => setMode("waypoints")}>
+            {t("waypointsEditor")}
+          </button>
         </nav>
         {mode === "3d" && (
           <details className="panel-menu">
@@ -1410,6 +1416,13 @@ function RobotSessionApp({
           <ErrorBoundary name={t("urdfEditor")}>
             <Suspense fallback={<div className="page-loading">{t("loadingUrdf")}</div>}>
               <UrdfEditorPage bridge={bridgeRef.current!} theme={theme} inspectorPercent={workspace.urdfInspectorPercent} isMobile={isMobile} onInspectorPercentChange={(urdfInspectorPercent: number) => setWorkspace((current) => ({ ...current, urdfInspectorPercent }))} />
+            </Suspense>
+          </ErrorBoundary>
+        )}
+        {mode === "waypoints" && ready && (
+          <ErrorBoundary name={t("waypointsEditor")}>
+            <Suspense fallback={<div className="page-loading">{t("waypointsEditor")}</div>}>
+              <WaypointsEditorPage bridge={bridgeRef.current!} tf={tfRef.current!} topics={topics} />
             </Suspense>
           </ErrorBoundary>
         )}
