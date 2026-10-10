@@ -40,6 +40,7 @@ export function ImageCapturePage({
   const [captureInfo, setCaptureInfo] = useState<CaptureInfo | null>(null);
   const [gwConnected, setGwConnected] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isSelectingTopic, setIsSelectingTopic] = useState(false);
   const [lastSaved, setLastSaved] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [unconfirmedError, setUnconfirmedError] = useState<string | null>(null);
@@ -55,6 +56,7 @@ export function ImageCapturePage({
     setCaptureInfo(null);
     setGwConnected(false);
     setIsSaving(false);
+    setIsSelectingTopic(false);
     setLastSaved(null);
     setLastError(null);
     setUnconfirmedError(null);
@@ -149,6 +151,21 @@ export function ImageCapturePage({
     }
   }, [active, captureInfo?.hasFrame, connectionState, gwConnected, isSaving]);
 
+  const selectCaptureTopic = useCallback(async (topic: string) => {
+    const client = clientRef.current;
+    if (!client || topic === captureInfo?.topic) return;
+    setIsSelectingTopic(true);
+    setLastError(null);
+    try {
+      await client.setCaptureTopic(topic);
+      client.fetchInfo();
+    } catch (err) {
+      setLastError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsSelectingTopic(false);
+    }
+  }, [captureInfo?.topic]);
+
   // Spacebar shortcut handling
   useEffect(() => {
     if (!active) return;
@@ -182,8 +199,11 @@ export function ImageCapturePage({
   }, [active, triggerCapture]);
 
   const rawTopic = captureInfo?.topic || "/camera/color/image_raw";
+  const captureTopics = Array.from(
+    new Set([rawTopic, ...(captureInfo?.availableTopics ?? [])]),
+  );
   const canCapture =
-    !isSaving && gwConnected && Boolean(captureInfo?.hasFrame);
+    !isSaving && !isSelectingTopic && gwConnected && Boolean(captureInfo?.hasFrame);
 
   return (
     <div className="capture-page">
@@ -198,6 +218,21 @@ export function ImageCapturePage({
           <Camera />
           <span>{isSaving ? t("captureSaving") : t("captureSavePng")}</span>
         </button>
+
+        <label className="capture-topic-select">
+          <strong>{t("captureSource")}:</strong>
+          <select
+            value={rawTopic}
+            disabled={!gwConnected || isSelectingTopic}
+            onChange={(event) => void selectCaptureTopic(event.target.value)}
+          >
+            {captureTopics.map((topic) => (
+              <option key={topic} value={topic}>
+                {topic}
+              </option>
+            ))}
+          </select>
+        </label>
 
         <div className="capture-meta-group">
           <span className="capture-stat-item">

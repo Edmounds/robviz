@@ -206,7 +206,7 @@ describe("FoxgloveConnection", () => {
         .filter((data): data is string => typeof data === "string")
         .map((data) => JSON.parse(data) as { op?: string; parameterNames?: string[] })
         .findLast((message) => message.op === "getParameters");
-      expect(heartbeat?.parameterNames).toEqual(["/__robviz_heartbeat__:probe"]);
+      expect(heartbeat?.parameterNames).toEqual(["/foxglove_bridge"]);
       ws.message(JSON.stringify({ op: "parameterValues", parameters: [] }));
     }
 

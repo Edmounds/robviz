@@ -5,6 +5,7 @@
 
 export interface CaptureInfo {
   topic: string;
+  availableTopics: string[];
   outputDir: string;
   totalCount: number;
   lastFileName: string | null;
@@ -58,6 +59,10 @@ export class ImageCaptureClient {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private isDisposed = false;
   private requestCounter = 0;
+  private pendingTopicRequests = new Map<
+    string,
+    { resolve: () => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >();
 
   constructor(wsUrl: string, callbacks: ImageCaptureCallbacks = {}) {
     this.wsUrl = wsUrl;
@@ -101,6 +106,11 @@ export class ImageCaptureClient {
         if (mtype === "captureInfo") {
           const info: CaptureInfo = {
             topic: String(data.topic ?? ""),
+            availableTopics: Array.isArray(data.availableTopics)
+              ? data.availableTopics.filter(
+                  (topic: unknown): topic is string => typeof topic === "string",
+                )
+              : [],
             outputDir: String(data.outputDir ?? ""),
             totalCount: Number(data.totalCount ?? 0),
             lastFileName: data.lastFileName ? String(data.lastFileName) : null,
@@ -110,6 +120,19 @@ export class ImageCaptureClient {
             height: Number(data.height ?? 0),
           };
           this.callbacks.onInfo?.(info);
+        } else if (mtype === "captureTopicResult") {
+          const reqId = String(data.requestId ?? "");
+          const pending = this.pendingTopicRequests.get(reqId);
+          if (!pending) return;
+          clearTimeout(pending.timer);
+          this.pendingTopicRequests.delete(reqId);
+          if (data.success === true) {
+            pending.resolve();
+          } else {
+            pending.reject(
+              new Error(String(data.error ?? "Capture topic rejected")),
+            );
+          }
         } else if (mtype === "captureResult") {
           const reqId = String(data.requestId ?? "");
           const pending = this.pendingRequests.get(reqId);
@@ -161,6 +184,34 @@ export class ImageCaptureClient {
     this.ws.send(JSON.stringify({ type: "getCaptureInfo", requestId: reqId }));
   }
 
+  public setCaptureTopic(topic: string): Promise<void> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error("Video gateway not connected"));
+    }
+
+    const reqId = `topic_${Date.now()}_${++this.requestCounter}`;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingTopicRequests.delete(reqId);
+        reject(new Error("Capture topic request timed out"));
+      }, 5000);
+      this.pendingTopicRequests.set(reqId, { resolve, reject, timer });
+      try {
+        this.ws!.send(
+          JSON.stringify({
+            type: "setCaptureTopic",
+            requestId: reqId,
+            topic,
+          }),
+        );
+      } catch (err) {
+        clearTimeout(timer);
+        this.pendingTopicRequests.delete(reqId);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }
+
   public captureFrame(): Promise<CaptureResult> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error("Video gateway not connected"));
@@ -206,6 +257,13 @@ export class ImageCaptureClient {
       }
     }
     this.pendingRequests.clear();
+    for (const [, pending] of this.pendingTopicRequests) {
+      clearTimeout(pending.timer);
+      pending.reject(
+        new Error("Connection closed before capture topic response"),
+      );
+    }
+    this.pendingTopicRequests.clear();
     this.ws = null;
   }
 

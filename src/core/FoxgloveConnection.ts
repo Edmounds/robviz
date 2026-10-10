@@ -73,7 +73,7 @@ const BACKOFF_JITTER = 0.3;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 3_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 10_000;
 const STABLE_CONNECTION_MS = 15_000;
-const HEARTBEAT_PARAMETER = "/__robviz_heartbeat__:probe";
+const HEARTBEAT_NODE = "/foxglove_bridge";
 
 interface HandlerRegistration {
   handler: MessageHandler;
@@ -551,7 +551,7 @@ export class FoxgloveConnection {
       this.#heartbeatSentAt = now;
       try {
         this.#client?.getParameters(
-          [HEARTBEAT_PARAMETER],
+          [HEARTBEAT_NODE],
           `robviz-heartbeat-${++this.#heartbeatSequence}`,
         );
       } catch (err) {
