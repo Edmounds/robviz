@@ -48,7 +48,7 @@ export function Arm2D({ config, measured, pose, valid, target, onChange, step, e
       {Array.from({ length: Math.floor(reach / 0.1) + 1 }, (_, i) => <g key={i}>
         <line x1={origin.x + i * 0.1 * scale} y1={15} x2={origin.x + i * 0.1 * scale} y2={355}
           stroke="var(--border-soft)" />
-        <text x={origin.x + i * 0.1 * scale} y={375}>{(i * 0.1).toFixed(1)}</text>
+        {i % 2 === 0 && <text x={origin.x + i * 0.1 * scale} y={375}>{(i * 0.1).toFixed(1)}</text>}
       </g>)}
       <text x={600} y={375}>r / m</text><text x={10} y={20}>z / m</text>
       {chain(measured, COLORS.measured, true)}{chain(pose, COLORS.target)}
@@ -97,14 +97,18 @@ class ArmDisplay implements Display {
   }
   setPoses(measured: ArmPose | null, target: ArmPose | null, playback: ArmPose | null, path: ArmPreview | null): void {
     this.dispose();
-    const line = (points: number[][], color: string) => {
+    const line = (points: number[][], color: string, dashed = false) => {
       const geometry = new THREE.BufferGeometry().setFromPoints(points.map((point) => new THREE.Vector3(...point)));
-      this.root.add(new THREE.Line(geometry, new THREE.LineBasicMaterial({ color })));
+      const material = dashed ? new THREE.LineDashedMaterial({ color, dashSize: 0.025, gapSize: 0.015 })
+        : new THREE.LineBasicMaterial({ color });
+      const curve = new THREE.Line(geometry, material);
+      if (dashed) curve.computeLineDistances();
+      this.root.add(curve);
     };
-    for (const [pose, color] of [[measured, COLORS.measured], [target, COLORS.target],
-      [playback, COLORS.playback]] as const) {
+    for (const [pose, color, dashed] of [[measured, COLORS.measured, true], [target, COLORS.target, false],
+      [playback, COLORS.playback, false]] as const) {
       if (!pose) continue;
-      line(pose.nodes, color);
+      line(pose.nodes, color, dashed);
       for (const point of pose.nodes) {
         const joint = new THREE.Mesh(new THREE.SphereGeometry(0.008, 8, 6), new THREE.MeshBasicMaterial({ color }));
         joint.position.set(...point); this.root.add(joint);
@@ -129,7 +133,7 @@ export function Arm3D({ measured, target, playback, path, active, fontScale, en 
       const renderer = new ArmDisplay();
       manager.fixedFrame = "arm_base_link";
       manager.setGridVisible(false);
-      manager.setCameraState({ position: [0.9, -1.1, 0.9], target: [0.15, 0, 0.25] });
+      manager.setCameraState({ position: [0.55, -0.55, 0.55], target: [0.15, 0, 0.25] });
       manager.addDisplay("fruit-arm", renderer);
       scene.current = manager; display.current = renderer;
       return () => { manager.dispose(); scene.current = null; display.current = null; };
@@ -144,7 +148,7 @@ export function Arm3D({ measured, target, playback, path, active, fontScale, en 
   return <div className="fruit-arm-3d">
     <canvas ref={canvas} aria-label={en ? "3D arm skeleton" : "机械臂三维连杆示意"} />
     {error && <span role="alert">{en ? "3D unavailable: " : "3D 不可用："}{error}</span>}
-    <button className="fruit-arm-camera" onClick={() => scene.current?.setCameraState({ position: [0.9, -1.1, 0.9], target: [0.15, 0, 0.25] })}>
+    <button className="fruit-arm-camera" onClick={() => scene.current?.setCameraState({ position: [0.55, -0.55, 0.55], target: [0.15, 0, 0.25] })}>
       {en ? "Reset view" : "复位视角"}</button>
   </div>;
 }
