@@ -320,7 +320,7 @@ self.onmessage = (ev: MessageEvent<MainToWorker>) => {
         break;
       }
       conn
-        .callService(name, request)
+        .callService(name, request, { timeoutMs: msg.timeoutMs })
         .then((response) => post({ type: "serviceResult", id, ok: true, response }))
         .catch((err: Error) => post({ type: "serviceResult", id, ok: false, error: err.message }));
       break;

@@ -32,6 +32,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("WorkerBridge streaming lifecycle", () => {
@@ -150,18 +151,24 @@ describe("WorkerBridge streaming lifecycle", () => {
   });
 
   it("settles in-flight service calls when connection closes or reconnects", async () => {
+    vi.useFakeTimers();
     const bridge = new WorkerBridge(true);
     const worker = FakeWorker.instances[0];
 
     worker.receive({ type: "state", state: "open" });
-    const call1 = bridge.callService("/srv1", {});
+    const call1 = bridge.callService("/srv1", {}, { timeoutMs: null });
+    const closed = expect(call1).rejects.toThrow("connection closed");
+    expect(worker.sent.at(-1)).toMatchObject({ type: "callService", name: "/srv1", timeoutMs: null });
+    const timed = expect(bridge.callService("/timed", {})).rejects.toThrow("timed out after 10s");
+    await vi.advanceTimersByTimeAsync(11_000);
+    await timed;
     worker.receive({ type: "state", state: "closed" });
-    await expect(call1).rejects.toThrow("connection closed");
+    await closed;
 
     // Reconnecting to new URL creates a new generation
     bridge.connect("ws://new-host:8765");
     worker.receive({ type: "state", state: "open" });
-    const call2 = bridge.callService("/srv2", {});
+    const call2 = bridge.callService("/srv2", {}, { timeoutMs: null });
     bridge.connect("ws://another-host:8765");
     await expect(call2).rejects.toThrow("connection changed");
 

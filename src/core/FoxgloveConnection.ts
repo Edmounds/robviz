@@ -30,6 +30,11 @@ export interface SubscribeOptions {
   maxFrequency?: number;
 }
 
+export interface ServiceCallOptions {
+  /** Omit for 10s. null waits for a result or connection failure, without a timer. */
+  timeoutMs?: number | null;
+}
+
 export interface MessageMeta {
   topic: string;
   /** 入站 CDR 负载字节数（无论本地是否丢弃） */
@@ -110,7 +115,7 @@ export class FoxgloveConnection {
   #serviceCallId = 0;
   #pendingCalls = new Map<
     number,
-    { service: Service; timer: ReturnType<typeof setTimeout>; resolve: (v: unknown) => void; reject: (e: Error) => void }
+    { service: Service; timer: ReturnType<typeof setTimeout> | undefined; resolve: (v: unknown) => void; reject: (e: Error) => void }
   >();
 
   constructor(url: string, opts: FoxgloveConnectionOptions = {}) {
@@ -189,7 +194,11 @@ export class FoxgloveConnection {
   }
 
   /** 调用服务。请求/响应 schema 来自服务端 advertise，任何类型都可调。 */
-  async callService(name: string, request: unknown): Promise<unknown> {
+  async callService(name: string, request: unknown, options: ServiceCallOptions = {}): Promise<unknown> {
+    const timeout = options.timeoutMs === undefined ? 10_000 : options.timeoutMs;
+    if (timeout !== null && (!Number.isFinite(timeout) || timeout <= 0 || timeout > 2_147_483_647)) {
+      throw new Error("timeoutMs must be null or a positive timer-range number");
+    }
     const client = this.#client;
     const service = this.#services.get(name);
     if (!client || !service) throw new Error(`service ${name} not available`);
@@ -204,12 +213,12 @@ export class FoxgloveConnection {
     }
     const callId = ++this.#serviceCallId;
     return await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = timeout === null ? undefined : setTimeout(() => {
         const pending = this.#pendingCalls.get(callId);
         if (!pending) return;
         this.#pendingCalls.delete(callId);
         pending.reject(new Error(`service ${name} timeout`));
-      }, 10_000);
+      }, timeout);
       this.#pendingCalls.set(callId, {
         service,
         timer,

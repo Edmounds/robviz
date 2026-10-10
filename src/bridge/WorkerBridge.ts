@@ -9,6 +9,7 @@
 import type {
   ConnectionState,
   ServiceInfo,
+  ServiceCallOptions,
   SubscribeOptions,
   TopicInfo,
 } from "../core/FoxgloveConnection";
@@ -65,7 +66,7 @@ export class WorkerBridge {
     number,
     {
       generation: number;
-      timer: ReturnType<typeof setTimeout>;
+      timer: ReturnType<typeof setTimeout> | undefined;
       resolve: (v: unknown) => void;
       reject: (e: Error) => void;
     }
@@ -255,8 +256,12 @@ export class WorkerBridge {
     this.#post({ type: "publish", topic, schemaName, message });
   }
 
-  /** 调用服务，10s 超时 */
-  callService(name: string, request: unknown): Promise<unknown> {
+  /** Default 10s. null timeout waits without cancelling the remote operation. */
+  callService(name: string, request: unknown, options: ServiceCallOptions = {}): Promise<unknown> {
+    const timeout = options.timeoutMs === undefined ? 10_000 : options.timeoutMs;
+    if (timeout !== null && (!Number.isFinite(timeout) || timeout <= 0 || timeout > 2_147_483_647)) {
+      return Promise.reject(new Error("timeoutMs must be null or a positive timer-range number"));
+    }
     if (this.state !== "open") {
       return Promise.reject(
         new Error(`Cannot call service ${name}: connection is not open (current state: ${this.state})`),
@@ -265,13 +270,13 @@ export class WorkerBridge {
     const id = ++this.#callId;
     const generation = this.#connectionGeneration;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const timer = timeout === null ? undefined : setTimeout(() => {
         const item = this.#pendingCalls.get(id);
         if (item) {
           this.#pendingCalls.delete(id);
-          item.reject(new Error(`Service call ${name} timed out after 10s`));
+          item.reject(new Error(`Service call ${name} timed out after ${timeout / 1000}s`));
         }
-      }, 10_000);
+      }, timeout);
       this.#pendingCalls.set(id, {
         generation,
         timer,
@@ -284,7 +289,7 @@ export class WorkerBridge {
           reject(e);
         },
       });
-      this.#post({ type: "callService", id, name, request });
+      this.#post({ type: "callService", id, name, request, timeoutMs: timeout });
     });
   }
 

@@ -266,6 +266,7 @@ describe("FoxgloveConnection", () => {
   });
 
   it("clears channels and services and rejects pending service calls on close", async () => {
+    vi.useFakeTimers();
     const ws = new FakeWebSocket();
     const channelsHistory: Array<unknown[]> = [];
     const servicesHistory: Array<unknown[]> = [];
@@ -294,10 +295,19 @@ describe("FoxgloveConnection", () => {
     );
     expect(conn.services.length).toBe(1);
 
-    const callPromise = conn.callService("/test_srv", {});
+    const callPromise = conn.callService("/test_srv", {}, { timeoutMs: null });
+    const closed = expect(callPromise).rejects.toThrow("connection closed");
+    const timed = expect(conn.callService("/test_srv", {})).rejects.toThrow("service /test_srv timeout");
+    const custom = expect(conn.callService("/test_srv", {}, { timeoutMs: 25 })).rejects.toThrow("service /test_srv timeout");
+    for (const timeoutMs of [0, -1, Infinity, NaN, 2_147_483_648]) {
+      await expect(conn.callService("/test_srv", {}, { timeoutMs })).rejects.toThrow("timeoutMs");
+    }
+    await vi.advanceTimersByTimeAsync(11_000);
+    await timed;
+    await custom;
     conn.close();
 
-    await expect(callPromise).rejects.toThrow("connection closed");
+    await closed;
     expect(conn.topics).toEqual([]);
     expect(conn.services).toEqual([]);
     expect(channelsHistory.at(-1)).toEqual([]);

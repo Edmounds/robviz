@@ -10,7 +10,7 @@ export type MainToWorker =
   /** 客户端发布（schemaName 须在 PUB_SCHEMAS 内） */
   | { type: "publish"; topic: string; schemaName: string; message: unknown }
   /** 服务调用，结果以 serviceResult(id) 返回 */
-  | { type: "callService"; id: number; name: string; request: unknown }
+  | { type: "callService"; id: number; name: string; request: unknown; timeoutMs?: number | null }
   /** 主线程消费完大缓冲后归还 Worker 复用（零分配循环） */
   | { type: "recycle"; buffers: ArrayBuffer[] };
 
