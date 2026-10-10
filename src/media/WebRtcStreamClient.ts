@@ -145,12 +145,28 @@ class TopicPeer {
       if (this.ws !== ws) return;
       try {
         const msg = JSON.parse(event.data as string);
-        if (!msg || typeof msg !== "object") return;
-        if (msg.type === "offer" && msg.topic === this.topic && typeof msg.sdp === "string") {
+        if (!msg || typeof msg !== "object" || Array.isArray(msg) ||
+            typeof msg.type !== "string" || !msg.type) {
+          this.fail("Invalid video signaling message");
+          return;
+        }
+        if ((msg.type === "offer" || msg.type === "ice") &&
+            (typeof msg.topic !== "string" || !msg.topic)) {
+          this.fail("Invalid video signaling topic");
+          return;
+        }
+        if (msg.type === "offer" && msg.topic === this.topic) {
+          if (typeof msg.sdp !== "string" || !msg.sdp.trim()) {
+            this.fail("Invalid video offer SDP");
+            return;
+          }
           await this.handleOffer(msg.sdp, msg.encoder, ws);
-        } else if (msg.type === "ice" && msg.topic === this.topic &&
-                   typeof msg.candidate === "string" && Number.isInteger(msg.sdpMLineIndex) &&
-                   msg.sdpMLineIndex >= 0 && msg.sdpMLineIndex < 16) {
+        } else if (msg.type === "ice" && msg.topic === this.topic) {
+          if (typeof msg.candidate !== "string" || !Number.isInteger(msg.sdpMLineIndex) ||
+              msg.sdpMLineIndex < 0 || msg.sdpMLineIndex >= 16) {
+            this.fail("Invalid video ICE candidate");
+            return;
+          }
           await this.handleIce(msg.candidate, msg.sdpMLineIndex);
         } else if (msg.type === "meta") {
           const streamMeta = msg.topic === this.topic ? msg : msg.streams?.[this.topic];

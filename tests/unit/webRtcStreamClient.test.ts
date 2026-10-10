@@ -224,4 +224,58 @@ describe("WebRtcStreamClient", () => {
     await socket.onmessage?.({ data: JSON.stringify({ type: "error", topic, code: "unsupported_encoding", encoding: "16UC1", message: "not color" }) });
     expect(stats.mock.calls.at(-1)?.[0]).toMatchObject({ status: "error", sourceEncoding: "16UC1" });
   });
+
+  it.each([
+    null,
+    [],
+    "not an object",
+    {},
+    { type: 1 },
+    { type: "offer", sdp: "offer-sdp" },
+    { type: "ice", topic: 1, candidate: "early", sdpMLineIndex: 0 },
+    { type: "offer", topic: "/camera/invalid", sdp: 123 },
+    { type: "offer", topic: "/camera/invalid", sdp: " " },
+    { type: "ice", topic: "/camera/invalid", candidate: 123, sdpMLineIndex: 0 },
+    { type: "ice", topic: "/camera/invalid", candidate: "early" },
+    { type: "ice", topic: "/camera/invalid", candidate: "early", sdpMLineIndex: -1 },
+    { type: "ice", topic: "/camera/invalid", candidate: "early", sdpMLineIndex: 16 },
+    { type: "ice", topic: "/camera/invalid", candidate: "early", sdpMLineIndex: 0.5 },
+  ])("rejects malformed signaling without automatic recovery: %j", async (message) => {
+    vi.useFakeTimers();
+    const stats = vi.fn();
+    watch("/camera/invalid", "a", 10, vi.fn(), stats);
+    await Promise.resolve();
+    const socket = MockWebSocket.instances[0];
+    await socket.onmessage?.({ data: JSON.stringify(message) });
+    expect(stats.mock.calls.at(-1)?.[0]).toMatchObject({ status: "error" });
+    expect(stats.mock.calls.at(-1)?.[0].statusText).toContain("Invalid video");
+    expect(socket.readyState).toBe(3);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(MockPeer.instances).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("preserves other-topic isolation, global metadata, and signaling extensions", async () => {
+    const topic = "/camera/isolation";
+    const stats = vi.fn();
+    watch(topic, "a", 10, vi.fn(), stats);
+    await Promise.resolve();
+    const socket = MockWebSocket.instances[0];
+    for (const message of [
+      { type: "offer", topic: "/camera/other", sdp: 123 },
+      { type: "ice", topic: "/camera/other", candidate: 123 },
+      { type: "future-extension", topic },
+      { type: "meta", streams: { [topic]: { transport: "webrtc" } } },
+    ]) {
+      await socket.onmessage?.({ data: JSON.stringify(message) });
+    }
+    expect(socket.readyState).toBe(MockWebSocket.OPEN);
+    expect(stats.mock.calls.at(-1)?.[0]).toMatchObject({ status: "connecting", transport: "webrtc" });
+    await socket.onmessage?.({ data: JSON.stringify({ type: "ice", topic, candidate: "", sdpMLineIndex: 0 }) });
+    await offer(socket, topic);
+    expect(MockPeer.instances[0].addIceCandidate).toHaveBeenCalledWith({ candidate: "", sdpMLineIndex: 0 });
+    expect(socket.messages).toContainEqual({ type: "answer", topic, sdp: "answer-sdp" });
+  });
+
 });
