@@ -250,7 +250,7 @@ function RobotSessionApp({
   const [sceneGeneration, setSceneGeneration] = useState(0);
   const [mode, setMode] = useState<"3d" | "map" | "urdf" | "waypoints" | "capture" | "settings">(session.mode);
   const [settingsTab, setSettingsTab] = useState<"general" | "3d" | "images" | "plugins">("general");
-  const [theme, setTheme] = useState<Theme>(globalTheme);
+  const theme = globalTheme;
   const [settings, setSettings] = useState<LayoutConfig["settings"]>(
     {
       language: globalSettings.language,
@@ -512,12 +512,7 @@ function RobotSessionApp({
     document.documentElement.lang = settings.language;
     setSceneTheme(theme);
     localStorage.setItem(THEME_KEY, theme);
-    onThemeChange(theme);
-  }, [theme, settings.language, onThemeChange]);
-
-  useEffect(() => {
-    if (globalTheme !== theme) setTheme(globalTheme);
-  }, [globalTheme, theme]);
+  }, [theme, settings.language]);
 
   useEffect(() => {
     setSettings((current) => {
@@ -562,8 +557,8 @@ function RobotSessionApp({
     const root = document.documentElement;
     root.classList.add("theme-anim");
     setTimeout(() => root.classList.remove("theme-anim"), 350);
-    setTheme((prev) => (prev === "dark" ? "light" : "dark"));
-  }, []);
+    onThemeChange(theme === "dark" ? "light" : "dark");
+  }, [onThemeChange, theme]);
 
   // fixed frame 兜底：优先 map，否则第一个可用 frame
   useEffect(() => {
@@ -1522,7 +1517,7 @@ function RobotSessionApp({
             plugins={plugins}
             onTabChange={setSettingsTab}
             onSettingsChange={setSettings}
-            onThemeChange={setTheme}
+            onThemeChange={onThemeChange}
             onPluginToggle={togglePlugin}
             onResetLayout={resetWorkspaceLayout}
             bridge={bridgeRef.current!}
