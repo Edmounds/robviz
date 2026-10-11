@@ -7,6 +7,7 @@ import type { ComponentType } from "react";
 import type { Display } from "../renderers/SceneManager";
 import type {
   PluginContext,
+  PluginPageProps,
   PluginPanelProps,
   PluginSectionProps,
   RobvizPlugin,
@@ -41,12 +42,30 @@ export const plugins: RobvizPlugin[] = collectPlugins(
   import.meta.glob("./*/index.tsx", { eager: true }),
 );
 
-export interface PluginPanelDef {
-  /** 全局唯一 kind：`<插件id>:<面板kind>`，配置文件里也存这个 */
-  kind: string;
-  title: string;
-  component: ComponentType<PluginPanelProps>;
+export type PluginPanelDef =
+  | {
+      /** 全局唯一 kind：`<插件id>:<面板kind>`，配置文件里也存这个 */
+      kind: string;
+      title: string | ((ctx: PluginContext) => string);
+      component: ComponentType<PluginPanelProps>;
+      pluginId: string;
+      builtinKind?: never;
+    }
+  | {
+      kind: "3d";
+      title: string | ((ctx: PluginContext) => string);
+      component?: never;
+      pluginId: string;
+      builtinKind: "3d";
+    };
+
+export interface PluginPageDef {
+  /** 全局页面 id，如旧模式别名 "map" 或命名空间 id `${plugin.id}:${page.id}` */
+  id: string;
+  title: string | ((ctx: PluginContext) => string);
+  component: ComponentType<PluginPageProps>;
   pluginId: string;
+  legacyMode?: string;
 }
 
 export interface PluginSectionDef {
@@ -70,6 +89,7 @@ export interface ResolvedPlugins {
   sections: PluginSectionDef[];
   displays: Record<string, () => Display>;
   viewportTools: PluginViewportToolDef[];
+  pages: PluginPageDef[];
 }
 
 /** 先固定 display schema 的首个所有者，再过滤启用状态，避免运行时切换导致接管。 */
@@ -86,14 +106,39 @@ export function resolvePlugins(
   }
 
   const activePlugins = allPlugins.filter((plugin) => !disabled.has(plugin.id));
-  const panels = activePlugins.flatMap((plugin) =>
-    (plugin.panels ?? []).map((panel) => ({
-      kind: `${plugin.id}:${panel.kind}`,
-      title: panel.title,
-      component: panel.component,
-      pluginId: plugin.id,
-    })),
-  );
+  const seenPanelKinds = new Set<string>();
+  const panels: PluginPanelDef[] = [];
+  for (const plugin of activePlugins) {
+    for (const panel of plugin.panels ?? []) {
+      if (panel.builtinKind === "3d") {
+        if (seenPanelKinds.has("3d")) {
+          console.warn(`[plugins] 重复内置 3D 面板绑定（${plugin.id}），已跳过`);
+          continue;
+        }
+        seenPanelKinds.add("3d");
+        panels.push({
+          kind: "3d",
+          title: panel.title,
+          pluginId: plugin.id,
+          builtinKind: "3d",
+        });
+      } else {
+        const kind = `${plugin.id}:${panel.kind}`;
+        if (seenPanelKinds.has(kind)) {
+          console.warn(`[plugins] 重复面板 kind "${kind}"（${plugin.id}），已跳过`);
+          continue;
+        }
+        seenPanelKinds.add(kind);
+        panels.push({
+          kind,
+          title: panel.title,
+          component: panel.component,
+          pluginId: plugin.id,
+        });
+      }
+    }
+  }
+
   const sections = activePlugins.flatMap((plugin) =>
     (plugin.sections ?? []).map((section) => ({
       id: `${plugin.id}:${section.id}`,
@@ -121,7 +166,28 @@ export function resolvePlugins(
       };
     }),
   );
-  return { activePlugins, panels, sections, displays, viewportTools };
+
+  const seenPageIds = new Set<string>();
+  const pages: PluginPageDef[] = [];
+  for (const plugin of activePlugins) {
+    for (const page of plugin.pages ?? []) {
+      const pageId = page.legacyMode ?? `${plugin.id}:${page.id}`;
+      if (seenPageIds.has(pageId)) {
+        console.warn(`[plugins] 重复页面 id "${pageId}"（来自插件 ${plugin.id}），已跳过`);
+        continue;
+      }
+      seenPageIds.add(pageId);
+      pages.push({
+        id: pageId,
+        title: page.title,
+        component: page.component,
+        pluginId: plugin.id,
+        legacyMode: page.legacyMode,
+      });
+    }
+  }
+
+  return { activePlugins, panels, sections, displays, viewportTools, pages };
 }
 
 const resolved = resolvePlugins(plugins, []);
@@ -129,3 +195,4 @@ export const pluginPanels = resolved.panels;
 export const pluginSections = resolved.sections;
 export const pluginDisplays = resolved.displays;
 export const pluginViewportTools = resolved.viewportTools;
+export const pluginPages = resolved.pages;

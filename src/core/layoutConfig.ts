@@ -13,6 +13,7 @@ export const DEFAULT_APP_SETTINGS = {
   tfAxesLineWidth: 1.5,
   fontScale: 1,
   disabledPluginIds: [] as string[],
+  modeTabOrder: [] as string[],
 };
 
 export const DEFAULT_WORKSPACE_LAYOUT = {
@@ -28,6 +29,7 @@ const appSettingsSchema = z
     tfAxesLineWidth: z.number().min(1).max(6).default(DEFAULT_APP_SETTINGS.tfAxesLineWidth),
     fontScale: z.number().min(0.75).max(1.5).default(DEFAULT_APP_SETTINGS.fontScale),
     disabledPluginIds: z.array(z.string()).default([]),
+    modeTabOrder: z.array(z.string().regex(/^[a-z0-9-]+(:[a-z0-9-]+)?$/)).default([]),
   })
   .default(DEFAULT_APP_SETTINGS);
 

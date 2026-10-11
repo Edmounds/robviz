@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   APP_CONFIG_STORAGE_KEY,
+  computeOrderedTabs,
   createDefaultSession,
+  insertModeTab,
   parseAppConfig,
   renameAppSession,
   saveAppConfigToStorage,
@@ -13,8 +15,9 @@ import {
 describe("appConfig", () => {
   it("saves the serialized workspace to browser storage", () => {
     const session = createDefaultSession("robot-a", "Robot A");
+    expect(session.panels.map((panel) => panel.kind)).toEqual(["3d", "topics", "tf-tree"]);
     const config: AppConfig = {
-      version: 2,
+      version: 3,
       activeSessionId: session.id,
       theme: "dark",
       settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] },
@@ -28,10 +31,11 @@ describe("appConfig", () => {
       },
     });
 
+    expect(APP_CONFIG_STORAGE_KEY).toBe("robviz.layout.v3");
     expect(values.get(APP_CONFIG_STORAGE_KEY)).toBe(serializeAppConfig(config));
   });
 
-  it("round-trips a multi-session v2 workspace", () => {
+  it("round-trips a multi-session v3 workspace", () => {
     const first = createDefaultSession("robot-a", "Robot A");
     const second = {
       ...createDefaultSession("robot-b", "Robot B"),
@@ -44,10 +48,10 @@ describe("appConfig", () => {
       dockLayout: { grid: { root: { type: "branch" } } },
     };
     const config: AppConfig = {
-      version: 2,
+      version: 3,
       activeSessionId: second.id,
       theme: "light",
-      settings: { language: "en", fontScale: 1.25, disabledPluginIds: ["example-odom-hud"] },
+      settings: { language: "en", fontScale: 1.25, disabledPluginIds: ["example-odom-hud"], modeTabOrder: [] },
       sessions: [first, second],
     };
 
@@ -58,7 +62,7 @@ describe("appConfig", () => {
     const first = createDefaultSession("robot-a", "Robot A");
     const second = createDefaultSession("robot-b", "Robot B");
     const config: AppConfig = {
-      version: 2,
+      version: 3,
       activeSessionId: first.id,
       theme: "dark",
       settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] },
@@ -75,7 +79,7 @@ describe("appConfig", () => {
   it("retains mediaUrl and explicit Raw mode in storage/file round trips", () => {
     const session = { ...createDefaultSession("robot", "Robot"), mediaUrl: "wss://video.example/ws",
       panels: [{ id: "depth", kind: "image", state: { topic: "/camera/depth", preferRaw: true, useWebRtc: false } }] };
-    const config: AppConfig = { version: 2, activeSessionId: session.id, theme: "dark",
+    const config: AppConfig = { version: 3, activeSessionId: session.id, theme: "dark",
       settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] }, sessions: [session] };
     const storage = new Map<string, string>();
     saveAppConfigToStorage(config, { setItem: (key, value) => storage.set(key, value) });
@@ -88,7 +92,7 @@ describe("appConfig", () => {
       dockLayout: { grid: { unchanged: true }, panels: {
         "old-teleop": { id: "old-teleop", params: { panelId: "old-teleop", kind: "teleop", custom: 1 } },
       } } };
-    const config = { version: 2, activeSessionId: old.id, theme: "dark",
+    const config = { version: 3, activeSessionId: old.id, theme: "dark",
       settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: ["teleop"] }, sessions: [old] };
     const migrated = parseAppConfig(JSON.stringify(config));
     expect(migrated.sessions[0].panels).toEqual([
@@ -105,7 +109,7 @@ describe("appConfig", () => {
 
   it("does not add teleop to workspaces where it was closed", () => {
     const session = createDefaultSession("robot", "Robot");
-    const config = { version: 2, activeSessionId: session.id, theme: "dark",
+    const config = { version: 3, activeSessionId: session.id, theme: "dark",
       settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] }, sessions: [session] };
     expect(parseAppConfig(JSON.stringify(config)).sessions[0].panels).toEqual(session.panels);
   });
@@ -122,7 +126,7 @@ describe("appConfig", () => {
     expect(session.panels.some((panel) => panel.kind === "teleop")).toBe(false);
     expect(session.autoAddPluginSections).toBe(true);
     const config: AppConfig = {
-      version: 2,
+      version: 3,
       activeSessionId: session.id,
       theme: "dark",
       settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] },
@@ -134,8 +138,8 @@ describe("appConfig", () => {
     expect(parseAppConfig(serializeAppConfig(config)).sessions[0].initializedPluginSectionIds).toEqual(["teleop:teleop"]);
   });
 
-  it("migrates a v1 layout into one machine session", () => {
-    const migrated = parseAppConfig(JSON.stringify({
+  it("rejects legacy v1 configurations without migrating", () => {
+    expect(() => parseAppConfig(JSON.stringify({
       version: 1,
       url: "ws://robot:8765",
       fixedFrame: "odom",
@@ -152,45 +156,23 @@ describe("appConfig", () => {
       activeTopics: [{ topic: "/scan", schemaName: "sensor_msgs/msg/LaserScan" }],
       panels: [{ kind: "image", state: { topic: "/camera/image_raw" }, sizePercent: 40 }],
       camera: { position: [8, -8, 8], target: [0, 0, 0] },
-    }));
-
-    expect(migrated.version).toBe(2);
-    expect(migrated.theme).toBe("light");
-    expect(migrated.settings).toEqual({ language: "en", fontScale: 1, disabledPluginIds: ["example-odom-hud"] });
-    expect(migrated.sessions).toHaveLength(1);
-    expect(migrated.activeSessionId).toBe(migrated.sessions[0].id);
-    expect(migrated.sessions[0]).toMatchObject({
-      url: "ws://robot:8765",
-      fixedFrame: "odom",
-      scene: { groundVisible: false, tfAxesLineWidth: 2.5 },
-      urdfInspectorPercent: 38,
-      pcdVoxel: 0.05,
-      followFrame: "base_link",
-      autoAddPluginSections: false,
-    });
-    expect(migrated.sessions[0].panels).toContainEqual({
-      id: "legacy-panel-1",
-      kind: "image",
-      state: { topic: "/camera/image_raw" },
-    });
-    type LayoutNode = { type: "leaf"; data: { views: string[] } } | { type: "branch"; data: LayoutNode[] };
-    const migratedLayout = migrated.sessions[0].dockLayout as { grid: { root: LayoutNode } };
-    const collectViews = (node: LayoutNode): string[] => node.type === "leaf"
-      ? node.data.views
-      : node.data.flatMap(collectViews);
-    expect(collectViews(migratedLayout.grid.root).every((view) =>
-      migrated.sessions[0].panels.some((panel) => panel.id === view),
-    )).toBe(true);
-    const dockLayout = migrated.sessions[0].dockLayout as {
-      grid: { root: { data: Array<{ size: number; data?: Array<{ size: number }> }> } };
-    };
-    expect(dockLayout.grid.root.data.map((item) => item.size)).toEqual([760, 240]);
-    expect(dockLayout.grid.root.data[0].data?.map((item) => item.size)).toEqual([580, 420]);
+    }))).toThrow("version");
   });
 
-  it("rejects v2 workspaces whose active session does not exist", () => {
+  it("rejects legacy v2 configurations without migrating", () => {
+    const session = createDefaultSession("robot-a", "Robot A");
     expect(() => parseAppConfig(JSON.stringify({
       version: 2,
+      activeSessionId: session.id,
+      theme: "dark",
+      settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] },
+      sessions: [session],
+    }))).toThrow("version");
+  });
+
+  it("rejects v3 workspaces whose active session does not exist", () => {
+    expect(() => parseAppConfig(JSON.stringify({
+      version: 3,
       activeSessionId: "missing",
       theme: "dark",
       settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] },
@@ -198,17 +180,17 @@ describe("appConfig", () => {
     }))).toThrow("activeSessionId");
   });
 
-  it("validates fontScale bounds in v2 workspaces", () => {
+  it("validates fontScale bounds in v3 workspaces", () => {
     const session = createDefaultSession("robot-a", "Robot A");
     expect(() => parseAppConfig(JSON.stringify({
-      version: 2,
+      version: 3,
       activeSessionId: session.id,
       theme: "dark",
       settings: { language: "zh-CN", fontScale: 0.5, disabledPluginIds: [] },
       sessions: [session],
     }))).toThrow("settings.fontScale");
     expect(() => parseAppConfig(JSON.stringify({
-      version: 2,
+      version: 3,
       activeSessionId: session.id,
       theme: "dark",
       settings: { language: "zh-CN", fontScale: 1.8, disabledPluginIds: [] },
@@ -219,7 +201,7 @@ describe("appConfig", () => {
   it("keeps an opaque dock layout for dockview to validate", () => {
     const session = createDefaultSession("robot-a", "Robot A");
     const parsed = parseAppConfig(JSON.stringify({
-      version: 2,
+      version: 3,
       activeSessionId: session.id,
       theme: "dark",
       settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] },
@@ -232,7 +214,7 @@ describe("appConfig", () => {
   it("purges deprecated services panels from parsed configurations", () => {
     const session = createDefaultSession("robot-a", "Robot A");
     const raw = {
-      version: 2,
+      version: 3,
       activeSessionId: session.id,
       theme: "dark",
       settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] },
@@ -258,5 +240,99 @@ describe("appConfig", () => {
     const dockPanels = (parsed.sessions[0].dockLayout as { panels: Record<string, unknown> }).panels;
     expect("services" in dockPanels).toBe(false);
     expect("topics" in dockPanels).toBe(true);
+  });
+
+  it("round-trips modeTabOrder and validates valid/invalid mode strings", () => {
+    const session = createDefaultSession("robot-a", "Robot A");
+    session.mode = "map";
+    session.urdfInspectorPercent = 42;
+
+    const config: AppConfig = {
+      version: 3,
+      activeSessionId: session.id,
+      theme: "dark",
+      settings: {
+        language: "zh-CN",
+        fontScale: 1,
+        disabledPluginIds: ["image-capture"],
+        modeTabOrder: ["map", "3d", "urdf", "waypoints", "custom-plugin:custom-page"],
+      },
+      sessions: [session],
+    };
+
+    const parsed = parseAppConfig(serializeAppConfig(config));
+    expect(parsed.settings.modeTabOrder).toEqual(["map", "3d", "urdf", "waypoints", "custom-plugin:custom-page"]);
+    expect(parsed.sessions[0].mode).toBe("map");
+    expect(parsed.sessions[0].urdfInspectorPercent).toBe(42);
+
+    // Also accepts namespaced plugin mode
+    const customModeSession = { ...session, mode: "custom-plugin:custom-page" };
+    const customConfig = { ...config, sessions: [customModeSession] };
+    expect(parseAppConfig(serializeAppConfig(customConfig)).sessions[0].mode).toBe("custom-plugin:custom-page");
+
+    // Rejects invalid mode strings
+    expect(() =>
+      parseAppConfig(
+        JSON.stringify({
+          ...config,
+          sessions: [{ ...session, mode: "Invalid Mode With Spaces!" }],
+        }),
+      ),
+    ).toThrow("mode");
+
+    // Rejects invalid modeTabOrder strings
+    expect(() =>
+      parseAppConfig(
+        JSON.stringify({
+          ...config,
+          settings: { ...config.settings, modeTabOrder: ["../../etc/passwd"] },
+        }),
+      ),
+    ).toThrow("settings.modeTabOrder");
+  });
+
+  it("insertModeTab precisely inserts before or after target tab", () => {
+    const all = ["3d", "map", "urdf", "waypoints", "capture"];
+    const base: string[] = [];
+
+    // Drag "3d" to "map", edge: "after" -> inserts between "map" and "urdf"
+    expect(insertModeTab(base, all, "3d", "map", "after")).toEqual([
+      "map", "3d", "urdf", "waypoints", "capture",
+    ]);
+
+    // Drag "capture" to "map", edge: "before" -> inserts between "3d" and "map"
+    expect(insertModeTab(base, all, "capture", "map", "before")).toEqual([
+      "3d", "capture", "map", "urdf", "waypoints",
+    ]);
+
+    // Drag "3d" to "capture", edge: "after" -> inserts at end
+    expect(insertModeTab(base, all, "3d", "capture", "after")).toEqual([
+      "map", "urdf", "waypoints", "capture", "3d",
+    ]);
+
+    // Drag "capture" to "3d", edge: "before" -> inserts at beginning
+    expect(insertModeTab(base, all, "capture", "3d", "before")).toEqual([
+      "capture", "3d", "map", "urdf", "waypoints",
+    ]);
+
+    // Dropping on self is a no-op
+    expect(insertModeTab(base, all, "map", "map", "before")).toEqual(base);
+
+    // Retains hidden / unknown tabs in saved order
+    const savedWithHidden = ["hidden-plugin:page", "3d", "map", "urdf"];
+    const result = insertModeTab(savedWithHidden, all, "urdf", "3d", "before");
+    expect(result).toEqual(["hidden-plugin:page", "urdf", "3d", "map", "waypoints", "capture"]);
+  });
+
+  it("computeOrderedTabs aligns enabled tabs with saved order and appends new tabs", () => {
+    const tabs = [
+      { id: "3d", label: "主页" },
+      { id: "map", label: "地图" },
+      { id: "urdf", label: "URDF" },
+      { id: "waypoints", label: "航点" },
+    ];
+    const saved = ["map", "3d", "missing", "urdf"];
+    const ordered = computeOrderedTabs(tabs, saved);
+    expect(ordered.map((t) => t.id)).toEqual(["map", "3d", "urdf", "waypoints"]);
   });
 });

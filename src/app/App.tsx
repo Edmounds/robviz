@@ -3,11 +3,12 @@ import { createPortal } from "react-dom";
 import { Grid3X3, Moon, PanelTopOpen, Pencil, Plus, Settings, SquareTerminal, Sun, X } from "lucide-react";
 import * as THREE from "three";
 
-import { startAgentChannel } from "../agent/uiChannel";
 import { WorkerBridge } from "../bridge/WorkerBridge";
 import {
   APP_CONFIG_STORAGE_KEY,
+  computeOrderedTabs,
   createDefaultSession,
+  insertModeTab,
   parseAppConfig,
   renameAppSession,
   saveAppConfigToStorage,
@@ -15,7 +16,7 @@ import {
   type AppConfig,
   type RobotSessionConfig,
 } from "../core/appConfig";
-import type { ConnectionState, ServiceInfo, TopicInfo } from "../core/FoxgloveConnection";
+import type { ConnectionState, TopicInfo } from "../core/FoxgloveConnection";
 import type { LayoutConfig, PointCloudSettings } from "../core/layoutConfig";
 import { connectionTargetLabel } from "../core/connectionTarget";
 import {
@@ -25,11 +26,15 @@ import {
 import { TfBuffer } from "../core/TfBuffer";
 import type { TFMessage } from "../core/types";
 import { toSec } from "../core/types";
-import { canAddPanel, createPanelId, type WorkspacePanel } from "../core/workspacePanels";
+import {
+  canAddPanel,
+  createPanelId,
+  shouldRetainWorkspacePanelOnClose,
+  type WorkspacePanel,
+} from "../core/workspacePanels";
 import { ImagePanel } from "../panels/ImagePanel";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { PointCloudSettingsPanel } from "../panels/PointCloudSettingsPanel";
-import { EchoTopicSection } from "../panels/EchoTopicSection";
 import { TfTreeSection } from "../panels/TfTreeSection";
 import { EditableCloudRenderer } from "../renderers/EditableCloudRenderer";
 import { GridRenderer } from "../renderers/GridRenderer";
@@ -55,17 +60,7 @@ const DEFAULT_URL = "ws://localhost:8765";
 const PCD_KEY = "__pcd__";
 const THEME_KEY = "robviz.theme";
 const TERMINAL_HEIGHT_KEY = "robviz.terminal.height";
-const UrdfEditorPage = lazy(() => import("../panels/UrdfEditorPage"));
-const WaypointsEditorPage = lazy(() =>
-  import("../panels/WaypointsEditorPage").then((module) => ({ default: module.WaypointsEditorPage })),
-);
-const ImageCapturePage = lazy(() =>
-  import("../panels/ImageCapturePage").then((module) => ({ default: module.ImageCapturePage })),
-);
 const TerminalPanel = lazy(() => import("../panels/TerminalPanel"));
-const MapEditorPanel = lazy(() =>
-  import("../panels/MapEditorPanel").then((module) => ({ default: module.MapEditorPanel })),
-);
 const PlotPanel = lazy(() =>
   import("../panels/PlotPanel").then((module) => ({ default: module.PlotPanel })),
 );
@@ -138,10 +133,10 @@ function createSessionId(): string {
 function createDefaultAppConfig(): AppConfig {
   const session = createDefaultSession(createSessionId(), "机器 1");
   return {
-    version: 2,
+    version: 3,
     activeSessionId: session.id,
     theme: "dark",
-    settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] },
+    settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [], modeTabOrder: [] },
     sessions: [session],
   };
 }
@@ -161,14 +156,13 @@ function readStoredAppConfig(): AppConfig {
     try {
       const params = new URLSearchParams(window.location.search);
       const urlMode = params.get("mode");
-      if (
-        urlMode === "waypoints" ||
-        urlMode === "3d" ||
-        urlMode === "map" ||
-        urlMode === "urdf"
-      ) {
-        for (const session of config.sessions) {
-          session.mode = urlMode;
+      if (urlMode) {
+        const resolved = resolvePlugins(plugins, config.settings.disabledPluginIds);
+        const availableModes = new Set(["3d", ...resolved.pages.map((p) => p.id)]);
+        if (availableModes.has(urlMode)) {
+          for (const session of config.sessions) {
+            session.mode = urlMode;
+          }
         }
       }
       const urlFontScale = parseFloat(params.get("fontScale") ?? "");
@@ -208,6 +202,16 @@ interface RobotSessionAppProps {
   onSaveAll: (current: RobotSessionConfig) => void;
   onSaveAllAsFile: (current: RobotSessionConfig) => void;
   onLoadAll: (file: File) => void;
+  onTogglePlugin: (
+    pluginId: string,
+    nextDisabled: string[],
+    activeSessionSnapshot: RobotSessionConfig,
+  ) => void;
+}
+
+interface ModeTabItem {
+  id: string;
+  label: string;
 }
 
 function RobotSessionApp({
@@ -225,6 +229,7 @@ function RobotSessionApp({
   onSaveAll,
   onSaveAllAsFile,
   onLoadAll,
+  onTogglePlugin,
 }: RobotSessionAppProps) {
   const bridgeRef = useRef<WorkerBridge>(null);
   const tfRef = useRef<TfBuffer>(null);
@@ -233,6 +238,7 @@ function RobotSessionApp({
   /** 3D 显示器的订阅（与 TF 订阅分开管理，由 reconcile 效应维护） */
   const displaySubsRef = useRef(new Map<string, () => void>());
   const pcdRendererRef = useRef<EditableCloudRenderer>(null);
+  const activePcdWorkerRef = useRef<Worker | null>(null);
   const pcdFileRef = useRef<HTMLInputElement>(null);
   const configFileRef = useRef<HTMLInputElement>(null);
   const pluginCtxRef = useRef<PluginContext | null>(null);
@@ -248,7 +254,11 @@ function RobotSessionApp({
   const [ready, setReady] = useState(false);
   const [sceneCanvas, setSceneCanvas] = useState<HTMLCanvasElement | null>(null);
   const [sceneGeneration, setSceneGeneration] = useState(0);
-  const [mode, setMode] = useState<"3d" | "map" | "urdf" | "waypoints" | "capture" | "settings">(session.mode);
+  const [mode, setMode] = useState<string>(session.mode);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<{ id: string; edge: "before" | "after" } | null>(null);
+  const draggedIdRef = useRef<string | null>(null);
+  const hasDraggedRef = useRef(false);
   const [settingsTab, setSettingsTab] = useState<"general" | "3d" | "images" | "plugins">("general");
   const theme = globalTheme;
   const [settings, setSettings] = useState<LayoutConfig["settings"]>(
@@ -256,6 +266,7 @@ function RobotSessionApp({
       language: globalSettings.language,
       fontScale: globalSettings.fontScale ?? 1,
       disabledPluginIds: globalSettings.disabledPluginIds,
+      modeTabOrder: globalSettings.modeTabOrder ?? [],
       groundVisible: session.scene.groundVisible,
       tfAxesLineWidth: session.scene.tfAxesLineWidth,
     },
@@ -273,7 +284,6 @@ function RobotSessionApp({
   const [activeBridgeUrl, setActiveBridgeUrl] = useState(session.url);
   const [connState, setConnState] = useState<ConnectionState>("closed");
   const [topics, setTopics] = useState<TopicInfo[]>([]);
-  const [services, setServices] = useState<ServiceInfo[]>([]);
   const [frames, setFrames] = useState<string[]>([]);
   const [tfTree, setTfTree] = useState<Map<string, string>>(new Map());
   const [fixedFrame, setFixedFrame] = useState(session.fixedFrame);
@@ -362,7 +372,6 @@ function RobotSessionApp({
     bridge.onStateChange = setConnState;
     bridge.onError = setLastError;
     bridge.onStats = setStreamStats;
-    bridge.onServicesChange = setServices;
     // raw 消息（scan/path 等）即时更新了显示器，标脏触发渲染
     bridge.onImmediateData = () => sceneRef.current?.invalidate();
 
@@ -421,21 +430,6 @@ function RobotSessionApp({
     };
   }, []);
 
-  useEffect(() => {
-    if (!active || !ready || connState !== "open") return;
-    if (!services.some((service) => service.name === "/fruit_robviz_bridge/reload_image_settings")) return;
-    const bridge = bridgeRef.current;
-    if (!bridge) return;
-    let cancelled = false;
-    void bridge.callService("/fruit_robviz_bridge/reload_image_settings", {})
-      .catch((error: unknown) => {
-        if (!cancelled) {
-          setLastError(`图像配置重载失败: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      });
-    return () => { cancelled = true; };
-  }, [active, connState, ready, services]);
-
   const attachSceneCanvas = useCallback((canvas: HTMLCanvasElement | null) => {
     setSceneCanvas(canvas);
   }, []);
@@ -468,12 +462,21 @@ function RobotSessionApp({
       displaySubscriptions.clear();
       scene.dispose();
       if (sceneRef.current === scene) sceneRef.current = null;
+      activePcdWorkerRef.current?.terminate();
+      activePcdWorkerRef.current = null;
       pcdRendererRef.current = null;
       setPcd(undefined);
       setPcdBusy(undefined);
       setPcdTool("orbit");
     };
   }, [ready, sceneCanvas]);
+
+  useEffect(() => {
+    return () => {
+      activePcdWorkerRef.current?.terminate();
+      activePcdWorkerRef.current = null;
+    };
+  }, []);
 
   // 大帧消费属于机器会话而不是 3D 面板：当前机器每帧只取每话题最新值，
   // 非活动机器不消费，切回时立即刷新图像、曲线和 3D。
@@ -487,20 +490,6 @@ function RobotSessionApp({
     frame = requestAnimationFrame(flush);
     return () => cancelAnimationFrame(frame);
   }, [active, ready]);
-
-  // CLI 只连接当前机器；没有 3D 面板时由当前会话明确返回错误。
-  useEffect(() => {
-    if (!active || !ready) return;
-    return startAgentChannel({
-      screenshot: () => {
-        const scene = sceneRef.current;
-        if (!panels.some((panel) => panel.kind === "3d") || !scene) {
-          throw new Error("当前工作区没有 3D 面板");
-        }
-        return scene.screenshot();
-      },
-    });
-  }, [active, panels, ready]);
 
   useEffect(() => {
     sceneRef.current?.setFontScale(effectiveFontScale);
@@ -519,13 +508,15 @@ function RobotSessionApp({
       if (
         current.language === globalSettings.language &&
         current.fontScale === globalSettings.fontScale &&
-        current.disabledPluginIds.join("\0") === globalSettings.disabledPluginIds.join("\0")
+        current.disabledPluginIds.join("\0") === globalSettings.disabledPluginIds.join("\0") &&
+        (current.modeTabOrder ?? []).join("\0") === (globalSettings.modeTabOrder ?? []).join("\0")
       ) return current;
       return {
         ...current,
         language: globalSettings.language,
         fontScale: globalSettings.fontScale ?? 1,
         disabledPluginIds: globalSettings.disabledPluginIds,
+        modeTabOrder: globalSettings.modeTabOrder ?? [],
       };
     });
   }, [globalSettings]);
@@ -536,8 +527,9 @@ function RobotSessionApp({
       language: settings.language,
       fontScale: settings.fontScale,
       disabledPluginIds: settings.disabledPluginIds,
+      modeTabOrder: settings.modeTabOrder ?? [],
     });
-  }, [active, settings.language, settings.fontScale, settings.disabledPluginIds, onGlobalSettingsChange]);
+  }, [active, settings.language, settings.fontScale, settings.disabledPluginIds, settings.modeTabOrder, onGlobalSettingsChange]);
 
   useEffect(() => {
     onConnectionStateChange(session.id, connState);
@@ -759,9 +751,12 @@ function RobotSessionApp({
   // ---- PCD 加载 / 清理 ----
 
   const closePcd = useCallback(() => {
+    activePcdWorkerRef.current?.terminate();
+    activePcdWorkerRef.current = null;
     sceneRef.current?.removeDisplay(PCD_KEY);
     pcdRendererRef.current = null;
     setPcd(undefined);
+    setPcdBusy(undefined);
     setPcdTool("orbit");
   }, []);
 
@@ -769,22 +764,63 @@ function RobotSessionApp({
     async (file: File) => {
       closePcd();
       setLastError(undefined);
-    setPcdBusy(t("readingFile"));
-      const buffer = await file.arrayBuffer();
+      if (!sceneRef.current) {
+        setLastError(
+          t("pcdParseFailed", {
+            message: settings.language === "en" ? "3D view is unavailable" : "3D 视图不可用",
+          }),
+        );
+        return;
+      }
+      setPcdBusy(t("readingFile"));
+      let buffer: ArrayBuffer;
+      try {
+        buffer = await file.arrayBuffer();
+      } catch (error) {
+        setPcdBusy(undefined);
+        setLastError(
+          t("pcdParseFailed", {
+            message: error instanceof Error ? error.message : String(error),
+          }),
+        );
+        return;
+      }
+      if (!sceneRef.current) {
+        setPcdBusy(undefined);
+        setLastError(
+          t("pcdParseFailed", {
+            message: settings.language === "en" ? "3D view is unavailable" : "3D 视图不可用",
+          }),
+        );
+        return;
+      }
       const worker = new Worker(new URL("../worker/pcd.worker.ts", import.meta.url), {
         type: "module",
       });
+      activePcdWorkerRef.current = worker;
       worker.onmessage = (ev: MessageEvent<PcdWorkerResponse>) => {
         const msg = ev.data;
         if (msg.type === "progress") {
+          if (!sceneRef.current) {
+            worker.terminate();
+            if (activePcdWorkerRef.current === worker) activePcdWorkerRef.current = null;
+            setPcdBusy(undefined);
+            return;
+          }
           setPcdBusy(t(msg.stage));
         } else if (msg.type === "error") {
           worker.terminate();
+          if (activePcdWorkerRef.current === worker) activePcdWorkerRef.current = null;
           setPcdBusy(undefined);
           setLastError(t("pcdParseFailed", { message: msg.message }));
         } else {
           worker.terminate();
-          const scene = sceneRef.current!;
+          if (activePcdWorkerRef.current === worker) activePcdWorkerRef.current = null;
+          const scene = sceneRef.current;
+          if (!scene) {
+            setPcdBusy(undefined);
+            return;
+          }
           const renderer = new EditableCloudRenderer(
             { count: msg.count, positions: msg.positions, intensity: msg.intensity },
             scene.fixedFrame,
@@ -803,9 +839,15 @@ function RobotSessionApp({
           setPcdBusy(undefined);
         }
       };
+      worker.onerror = (ev) => {
+        worker.terminate();
+        if (activePcdWorkerRef.current === worker) activePcdWorkerRef.current = null;
+        setPcdBusy(undefined);
+        setLastError(t("pcdParseFailed", { message: ev.message || "Worker error" }));
+      };
       worker.postMessage({ type: "parse", buffer, voxel: pcdVoxel }, [buffer]);
     },
-    [closePcd, pcdVoxel, t],
+    [closePcd, pcdVoxel, settings.language, t],
   );
 
   const refreshPcdInfo = useCallback(() => {
@@ -974,14 +1016,28 @@ function RobotSessionApp({
     setPanels((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
+  const allPluginPanelOwners = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const plugin of plugins) {
+      for (const panel of plugin.panels ?? []) {
+        if (panel.builtinKind === "3d") {
+          map.set("3d", plugin.id);
+        } else {
+          map.set(`${plugin.id}:${panel.kind}`, plugin.id);
+        }
+      }
+    }
+    return map;
+  }, []);
+
   const handleWorkspacePanelClosed = useCallback((id: string) => {
     const panel = panels.find((candidate) => candidate.id === id);
-    if (panel?.kind.startsWith("plugin-section:")) {
-      const sectionPluginId = panel.kind.slice("plugin-section:".length).split(":")[0];
-      if (settings.disabledPluginIds.includes(sectionPluginId)) return;
+    if (!panel) return;
+    if (shouldRetainWorkspacePanelOnClose(panel.kind, settings.disabledPluginIds, allPluginPanelOwners)) {
+      return;
     }
     removePanel(id);
-  }, [panels, removePanel, settings.disabledPluginIds]);
+  }, [allPluginPanelOwners, panels, removePanel, settings.disabledPluginIds]);
 
   /** 面板内部状态快照上报（进配置文件） */
   const updatePanelState = useCallback((id: string, state: unknown) => {
@@ -993,13 +1049,19 @@ function RobotSessionApp({
   }, []);
 
   const togglePlugin = useCallback((pluginId: string, enabled: boolean) => {
-    setSettings((current) => ({
-      ...current,
-      disabledPluginIds: enabled
-        ? current.disabledPluginIds.filter((id) => id !== pluginId)
-        : [...new Set([...current.disabledPluginIds, pluginId])],
-    }));
-  }, []);
+    const confirmMsg =
+      settings.language === "en"
+        ? "Please save relevant content first. Toggling plugins will reload the page."
+        : "请先保存相关内容，切换插件将刷新页面。";
+    if (!window.confirm(confirmMsg)) return;
+
+    const nextDisabled = enabled
+      ? settings.disabledPluginIds.filter((id) => id !== pluginId)
+      : [...new Set([...settings.disabledPluginIds, pluginId])];
+
+    const currentActiveSession = buildSessionConfig();
+    onTogglePlugin(pluginId, nextDisabled, currentActiveSession);
+  }, [buildSessionConfig, onTogglePlugin, settings.disabledPluginIds, settings.language]);
 
   const resetWorkspaceLayout = useCallback(() => {
     setWorkspace({ ...DEFAULT_WORKSPACE_LAYOUT });
@@ -1009,10 +1071,16 @@ function RobotSessionApp({
   const dataTopics = topics
     .filter((t) => !TF_TOPICS.has(t.topic))
     .sort((a, b) => a.topic.localeCompare(b.topic));
-  const hasThreeDPanel = panels.some((panel) => panel.kind === "3d");
 
   const allPluginPanelKinds = useMemo(
-    () => new Set(plugins.flatMap((plugin) => (plugin.panels ?? []).map((panel) => `${plugin.id}:${panel.kind}`))),
+    () =>
+      new Set(
+        plugins.flatMap((plugin) =>
+          (plugin.panels ?? []).map((panel) =>
+            panel.builtinKind === "3d" ? "3d" : `${plugin.id}:${panel.kind}`,
+          ),
+        ),
+      ),
     [],
   );
   const activePluginPanelKinds = useMemo(
@@ -1020,11 +1088,22 @@ function RobotSessionApp({
     [resolvedPlugins.panels],
   );
   const visiblePanels = panels.filter((panel) => {
+    if (panel.kind === "3d") {
+      return activePluginPanelKinds.has("3d");
+    }
     if (panel.kind.startsWith("plugin-section:")) {
       return resolvedPlugins.sections.some((section) => `plugin-section:${section.id}` === panel.kind);
     }
-    return panel.kind === "image" || panel.kind === "plot" || !allPluginPanelKinds.has(panel.kind) || activePluginPanelKinds.has(panel.kind);
+    return (
+      panel.kind === "image" ||
+      panel.kind === "plot" ||
+      panel.kind === "topics" ||
+      panel.kind === "tf-tree" ||
+      !allPluginPanelKinds.has(panel.kind) ||
+      activePluginPanelKinds.has(panel.kind)
+    );
   });
+  const hasThreeDPanel = visiblePanels.some((panel) => panel.kind === "3d");
 
   // 插件上下文（ready 后 refs 一定已就绪）
   const pluginCtx = useMemo<PluginContext | undefined>(() => {
@@ -1075,15 +1154,20 @@ function RobotSessionApp({
   const panelTitle = useCallback((kind: string) => {
     if (kind === "3d") return t("view3d");
     if (kind === "topics") return t("topics");
-    if (kind === "echo") return t("echoTopic");
     if (kind === "tf-tree") return t("tfTree");
     if (kind === "image") return t("imagePanel");
     if (kind === "plot") return t("plotPanel");
     if (kind.startsWith("plugin-section:")) {
       return resolvedPlugins.sections.find((section) => `plugin-section:${section.id}` === kind)?.title ?? kind;
     }
-    return resolvedPlugins.panels.find((panel) => panel.kind === kind)?.title ?? kind;
-  }, [resolvedPlugins.panels, resolvedPlugins.sections, t]);
+    const pluginPanel = resolvedPlugins.panels.find((panel) => panel.kind === kind);
+    if (pluginPanel) {
+      return typeof pluginPanel.title === "function"
+        ? (pluginCtx ? pluginPanel.title(pluginCtx) : pluginPanel.kind)
+        : pluginPanel.title;
+    }
+    return kind;
+  }, [pluginCtx, resolvedPlugins.panels, resolvedPlugins.sections, t]);
 
   const renderWorkspacePanel = useCallback((panel: WorkspacePanel) => {
     const storedPanel = panels.find((candidate) => candidate.id === panel.id) ?? panel;
@@ -1217,9 +1301,6 @@ function RobotSessionApp({
       );
     }
 
-    if (panel.kind === "echo" && ready) {
-      return <div className="workspace-panel utility-panel"><EchoTopicSection bridge={bridgeRef.current!} topics={topics} /></div>;
-    }
     if (panel.kind === "tf-tree") {
       return (
         <div className="workspace-panel utility-panel">
@@ -1269,18 +1350,123 @@ function RobotSessionApp({
       return section ? <div className="workspace-panel utility-panel"><section.component ctx={pluginCtx} /></div> : null;
     }
     const pluginPanel = resolvedPlugins.panels.find((candidate) => candidate.kind === panel.kind);
-    if (pluginPanel && pluginCtx) {
+    if (pluginPanel && pluginPanel.component && pluginCtx) {
+      const title =
+        typeof pluginPanel.title === "function"
+          ? pluginPanel.title(pluginCtx)
+          : pluginPanel.title;
       return (
-        <pluginPanel.component
-          ctx={pluginCtx}
-          state={storedPanel.state}
-          onStateChange={(state) => updatePanelState(panel.id, state)}
-          onClose={() => removePanel(panel.id)}
-        />
+        <ErrorBoundary name={title}>
+          <pluginPanel.component
+            ctx={pluginCtx}
+            state={storedPanel.state}
+            onStateChange={(state: unknown) => updatePanelState(panel.id, state)}
+            onClose={() => removePanel(panel.id)}
+          />
+        </ErrorBoundary>
       );
     }
     return <div className="workspace-panel"><p className="empty-hint">{t("unknownPanel", { kind: panel.kind })}</p></div>;
-  }, [active, attachSceneCanvas, cancelNav, closePcd, connState, dataTopics, desired, displayFactories, effectiveFontScale, followFrame, frames, lastError, navPreview, navTool, onNavDown, onNavMove, onNavUp, onSelectDown, onSelectMove, onSelectUp, onViewportDoubleClick, panels, pcd, pcdBusy, pcdExport, pcdTool, pcdUndo, pluginCtx, ready, removePanel, resolvedPlugins.panels, resolvedPlugins.sections, resolvedPlugins.viewportTools, sceneStats, selectRect, services, session.mediaUrl, settings.groundVisible, streamStats, t, tfTree, theme, toggleTopic, topics, updatePanelState, updatePointCloudSettings]);
+  }, [active, attachSceneCanvas, cancelNav, closePcd, connState, dataTopics, desired, displayFactories, effectiveFontScale, followFrame, frames, lastError, navPreview, navTool, onNavDown, onNavMove, onNavUp, onSelectDown, onSelectMove, onSelectUp, onViewportDoubleClick, panels, pcd, pcdBusy, pcdExport, pcdTool, pcdUndo, pluginCtx, ready, removePanel, resolvedPlugins.panels, resolvedPlugins.sections, resolvedPlugins.viewportTools, sceneStats, selectRect, session.mediaUrl, settings.groundVisible, streamStats, t, tfTree, theme, toggleTopic, topics, updatePanelState, updatePointCloudSettings]);
+
+  const fallbackCtx = useMemo<PluginContext>(
+    () => ({
+      bridge: bridgeRef.current!,
+      topics,
+      tf: tfRef.current!,
+      fixedFrame,
+      theme,
+      locale: settings.language,
+      active,
+      connectionState: connState,
+      pluginStates,
+      onPluginStateChange: updatePluginState,
+    }),
+    [active, connState, fixedFrame, pluginStates, settings.language, theme, topics, updatePluginState],
+  );
+
+  const availablePageIds = useMemo(
+    () => new Set(resolvedPlugins.pages.map((p) => p.id)),
+    [resolvedPlugins.pages],
+  );
+
+  useEffect(() => {
+    if (mode !== "3d" && mode !== "settings" && !availablePageIds.has(mode)) {
+      setMode("3d");
+    }
+  }, [availablePageIds, mode]);
+
+  const enabledTabs = useMemo<ModeTabItem[]>(() => {
+    const list: ModeTabItem[] = [{ id: "3d", label: t("home") }];
+    for (const page of resolvedPlugins.pages) {
+      const label =
+        typeof page.title === "function"
+          ? page.title(pluginCtx ?? fallbackCtx)
+          : page.title;
+      list.push({ id: page.id, label });
+    }
+    return list;
+  }, [fallbackCtx, pluginCtx, resolvedPlugins.pages, t]);
+
+  const visibleTabs = useMemo(
+    () => computeOrderedTabs(enabledTabs, settings.modeTabOrder ?? []),
+    [enabledTabs, settings.modeTabOrder],
+  );
+
+  const allKnownTabIds = useMemo(
+    () => [
+      "3d",
+      ...plugins.flatMap((p) =>
+        (p.pages ?? []).map((page) => page.legacyMode ?? `${p.id}:${page.id}`),
+      ),
+    ],
+    [],
+  );
+
+  const handleTabInsert = useCallback(
+    (sourceId: string, targetId: string, edge: "before" | "after") => {
+      if (sourceId === targetId) return;
+      const nextOrder = insertModeTab(
+        settings.modeTabOrder ?? [],
+        allKnownTabIds,
+        sourceId,
+        targetId,
+        edge,
+      );
+      setSettings((current) => ({
+        ...current,
+        modeTabOrder: nextOrder,
+      }));
+    },
+    [allKnownTabIds, settings.modeTabOrder],
+  );
+
+  const handleTabMoveLeft = useCallback(
+    (id: string) => {
+      const idx = visibleTabs.findIndex((t) => t.id === id);
+      if (idx > 0) {
+        handleTabInsert(id, visibleTabs[idx - 1].id, "before");
+      }
+    },
+    [handleTabInsert, visibleTabs],
+  );
+
+  const handleTabMoveRight = useCallback(
+    (id: string) => {
+      const idx = visibleTabs.findIndex((t) => t.id === id);
+      if (idx >= 0 && idx < visibleTabs.length - 1) {
+        handleTabInsert(id, visibleTabs[idx + 1].id, "after");
+      }
+    },
+    [handleTabInsert, visibleTabs],
+  );
+
+  const activePluginPage = resolvedPlugins.pages.find((p) => p.id === mode);
+  const activePluginPageTitle = activePluginPage
+    ? typeof activePluginPage.title === "function"
+      ? activePluginPage.title(pluginCtx ?? fallbackCtx)
+      : activePluginPage.title
+    : "";
 
   return (
     <I18nProvider locale={settings.language}>
@@ -1353,22 +1539,97 @@ function RobotSessionApp({
     )}
     <div className="app">
       <header className="topbar">
-        <nav className="mode-tabs">
-          <button className={mode === "3d" ? "active" : ""} onClick={() => setMode("3d")}>
-            {t("view3d")}
-          </button>
-          <button className={mode === "map" ? "active" : ""} onClick={() => setMode("map")}>
-            {t("mapEditor")}
-          </button>
-          <button className={mode === "urdf" ? "active" : ""} onClick={() => setMode("urdf")}>
-            {t("urdfEditor")}
-          </button>
-          <button className={mode === "waypoints" ? "active" : ""} onClick={() => setMode("waypoints")}>
-            {t("waypointsEditor")}
-          </button>
-          <button className={mode === "capture" ? "active" : ""} onClick={() => setMode("capture")}>
-            {t("imageCollect")}
-          </button>
+        <nav
+          className="mode-tabs"
+          onDragOver={(event) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            const sourceId = draggedIdRef.current || event.dataTransfer.getData("text/plain");
+            if (sourceId && dropTarget) {
+              handleTabInsert(sourceId, dropTarget.id, dropTarget.edge);
+            }
+            setDraggingId(null);
+            setDropTarget(null);
+            draggedIdRef.current = null;
+          }}
+        >
+          {visibleTabs.map((tab) => {
+            const isDragging = draggingId === tab.id;
+            const isDropBefore = dropTarget?.id === tab.id && dropTarget.edge === "before";
+            const isDropAfter = dropTarget?.id === tab.id && dropTarget.edge === "after";
+            const dropClass = isDropBefore ? "drop-before" : isDropAfter ? "drop-after" : "";
+            const dragClass = isDragging ? "dragging" : "";
+            return (
+              <button
+                key={tab.id}
+                className={`${mode === tab.id ? "active" : ""} ${dragClass} ${dropClass}`.trim()}
+                draggable
+                onDragStart={(event) => {
+                  hasDraggedRef.current = true;
+                  setDraggingId(tab.id);
+                  draggedIdRef.current = tab.id;
+                  event.dataTransfer.setData("text/plain", tab.id);
+                  event.dataTransfer.effectAllowed = "move";
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  event.dataTransfer.dropEffect = "move";
+                  const sourceId = draggedIdRef.current || event.dataTransfer.getData("text/plain");
+                  if (!sourceId || sourceId === tab.id) {
+                    setDropTarget(null);
+                    return;
+                  }
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  const isBefore = event.clientX < rect.left + rect.width / 2;
+                  const edge = isBefore ? "before" : "after";
+                  setDropTarget((prev) => (prev?.id === tab.id && prev?.edge === edge ? prev : { id: tab.id, edge }));
+                }}
+                onDragLeave={(event) => {
+                  if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+                  setDropTarget((prev) => (prev?.id === tab.id ? null : prev));
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const sourceId = draggedIdRef.current || event.dataTransfer.getData("text/plain");
+                  if (sourceId && dropTarget) {
+                    handleTabInsert(sourceId, dropTarget.id, dropTarget.edge);
+                  }
+                  setDraggingId(null);
+                  setDropTarget(null);
+                  draggedIdRef.current = null;
+                }}
+                onDragEnd={() => {
+                  setDraggingId(null);
+                  setDropTarget(null);
+                  draggedIdRef.current = null;
+                  setTimeout(() => {
+                    hasDraggedRef.current = false;
+                  }, 50);
+                }}
+                onKeyDown={(event) => {
+                  if (event.altKey && event.key === "ArrowLeft") {
+                    event.preventDefault();
+                    handleTabMoveLeft(tab.id);
+                  } else if (event.altKey && event.key === "ArrowRight") {
+                    event.preventDefault();
+                    handleTabMoveRight(tab.id);
+                  }
+                }}
+                onClick={() => {
+                  if (hasDraggedRef.current) return;
+                  setMode(tab.id);
+                }}
+                title={`${tab.label} (Alt+← / Alt+→ 移动顺序)`}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
         </nav>
         {mode === "3d" && (
           <details className="panel-menu">
@@ -1377,9 +1638,7 @@ function RobotSessionApp({
             </summary>
             <div className="panel-menu-popover" role="menu">
               {[
-                ["3d", t("view3d")],
                 ["topics", t("topics")],
-                ["echo", t("echoTopic")],
                 ["tf-tree", t("tfTree")],
                 ["image", t("imagePanel")],
                 ["plot", t("plotPanel")],
@@ -1396,11 +1655,27 @@ function RobotSessionApp({
                   {label}
                 </button>
               ))}
-              {resolvedPlugins.panels.map((pluginPanel) => (
-                <button key={pluginPanel.kind} role="menuitem" onClick={() => addPanel(pluginPanel.kind)}>
-                  {pluginPanel.title}
-                </button>
-              ))}
+              {resolvedPlugins.panels.map((pluginPanel) => {
+                const label =
+                  typeof pluginPanel.title === "function"
+                    ? pluginCtx
+                      ? pluginPanel.title(pluginCtx)
+                      : pluginPanel.kind
+                    : pluginPanel.title;
+                return (
+                  <button
+                    key={pluginPanel.kind}
+                    role="menuitem"
+                    onClick={(event) => {
+                      addPanel(pluginPanel.kind);
+                      event.currentTarget.closest("details")?.removeAttribute("open");
+                    }}
+                    disabled={!canAddPanel(panels, pluginPanel.kind)}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
               {resolvedPlugins.sections.map((section) => {
                 const kind = `plugin-section:${section.id}`;
                 return (
@@ -1470,43 +1745,15 @@ function RobotSessionApp({
           />
         )}
 
-        {mode === "map" && ready && (
-          <ErrorBoundary name={t("mapEditor")}>
-            <Suspense fallback={null}>
-              <MapEditorPanel bridge={bridgeRef.current!} theme={theme} />
-            </Suspense>
-          </ErrorBoundary>
-        )}
-        {mode === "urdf" && ready && (
-          <ErrorBoundary name={t("urdfEditor")}>
-            <Suspense fallback={<div className="page-loading">{t("loadingUrdf")}</div>}>
-              <UrdfEditorPage bridge={bridgeRef.current!} theme={theme} inspectorPercent={workspace.urdfInspectorPercent} isMobile={isMobile} onInspectorPercentChange={(urdfInspectorPercent: number) => setWorkspace((current) => ({ ...current, urdfInspectorPercent }))} />
-            </Suspense>
-          </ErrorBoundary>
-        )}
-        {mode === "waypoints" && (
-          <ErrorBoundary name={t("waypointsEditor")}>
-            <Suspense fallback={<div className="page-loading">{t("waypointsEditor")}</div>}>
-              <WaypointsEditorPage
-                fontScale={effectiveFontScale}
-              />
-            </Suspense>
-          </ErrorBoundary>
-        )}
-        {mode === "capture" && ready && (
-          <ErrorBoundary name={t("imageCollect")}>
-            <Suspense fallback={<div className="page-loading">{t("imageCollect")}</div>}>
-              <ImageCapturePage
-                bridge={bridgeRef.current!}
-                topics={topics}
-                active={active}
-                bridgeUrl={activeBridgeUrl}
-                mediaUrl={session.mediaUrl}
-                connectionState={connState}
-                theme={theme}
-                fontScale={effectiveFontScale}
-              />
-            </Suspense>
+        {activePluginPage && (
+          <ErrorBoundary name={activePluginPageTitle}>
+            <activePluginPage.component
+              ctx={pluginCtx ?? fallbackCtx}
+              bridgeUrl={activeBridgeUrl}
+              mediaUrl={session.mediaUrl}
+              fontScale={effectiveFontScale}
+              isMobile={isMobile}
+            />
           </ErrorBoundary>
         )}
         {mode === "settings" && (
@@ -1652,11 +1899,56 @@ export default function App() {
     setConfig((current) => (
       current.settings.language === settings.language &&
       current.settings.fontScale === settings.fontScale &&
-      current.settings.disabledPluginIds.join("\0") === settings.disabledPluginIds.join("\0")
+      current.settings.disabledPluginIds.join("\0") === settings.disabledPluginIds.join("\0") &&
+      (current.settings.modeTabOrder ?? []).join("\0") === (settings.modeTabOrder ?? []).join("\0")
         ? current
         : { ...current, settings }
     ));
   }, []);
+
+  const handleTogglePlugin = useCallback(
+    (pluginId: string, nextDisabled: string[], activeSessionSnapshot: RobotSessionConfig) => {
+      const currentConfig = configRef.current;
+      const nextSessions = currentConfig.sessions.map((s) => {
+        const baseSession = s.id === activeSessionSnapshot.id ? activeSessionSnapshot : s;
+        let targetMode = baseSession.mode;
+        const disabledPlugin = plugins.find((p) => p.id === pluginId);
+        const disabledPageIds = new Set(
+          (disabledPlugin?.pages ?? []).map((page) => page.legacyMode ?? `${pluginId}:${page.id}`),
+        );
+        if (nextDisabled.includes(pluginId) && disabledPageIds.has(baseSession.mode)) {
+          targetMode = "3d";
+        }
+        return {
+          ...baseSession,
+          mode: targetMode,
+          dockLayout: undefined,
+        };
+      });
+
+      const nextConfig: AppConfig = {
+        ...currentConfig,
+        settings: {
+          ...currentConfig.settings,
+          disabledPluginIds: nextDisabled,
+        },
+        sessions: nextSessions,
+      };
+
+      try {
+        saveAppConfigToStorage(nextConfig, localStorage);
+        window.location.reload();
+      } catch (err) {
+        console.error("保存配置失败，放弃刷新:", err);
+        alert(
+          currentConfig.settings.language === "en"
+            ? `Failed to save settings: ${String(err)}`
+            : `保存配置失败：${String(err)}`,
+        );
+      }
+    },
+    [],
+  );
 
   const addSession = useCallback(() => {
     setConfig((current) => {
@@ -1822,6 +2114,7 @@ export default function App() {
                 onSaveAll={saveAll}
                 onSaveAllAsFile={saveAllAsFile}
                 onLoadAll={loadAll}
+                onTogglePlugin={handleTogglePlugin}
               />
             </div>
           );

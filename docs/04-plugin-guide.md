@@ -23,18 +23,20 @@ interface RobvizPlugin {
   id: string;    // 唯一 id，小写中划线，与目录名一致
   name: string;  // 显示名
   displays?: Array<{ schema: string; create: () => Display }>;
-  panels?: Array<{ kind: string; title: string; component: ComponentType<PluginPanelProps> }>;
+  panels?: Array<PluginPanelEntry>;
   sections?: Array<{ id: string; title: string; component: ComponentType<PluginSectionProps> }>;
   viewportTools?: PluginViewportTool[];
+  pages?: PluginPage[];
 }
 ```
 
-四类扩展点，按需实现一类或多类：
+五类扩展点，按需实现一类或多类：
 
 | 扩展点 | 出现位置 | 适合做什么 |
 | --- | --- | --- |
+| `pages` | 顶栏主导航栏；独立完整工作页面 | 专用大页面（地图编辑、URDF 编辑、航点编辑、图像采集） |
 | `displays` | 话题列表（该 schema 的话题可勾选显示） | 自定义消息类型的 3D 可视化 |
-| `panels` | 顶栏“添加面板”菜单；允许创建多个停靠实例 | 需要较大画面的内容（自定义图表、视频、表格） |
+| `panels` | 顶栏“添加面板”菜单；允许创建多个停靠实例（或内置 3D 绑定） | 需要较大画面的内容（自定义图表、视频、表格、3D 主机位） |
 | `sections` | 顶栏“添加面板”菜单；单实例停靠面板 | 小型状态显示、控制开关 |
 | `viewportTools` | 3D 视口工具条 | 需要主视口点选/拖拽交互的机器人功能 |
 
@@ -133,8 +135,12 @@ state 必须是可 JSON 序列化的普通对象。
 
 ### 运行时启停
 
-用户可在“设置 → 插件”中立即启用或停用已打包插件。停用会卸载该插件的面板和单实例区块，
-并销毁其 3D display；宿主保留对应工作区位置，重新启用后恢复。插件仍由 Vite 在构建期发现，设置页不负责安装、删除或运行时扫描文件夹。
+用户可在“设置 → 插件”中启用或停用已打包插件。开关操作会弹出确认提示（“请先保存相关内容，切换插件将刷新页面”），
+确认后同步写入浏览器存储、清除各机器主页的 Dockview 停靠排列并刷新页面重新加载；取消则不改变配置亦不刷新。
+刷新后主页根据当前启用的板块自动重新排列；用户主动关闭的面板保持关闭，未保存的内存临时草稿（地图编辑笔刷、URDF XML、航点草稿）会随刷新丢弃。
+停用插件时，其声明的停靠面板与区块仅从布局中隐藏，其面板记录与参数状态（`state`）仍保留在配置中，重新启用后自动恢复；仅在启用状态下由用户主动关闭的面板才会从配置中移除。
+停用 3D 视图（`view-3d`）时，3D 视口画布卸载，顶栏“打开 PCD”与降采样等视口控制项自动隐藏；若解析 PCD 期间视口卸载或不可用，任务会安全终止并清理状态，不访问空场景。
+顶栏拖拽排序全局保留，停用插件的入口隐藏但保留原排序位置。插件仍由 Vite 在构建期发现，设置页不负责安装、删除或运行时扫描文件夹。
 
 插件模块顶层代码会在应用加载时执行，无法通过启停撤销，因此不要在模块顶层创建订阅、定时器、
 WebSocket 或 DOM 监听。把副作用放进 React `useEffect` 或 display 生命周期，并在 cleanup / `dispose()`

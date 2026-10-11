@@ -2,19 +2,16 @@ import { z } from "zod";
 
 import {
   DEFAULT_APP_SETTINGS,
-  DEFAULT_POINT_CLOUD_SETTINGS,
-  parseLayout,
   pointCloudSettingsSchema,
 } from "./layoutConfig";
 
-export const APP_CONFIG_STORAGE_KEY = "robviz.layout";
+export const APP_CONFIG_STORAGE_KEY = "robviz.layout.v3";
 
 const vec3 = z.tuple([z.number(), z.number(), z.number()]);
 
 export const DEFAULT_CORE_PANELS = [
   { id: "3d", kind: "3d" },
   { id: "topics", kind: "topics" },
-  { id: "echo", kind: "echo" },
   { id: "tf-tree", kind: "tf-tree" },
 ] as const;
 
@@ -35,7 +32,7 @@ const robotSessionSchema = z.object({
   name: z.string().min(1),
   url: z.string(),
   mediaUrl: z.string().optional(),
-  mode: z.enum(["3d", "map", "urdf", "waypoints", "capture"]).default("3d"),
+  mode: z.string().regex(/^[a-z0-9-]+(:[a-z0-9-]+)?$/).default("3d"),
   fixedFrame: z.string(),
   scene: z.object({
     groundVisible: z.boolean().default(DEFAULT_APP_SETTINGS.groundVisible),
@@ -58,13 +55,14 @@ export type WorkspacePanelConfig = z.infer<typeof panelSchema>;
 
 const appConfigSchema = z
   .object({
-    version: z.literal(2),
+    version: z.literal(3),
     activeSessionId: z.string().min(1),
     theme: z.enum(["dark", "light"]).default("dark"),
     settings: z.object({
       language: z.enum(["zh-CN", "en"]).default("zh-CN"),
       fontScale: z.number().min(0.75).max(1.5).default(1),
       disabledPluginIds: z.array(z.string()).default([]),
+      modeTabOrder: z.array(z.string().regex(/^[a-z0-9-]+(:[a-z0-9-]+)?$/)).default([]),
     }),
     sessions: z.array(robotSessionSchema).min(1),
   })
@@ -153,130 +151,73 @@ export function createDefaultSession(id: string, name: string): RobotSessionConf
   };
 }
 
-function createMigratedDockLayout(
-  panels: WorkspacePanelConfig[],
-  workspace: { sidebarPercent: number; dockPercent: number },
-  legacyPanelSizes: Array<number | undefined>,
-): unknown {
-  const width = 1000;
-  const height = 1000;
-  const sidebarWidth = Math.round(width * workspace.sidebarPercent / 100);
-  const centerWidth = width - sidebarWidth;
-  const dockHeight = Math.round(height * workspace.dockPercent / 100);
-  const viewportHeight = height - dockHeight;
-  let groupIndex = 0;
-  const leaf = (views: string[], size: number, activeView = views.at(-1)) => ({
-    type: "leaf" as const,
-    data: { views, activeView, id: `migration-${++groupIndex}` },
-    size,
-  });
-
-  const extraPanels = panels.filter((panel) => !DEFAULT_CORE_PANELS.some((core) => core.id === panel.id));
-  let center: unknown = leaf(["3d"], centerWidth, "3d");
-  if (extraPanels.length > 0) {
-    const weights = legacyPanelSizes.map((size) => size ?? 1);
-    const totalWeight = weights.reduce((sum, size) => sum + size, 0);
-    const dockChildren = extraPanels.map((panel, index) =>
-      leaf([panel.id], Math.round(centerWidth * weights[index] / totalWeight), panel.id),
-    );
-    center = {
-      type: "branch",
-      data: [
-        leaf(["3d"], viewportHeight, "3d"),
-        dockChildren.length === 1
-          ? { ...dockChildren[0], size: dockHeight }
-          : { type: "branch", data: dockChildren, size: dockHeight },
-      ],
-      size: centerWidth,
-    };
-  }
-
-  const right = {
-    type: "branch" as const,
-    data: [
-      leaf(["topics"], Math.round(height / 2), "topics"),
-      leaf(["echo", "tf-tree"], Math.round(height / 2), "tf-tree"),
-    ],
-    size: sidebarWidth,
-  };
-  const serializedPanels = Object.fromEntries(panels.map((panel) => [panel.id, {
-    id: panel.id,
-    contentComponent: "workspace-panel",
-    params: { panelId: panel.id, kind: panel.kind },
-    title: panel.kind,
-    renderer: "always",
-    minimumHeight: 30,
-    minimumWidth: 30,
-  }]));
-
-  return {
-    grid: {
-      root: { type: "branch", data: [center, right], size: height },
-      width,
-      height,
-      orientation: "HORIZONTAL",
-    },
-    panels: serializedPanels,
-    activeGroup: "migration-1",
-  };
-}
-
-function migrateV1(raw: unknown): AppConfig {
-  const legacy = parseLayout(JSON.stringify(raw));
-  const session = createDefaultSession("session-1", "机器 1");
-  session.url = legacy.url;
-  session.fixedFrame = legacy.fixedFrame;
-  session.scene = {
-    groundVisible: legacy.settings.groundVisible,
-    tfAxesLineWidth: legacy.settings.tfAxesLineWidth,
-  };
-  session.urdfInspectorPercent = legacy.workspace.urdfInspectorPercent;
-  session.pcdVoxel = legacy.pcdVoxel;
-  session.followFrame = legacy.followFrame;
-  session.activeTopics = legacy.activeTopics.map((topic) => ({
-    topic: topic.topic,
-    schemaName: topic.schemaName,
-    ...(topic.schemaName === "sensor_msgs/msg/PointCloud2"
-      ? {
-          pointCloud:
-            topic.pointCloud ?? {
-              ...DEFAULT_POINT_CLOUD_SETTINGS,
-              accumulate: topic.accumulate ?? false,
-            },
-        }
-      : {}),
-  }));
-  session.panels = [
-    ...session.panels,
-    ...legacy.panels.map((panel, index) => ({
-      id: `legacy-panel-${index + 1}`,
-      kind: panel.kind,
-      state: panel.state,
-    })),
-  ];
-  session.dockLayout = createMigratedDockLayout(
-    session.panels,
-    legacy.workspace,
-    legacy.panels.map((panel) => panel.sizePercent),
-  );
-  session.camera = legacy.camera;
-  session.autoAddPluginSections = false;
-
-  return {
-    version: 2,
-    activeSessionId: session.id,
-    theme: legacy.theme,
-    settings: {
-      language: legacy.settings.language,
-      fontScale: legacy.settings.fontScale,
-      disabledPluginIds: legacy.settings.disabledPluginIds,
-    },
-    sessions: [session],
-  };
-}
-
 export function serializeAppConfig(config: AppConfig): string {
   return JSON.stringify(config, null, 2);
+}
+
+export function computeOrderedTabs<T extends { id: string }>(
+  enabledTabs: T[],
+  savedOrder: string[],
+): T[] {
+  const map = new Map(enabledTabs.map((t) => [t.id, t]));
+  const ordered: T[] = [];
+  const seen = new Set<string>();
+
+  for (const id of savedOrder) {
+    const item = map.get(id);
+    if (item && !seen.has(id)) {
+      ordered.push(item);
+      seen.add(id);
+    }
+  }
+
+  for (const item of enabledTabs) {
+    if (!seen.has(item.id)) {
+      ordered.push(item);
+      seen.add(item.id);
+    }
+  }
+
+  return ordered;
+}
+
+export function insertModeTab(
+  savedOrder: string[],
+  allKnownTabIds: string[],
+  sourceId: string,
+  targetId: string,
+  edge: "before" | "after",
+): string[] {
+  if (sourceId === targetId) return savedOrder;
+
+  const fullOrder: string[] = [];
+  const seen = new Set<string>();
+  for (const id of savedOrder) {
+    if (!seen.has(id)) {
+      fullOrder.push(id);
+      seen.add(id);
+    }
+  }
+  for (const id of allKnownTabIds) {
+    if (!seen.has(id)) {
+      fullOrder.push(id);
+      seen.add(id);
+    }
+  }
+
+  const fromIdx = fullOrder.indexOf(sourceId);
+  if (fromIdx === -1) return fullOrder;
+
+  const next = [...fullOrder];
+  next.splice(fromIdx, 1);
+
+  const targetIdx = next.indexOf(targetId);
+  if (targetIdx === -1) return fullOrder;
+
+  const insertIdx = edge === "before" ? targetIdx : targetIdx + 1;
+  next.splice(insertIdx, 0, sourceId);
+
+  return next;
 }
 
 export function saveAppConfigToStorage(
@@ -335,10 +276,6 @@ export function parseAppConfig(text: string): AppConfig {
     raw = JSON.parse(text);
   } catch {
     throw new Error("配置文件不是合法 JSON");
-  }
-
-  if (typeof raw === "object" && raw !== null && "version" in raw && raw.version === 1) {
-    return purgeServicesPanels(migrateTeleopPanels(migrateV1(raw)));
   }
 
   const result = appConfigSchema.safeParse(raw);

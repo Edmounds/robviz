@@ -209,7 +209,8 @@ describe("WebRtcStreamClient", () => {
     finish(new Map([["video", { type: "inbound-rtp", kind: "video", framesDecoded: 1 }]]));
     await Promise.resolve();
     await Promise.resolve();
-    expect(stats.mock.calls.at(-1)?.[0].status).toBe("error");
+    expect(stats.mock.calls.at(-1)?.[0].status).toBe("connecting");
+    expect(stats.mock.calls.at(-1)?.[0].actualFps).toBe(0);
   });
 
   it("buffers early ICE and propagates explicit unsupported source encodings", async () => {
@@ -278,4 +279,40 @@ describe("WebRtcStreamClient", () => {
     expect(socket.messages).toContainEqual({ type: "answer", topic, sdp: "answer-sdp" });
   });
 
+  it("retries gateway connection when SDP negotiation fails", async () => {
+    vi.useFakeTimers();
+    const topic = "/camera/sdp-failure";
+    watch(topic, "a", 10);
+    await Promise.resolve();
+    const socket = MockWebSocket.instances[0];
+    MockPeer.nextRemoteWait = Promise.reject(new Error("invalid remote sdp"));
+    await offer(socket, topic);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(MockWebSocket.instances[1].messages).toContainEqual({ type: "watch", topic, targetFps: 10 });
+  });
+
+  it("retries gateway connection when peer creation throws", async () => {
+    vi.useFakeTimers();
+    const topic = "/camera/peer-throw";
+    watch(topic, "a", 10);
+    await Promise.resolve();
+    const socket = MockWebSocket.instances[0];
+    const originalPeer = globalThis.RTCPeerConnection;
+    vi.stubGlobal("RTCPeerConnection", class ThrowingPeer {
+      constructor() {
+        throw new Error("peer creation error");
+      }
+    });
+    try {
+      await offer(socket, topic);
+    } finally {
+      vi.stubGlobal("RTCPeerConnection", originalPeer);
+    }
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    expect(MockWebSocket.instances[1].messages).toContainEqual({ type: "watch", topic, targetFps: 10 });
+  });
 });

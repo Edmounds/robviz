@@ -13,7 +13,10 @@ describe("i18n", () => {
     expect(translate("en", "noTopics")).toBe("No topics");
   });
 
-  it("中文界面将 Echo Topic 显示为话题输出", () => {
-    expect(translate("zh-CN", "echoTopic")).toBe("话题输出");
+  it("中文界面将 TF Tree 显示为 TF 树", () => {
+    expect(translate("zh-CN", "tfTree")).toBe("TF 树");
+    expect(translate("zh-CN", "home")).toBe("主页");
+    expect(translate("en", "home")).toBe("Home");
+    expect(translate("zh-CN", "view3d")).toBe("3D 视图");
   });
 });

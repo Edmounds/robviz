@@ -12,4 +12,10 @@ Review followed by user-approved fixes for all eight findings. Existing implemen
 - [complete] Run full regression/lint/build and report validation limits.
 
 ## Next Step
-All eight code fixes are implemented. Remaining integration acceptance requires a ROS/GStreamer host and real browser: native queue test, playback/recovery, weak-network and multi-viewer checks. See fixes.md.
+Apply the follow-up fix for selectable RGB capture topics and the invalid Foxglove heartbeat parameter name.
+
+## Follow-up Phase
+- [x] Use a valid ROS parameter name for the Foxglove heartbeat.
+- [x] Select the capture source from managed RGB image topics.
+- [x] Run frontend checks and preserve unrelated dirty changes.
+- **Status:** complete. Live ROS discovery still requires an authorized Foxglove service restart.

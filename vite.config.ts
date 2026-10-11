@@ -45,6 +45,9 @@ export function terminalGatewayPlugin(): Plugin {
         void closeGateway();
       });
     },
+    async closeBundle() {
+      await closeGateway();
+    },
   };
 }
 

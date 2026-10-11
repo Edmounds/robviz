@@ -18,8 +18,7 @@ TF 视野初始自适应、VSCode 风格圆角间距与全站字体缩放自适�
 曲线面板（多话题字段对比）、
 遥控 Teleop、服务调用、Nav 目标 / 初始位姿、TF 树、视角跟踪目标、大 PCD 加载清理、
 2D 地图编辑、布局配置保存/加载（rviz 式）、分割停靠工作区、多机器标签页、中英文与明暗主题、
-远程终端、运行时插件开关、
-CLI（agent 直接查询/操作机器人）。
+远程终端、运行时插件开关。
 
 **稳定性**：四层故障舱壁（面板错误边界 / 消息分发隔离 / 显示器隔离 / 连接 Worker 崩溃自愈），
 任何单个功能崩溃不影响其余功能与数据流，已用故障注入实测（技术方案 §8.8）。
@@ -104,9 +103,9 @@ npm run terminal
   ROS 成功消息必须是精确匹配当前版本与 HTTP 启动会话的 JSON。
   HTTP 服务重启或并发修改导致版本不匹配时，重新加载设置后再应用。
   未单独配置媒体地址且 Foxglove 地址使用 localhost 时，WebRTC 使用当前 RobViz 页面主机的 8787 端口。
-  图像页打开后，视频信令与采集连接每秒等待网关恢复，支持随后启动或重启感知。
-  离开图像页后停止连接恢复。视频协商错误仍需显式重试，截图命令不会自动重发。
-  截图请求断线或超时会显示结果未确认，请检查 NUC 保存目录。
+  WebRTC 视频流在断线或 peer/SDP 协商失败时每秒自动重试恢复连接；最后一个观看者退出后立即取消恢复。
+  明确的网关错误（含 unsupported_encoding）与非法信令显式报错，不无限重试。
+  截图采集命令绝不自动重发；截图请求断线或超时会显示结果未确认，请检查 NUC 保存目录。
 
 ### Panda URDF 示例
 
@@ -123,34 +122,15 @@ git -C cogimon-gazebo-models sparse-checkout set franka
 进入“URDF 编辑”，选择“加载文件夹”，打开 `cogimon-gazebo-models/franka`。RobViz 会从
 `robots/panda_arm_hand.urdf` 加载 Panda 机械臂，并按文件名解析 `meshes/` 中的 DAE/STL。
 
-## Agent 接入（CLI）
-
-agent（或人）直接跑命令即可查询/操作机器人，零 server 配置：
-
-```bash
-npm run cli -- topics                          # 列话题与服务
-npm run cli -- echo /odom -n 3                 # 看消息（JSON，长数组截断）
-npm run cli -- tf map base_link                # 查坐标链（含 yaw）
-npm run cli -- pub /cmd_vel geometry_msgs/msg/Twist '{"linear":{"x":0.5}}'
-npm run cli -- call /robot/reset_pose          # 调服务
-npm run cli -- screenshot -o /tmp/shot.png     # 截 3D 视图（需浏览器打开页面）
-```
-
-`screenshot` 始终截取当前机器标签的 3D 面板；当前工作区已关闭 3D 时会明确报错。
-
-真机加 `--bridge ws://robot:8765` 或设 `BRIDGE_URL`。`pub` / `call` 支持部分字段
-JSON，缺省字段按 schema 自动补零。仓库内置 `.cursor/skills/robviz-cli`，
-Cursor agent 会自动学会这些命令。
-
 ## 布局配置与设置
 
 - 机器标签栏可新增、切换、双击或用 `F2` 重命名和关闭机器。用户自定义名称为主标签，连接 hostname 为次标签；名称、连接地址、激活话题、面板布局、相机、跟踪目标、3D 设置和插件状态均按机器标签保存。非活动机器保持连接，至少保留一个标签。
-- 顶栏“保存配置”会把全部机器标签、各自 Dockview 布局以及全局语言、主题和插件设置保存到浏览器
-  `localStorage`；“另存为文件”会下载 v2 `robviz.json`，“加载配置”从 JSON 文件恢复布局与插件状态。页面状态
-  也会自动存 localStorage，旧 v1 单机配置会在启动时迁移，下次打开自动恢复。
+- 顶栏导航栏入口为“主页”（承载 3D 视图与各停靠工作区面板）；主页内部实际 3D 板块标签保持为“3D 视图”。顶栏入口支持拖拽或快捷键 `Alt+←` / `Alt+→` 排序，主页亦可移动，顺序全局保存。
+- 顶栏“保存配置”会把全部机器标签、各自 Dockview 布局、顶栏入口顺序以及全局语言、主题和插件设置保存到浏览器
+  `localStorage`（存储键为 `robviz.layout.v3`）；“另存为文件”会下载 v3 `robviz.json`，“加载配置”从 JSON 文件恢复布局与插件状态。旧版 v1/v2 配置文件不再支持且会被明确拒绝，不做向下兼容迁移；旧版本地缓存不参与恢复，已打开的浏览器页面需刷新加载最新前端。
 - 右上角齿轮进入设置页，可切换中英文与明暗主题、控制主视图地面和 TF 轴宽、启停已打包插件、
-  恢复默认工作区；所有设置立即生效。主题仍可用顶栏快捷按钮切换。
-- 3D、图像、曲线、Topics、Echo、服务、TF 树和插件区块统一使用 Dockview：可上下左右
+  恢复默认工作区；切换插件开关前会提示确认保存，确认后保存配置、重排主页板块并整页刷新。主题仍可用顶栏快捷按钮切换。
+- 3D、图像、曲线、Topics、服务、TF 树和插件区块统一使用 Dockview：默认内置右下实用栏仅展示 TF 树。可上下左右
   分割、调整尺寸、交换位置、合并为标签组、最大化或关闭。3D 没有专属尺寸边界，关闭后其他面板
   可占满工作区；URDF 页面内部仍使用自己的分割器。
 - 视口工具条"跟踪"下拉（或点 TF 树节点）：视角一键锁定目标 frame，
@@ -160,7 +140,7 @@ v1/v2 配置文件直接拒绝导入。通过 v3 校验的配置若仍含独立 
 
 ## 插件
 
-RobViz 默认打包并启用 Teleop、Nav Goals 和 Waypoints Maker 三个项目插件；各机器的 Teleop 参数、导航话题和航点录制表单会随会话配置保存。切换机器标签时，内置 Teleop 会暂停并清除输入，Waypoints Maker 只清理订阅，不取消已接受的导航。宿主不会为第三方插件制定通用的非活动会话写入策略。
+RobViz 默认打包并启用 3D 视图 (`view-3d`)、地图编辑 (`map-editor`)、URDF 编辑 (`urdf-editor`)、航点编辑 (`waypoints-editor`)、图像采集 (`image-capture`) 以及 Teleop、Nav Goals、Waypoints Maker 等插件。插件可声明其承载位置：顶栏独立页面 (`pages`) 或是主页停靠板块 (`panels` / `sections`)。各机器的 Teleop 参数、导航话题和航点录制表单会随会话配置保存。切换机器标签时，内置 Teleop 会暂停并清除输入，Waypoints Maker 只清理订阅，不取消已接受的导航。宿主不会为第三方插件制定通用的非活动会话写入策略。
 
 Waypoints Maker 订阅 recorder 的状态和提示话题，并通过
 `/fruit/waypoint_maker/command` 发送严格 JSON 命令。它只允许活动且在线的会话写入，正式文件与调试文件由 recorder 的文件 ID allowlist 管理。

@@ -110,4 +110,60 @@ describe("plugin registry", () => {
     expect(enabled.viewportTools[0].hint?.(context)).toBe("Click and drag");
     expect(resolvePlugins(all, ["nav"]).viewportTools).toEqual([]);
   });
+
+  it("resolves topbar pages with legacyMode and custom namespaced ids", () => {
+    const all: RobvizPlugin[] = [
+      {
+        id: "map-editor",
+        name: "Map",
+        pages: [
+          {
+            id: "main",
+            legacyMode: "map",
+            title: (ctx) => (ctx.locale === "en" ? "Map" : "地图"),
+            component: (() => null) as never,
+          },
+        ],
+      },
+      {
+        id: "custom-plugin",
+        name: "Custom",
+        pages: [
+          {
+            id: "analytics",
+            title: "Analytics",
+            component: (() => null) as never,
+          },
+        ],
+      },
+    ];
+
+    const ctx = { locale: "en" } as never;
+    const enabled = resolvePlugins(all, []);
+    expect(enabled.pages.map((p) => p.id)).toEqual(["map", "custom-plugin:analytics"]);
+    expect(typeof enabled.pages[0].title === "function" ? enabled.pages[0].title(ctx) : enabled.pages[0].title).toBe("Map");
+
+    const disabled = resolvePlugins(all, ["map-editor"]);
+    expect(disabled.pages.map((p) => p.id)).toEqual(["custom-plugin:analytics"]);
+  });
+
+  it("resolves builtin 3D panel and bundles all 5 core plugins", () => {
+    const corePluginIds = ["view-3d", "map-editor", "urdf-editor", "waypoints-editor", "image-capture"];
+    for (const id of corePluginIds) {
+      expect(plugins.some((p) => p.id === id)).toBe(true);
+    }
+
+    const enabled = resolvePlugins(plugins, []);
+    const threeDPanel = enabled.panels.find((p) => p.kind === "3d");
+    expect(threeDPanel).toBeDefined();
+    expect(threeDPanel?.builtinKind).toBe("3d");
+
+    const disabledThreeD = resolvePlugins(plugins, ["view-3d"]);
+    expect(disabledThreeD.panels.some((p) => p.kind === "3d")).toBe(false);
+
+    expect(enabled.pages.map((p) => p.id)).toContain("map");
+    expect(enabled.pages.map((p) => p.id)).toContain("urdf");
+    expect(enabled.pages.map((p) => p.id)).toContain("waypoints");
+    expect(enabled.pages.map((p) => p.id)).toContain("capture");
+  });
 });

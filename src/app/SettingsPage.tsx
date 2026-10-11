@@ -410,6 +410,7 @@ export function SettingsPage({
                     <strong>{plugin.name}</strong>
                     <code>{plugin.id}</code>
                     <small>{t("pluginExtensions", {
+                      pages: plugin.pages?.length ?? 0,
                       panels: plugin.panels?.length ?? 0,
                       sections: plugin.sections?.length ?? 0,
                       displays: plugin.displays?.length ?? 0,

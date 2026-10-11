@@ -7,7 +7,6 @@ export interface WorkspacePanel {
 const SINGLETON_PANEL_KINDS = new Set([
   "3d",
   "topics",
-  "echo",
   "teleop",
   "tf-tree",
 ]);
@@ -32,4 +31,33 @@ export function removeMissingPanels<T extends WorkspacePanel>(
   presentIds: ReadonlySet<string>,
 ): T[] {
   return panels.filter((panel) => presentIds.has(panel.id));
+}
+
+export function getWorkspacePanelPluginOwner(
+  kind: string,
+  pluginPanelOwners?: ReadonlyMap<string, string>,
+): string | undefined {
+  if (pluginPanelOwners?.has(kind)) {
+    return pluginPanelOwners.get(kind);
+  }
+  if (kind === "3d") {
+    return "view-3d";
+  }
+  if (kind.startsWith("plugin-section:")) {
+    return kind.slice("plugin-section:".length).split(":")[0];
+  }
+  if (kind.includes(":")) {
+    return kind.split(":")[0];
+  }
+  return undefined;
+}
+
+export function shouldRetainWorkspacePanelOnClose(
+  kind: string,
+  disabledPluginIds: ReadonlySet<string> | readonly string[],
+  pluginPanelOwners?: ReadonlyMap<string, string>,
+): boolean {
+  const disabled = disabledPluginIds instanceof Set ? disabledPluginIds : new Set(disabledPluginIds);
+  const owner = getWorkspacePanelPluginOwner(kind, pluginPanelOwners);
+  return Boolean(owner && disabled.has(owner));
 }

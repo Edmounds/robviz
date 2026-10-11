@@ -2,6 +2,8 @@ import { z } from "zod";
 
 export const frameSchema = z.enum(["cartesian", "joints", "link_angles"]);
 export type CoordinateFrame = z.infer<typeof frameSchema>;
+export const controlModeSchema = z.enum(["cartesian", "joints"]);
+export type ControlMode = z.infer<typeof controlModeSchema>;
 const finite = z.number().finite();
 const arrayValue = (value: unknown) => ArrayBuffer.isView(value) && !(value instanceof DataView)
   ? Array.from(value as unknown as ArrayLike<number>) : value;
@@ -48,12 +50,6 @@ export const snapshotSchema = z.object({ configuration: configSchema, revision: 
 export type Snapshot = z.infer<typeof snapshotSchema>;
 export const documentSchema = snapshotSchema.extend({ version: z.string().min(1), file: z.string() });
 export type ArmDocument = z.infer<typeof documentSchema>;
-export const previewSchema = snapshotSchema.extend({
-  points: z.array(poseSchema.extend({ time_ms: finite.int().nonnegative(),
-    gripper: finite.int().min(0).max(2), is_via_point: finite.int().min(0).max(1) })).min(2).max(64),
-  duration_ms: finite.int().positive(), point_count: finite.int().min(2).max(64),
-});
-export type ArmPreview = z.infer<typeof previewSchema>;
 const stamp = z.object({ sec: finite.int(), nanosec: finite.int().min(0).max(999999999) });
 const header = z.object({ frame_id: z.literal("arm_base_link"), stamp });
 const joints = z.object({ header, name: z.tuple([z.literal("joint_1"), z.literal("joint_2"),
@@ -74,6 +70,33 @@ export const configurationReplySchema = resultSchema.extend({
   config_path: z.string(), revision: z.string().min(1), configuration_yaml: z.string().min(1),
   max_trajectory_points: finite.int().min(2).max(64),
 });
+
+export const runtimeTaskSchema = z.object({
+  id: z.string().optional(),
+  task_id: z.string().optional(),
+  state: z.enum(["STOPPED", "STARTING", "RUNNING"]),
+  ready: z.boolean(),
+  detail: z.string(),
+  pid: z.number().int().nullable(),
+  dependencies: z.array(z.object({
+    id: z.string().optional(),
+    task_id: z.string().optional(),
+    state: z.enum(["STOPPED", "STARTING", "RUNNING"]),
+    ready: z.boolean(),
+    detail: z.string(),
+    pid: z.number().int().nullable(),
+    dependencies: z.array(z.unknown()),
+  })),
+});
+export type RuntimeTask = z.infer<typeof runtimeTaskSchema>;
+
+export const runtimeTaskReplySchema = z.object({
+  task: runtimeTaskSchema,
+  started: z.array(z.string()).optional(),
+  reused: z.array(z.string()).optional(),
+  stopped: z.array(z.string()).optional(),
+});
+export type RuntimeTaskReply = z.infer<typeof runtimeTaskReplySchema>;
 
 export function fmt(value: number, places = 3): string {
   return Number.isFinite(value) ? value.toFixed(places) : "?";
@@ -100,9 +123,9 @@ function checkMachine(bridgeUrl?: string): void {
 }
 
 export async function armRequest(path: string, bridgeUrl?: string, body?: unknown,
-  method = "POST", signal?: AbortSignal): Promise<unknown> {
+  method = "POST", signal?: AbortSignal, timeoutMs = 10_000): Promise<unknown> {
   checkMachine(bridgeUrl);
-  const deadline = AbortSignal.timeout(10_000);
+  const deadline = AbortSignal.timeout(timeoutMs);
   const waiting = signal ? AbortSignal.any([signal, deadline]) : deadline;
   const response = await fetch(`/api/arm/${path}`, body === undefined
     ? { signal: waiting }
@@ -115,14 +138,32 @@ export async function armRequest(path: string, bridgeUrl?: string, body?: unknow
   return payload;
 }
 
-export function isFresh(value: { message: Telemetry; received: number } | null,
+export async function runtimeRequest(path: string, bridgeUrl?: string, body?: unknown,
+  method = "POST", signal?: AbortSignal, timeoutMs = 10_000): Promise<unknown> {
+  checkMachine(bridgeUrl);
+  const host = bridgeUrl ? new URL(bridgeUrl).hostname : location.hostname;
+  const formattedHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  const target = `${location.protocol}//${formattedHost}:8001/api/runtime/${path}`;
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const waiting = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  const response = await fetch(target, body === undefined
+    ? { method, signal: waiting }
+    : { method, signal: waiting, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const payload: unknown = await response.json();
+  if (!response.ok) {
+    const error = z.object({ error: z.string() }).safeParse(payload);
+    throw new Error(error.success ? error.data.error : `HTTP ${response.status}`);
+  }
+  return payload;
+}
+
+export function hasValidFeedback(value: Telemetry | { message: Telemetry } | null,
   config: ArmConfiguration | null): boolean {
   if (!value || !config) return false;
-  const maxAge = config.planning.status_max_age_sec * 1000;
-  const timestamp = value.message.header.stamp.sec * 1000 + value.message.header.stamp.nanosec / 1e6;
-  const age = Date.now() - timestamp;
-  if (performance.now() - value.received > maxAge || age < -500 || age > maxAge) return false;
-  return value.message.hardware_joint_state.position.every((angle, i) => {
+  const message = "message" in value ? value.message : value;
+  const parsed = telemetrySchema.safeParse(message);
+  if (!parsed.success) return false;
+  return parsed.data.hardware_joint_state.position.every((angle, i) => {
     const limits = config.joint_mapping[(["q1", "q2", "q3", "q4"] as const)[i]].limits_deg;
     const degrees = angle * 180 / Math.PI;
     return degrees >= limits[0] - 0.006 && degrees <= limits[1] + 0.006;

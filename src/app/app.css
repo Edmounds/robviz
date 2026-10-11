@@ -1119,6 +1119,17 @@ body {
   border-radius: 0;
   padding: 5px 10px;
   color: var(--text-muted);
+  cursor: grab;
+  user-select: none;
+}
+
+.mode-tabs button:active {
+  cursor: grabbing;
+}
+
+.mode-tabs button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .mode-tabs button + button {
@@ -1128,6 +1139,20 @@ body {
 .mode-tabs button.active {
   color: var(--canvas);
   background: var(--foreground);
+}
+
+.mode-tabs button.dragging {
+  opacity: 0.4;
+}
+
+.mode-tabs button.drop-before {
+  box-shadow: inset 3px 0 0 0 var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 15%, var(--canvas));
+}
+
+.mode-tabs button.drop-after {
+  box-shadow: inset -3px 0 0 0 var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 15%, var(--canvas));
 }
 
 /* ---- PCD 工具条 ---- */
@@ -1690,158 +1715,6 @@ body {
 
 .service-result-row strong.failure {
   color: var(--status-error);
-}
-
-/* ---- Topic Echo ---- */
-.echo-picker {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 12px 6px;
-}
-
-.echo-picker label {
-  flex: none;
-  color: var(--text-muted);
-  font: var(--fs-meta) var(--mono);
-}
-
-.echo-picker select {
-  flex: 1;
-  min-width: 0;
-  max-width: 100%;
-  min-height: var(--ctl-min-h);
-  padding: 3px 6px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-ctl);
-  background: var(--canvas);
-  color: var(--foreground);
-  font: var(--fs-ui) var(--mono);
-}
-
-.echo-picker select:disabled {
-  cursor: default;
-  opacity: 0.55;
-}
-
-.echo-empty {
-  margin: 2px 12px 6px;
-  color: var(--text-faint);
-  font-size: var(--fs-meta);
-}
-
-.echo-toolbar {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  color: var(--text-muted);
-  font-size: var(--fs-meta);
-}
-
-.echo-toolbar output {
-  flex: 1;
-  color: var(--text-faint);
-  font-family: var(--mono);
-}
-
-.echo-toolbar button {
-  flex: none;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  cursor: pointer;
-}
-
-.echo-toolbar button:hover:not(:disabled) {
-  color: var(--foreground);
-}
-
-.echo-toolbar button:disabled {
-  cursor: default;
-  opacity: 0.4;
-}
-
-.echo-toolbar button:focus-visible {
-  outline: 1px solid var(--focus-ring);
-  outline-offset: 2px;
-}
-
-.echo-field-list {
-  max-height: 190px;
-  overflow-y: auto;
-  border-block: 1px solid var(--border-soft);
-}
-
-.echo-field-row {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  align-items: center;
-  min-height: 27px;
-  padding: 2px 12px;
-  color: var(--foreground-soft);
-  cursor: pointer;
-}
-
-.echo-field-row:hover {
-  background: var(--surface-soft);
-}
-
-.echo-field-row input {
-  margin: 0;
-  accent-color: var(--foreground);
-}
-
-.echo-field-row code {
-  min-width: 0;
-  overflow: hidden;
-  color: inherit;
-  font: var(--fs-meta) var(--mono);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.echo-output-heading {
-  padding: 7px 12px 3px;
-  color: var(--text-muted);
-  font-size: var(--fs-meta);
-}
-
-.echo-output {
-  margin: 0;
-  padding: 0 12px 4px;
-}
-
-.echo-output-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(64px, 0.8fr);
-  gap: 8px;
-  padding: 3px 0;
-  border-top: 1px solid var(--border-soft);
-  font: var(--fs-meta) var(--mono);
-}
-
-.echo-output-row dt {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-muted);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.echo-output-row dd {
-  min-width: 0;
-  margin: 0;
-  overflow-wrap: anywhere;
-  color: var(--foreground-soft);
-  text-align: right;
-}
-
-.echo-output-empty {
-  margin-top: 0;
 }
 
 /* ---- PointCloud2 设置 ---- */
@@ -3884,8 +3757,8 @@ button:disabled {
 
 /* ---- 图像采集页 ---- */
 .capture-page {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -3898,6 +3771,7 @@ button:disabled {
 .capture-toolbar {
   display: flex;
   min-width: 0;
+  flex: none;
   align-items: center;
   gap: 12px;
   padding: 6px 12px;
@@ -4023,6 +3897,7 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex: none;
   padding: 8px 12px;
   border-radius: var(--panel-radius, 12px);
   background: color-mix(in srgb, var(--status-warn) 15%, var(--canvas));
@@ -4038,8 +3913,10 @@ button:disabled {
 }
 
 .capture-viewport-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
   width: 100%;
-  height: 100%;
   min-width: 0;
   min-height: 0;
   border: 1px solid var(--border-soft);

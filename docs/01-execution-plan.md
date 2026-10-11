@@ -12,14 +12,13 @@ RobViz 是一个**个人自用**的 Web 上位机，替代 rviz 的日常功能�
 - Nav2 导航（地图、costmap、路径、发目标点、teleop、cmd_vel 曲线对比）
 - 相机与深度相机（多图并排、悬停取像素值/深度值，视觉调参）
 - 机械臂（URDF 加载、joint_states 驱动、关节曲线、service/action 调用）
-- Agent 交互（MCP server，让 AI agent 查话题、查 TF、发消息、截图）
 
 ### 设计原则（按优先级）
 
 1. **KISS**：只实现自己需要的功能。不做插件体系、不做通用消息浏览器、不追求 rviz 功能对等。
 2. **性能是生死线**：二进制协议（CDR）、Worker 解码、Transferable 零拷贝、GPU 缓冲复用。历史上 rviz-web 项目全部死于 rosbridge+JSON 的性能天花板。
-3. **数据层与 UI 解耦**：`src/core/` 零 React 依赖，浏览器 UI 和 Node 端（MCP server、测试）共用。
-4. **状态即 JSON**：布局、面板配置全部可序列化，人和 agent 都能读写。
+3. **数据层与 UI 解耦**：`src/core/` 零 React 依赖，浏览器 UI 和测试共用。
+4. **状态即 JSON**：布局、面板配置全部可序列化。
 5. **机器人侧零侵入**：机器人上只需 `foxglove_bridge`，不部署任何自研服务。
 
 ### 明确不做（Non-goals）
@@ -125,23 +124,6 @@ Worker 合帧 + latest-wins 丢帧、缓冲池零分配、按需渲染（空闲�
 >   挂 base_link 随机器人移动，/joint_states 驱动六足摆动，36 个关节滑块可手动调。
 > - **Marker**：4 种类型同屏（箭头挂 base_link 验证逐 marker TF、脉动球、旋转半透明方块、圆形路线）。
 > - 双向链路（cmd_vel 遥控 + 服务往返 + 相机/关节/marker 解码）有 6 项集成测试覆盖。
-
-### M4 — Agent 接入 ✅（2026-08-13）
-
-| 任务 | 说明 |
-| --- | --- |
-| MCP server | `mcp/server.ts`，Node 进程复用 src/core，作为 bridge 的平级客户端（不依赖 UI） |
-| 工具集 | list_topics / echo / get_tf / publish / call_service / screenshot |
-| 截图 API | MCP 进程开 WebSocket 命令通道（:8766），Web UI 主动连入，按需渲染一帧导出 PNG |
-| 布局生成 | 砍掉（KISS：面板手动添加已足够轻，agent 主要消费数据面工具） |
-
-**验收**：在 Cursor 里问"机器人为什么不动"，agent 能自主查 cmd_vel、TF 链路并给出结论。
-
-> ✅ 实测（scripts/mcp-smoke.ts 以 MCP stdio 客户端逐工具验证）：
-> list_topics 11 话题 + 2 服务；echo /odom 拿到位姿；get_tf map→base_link 返回平移+四元数+yaw；
-> publish cmd_vel 后 odom 速度立即变为指令值（机器人真的动了）；call_service reset_pose 成功；
-> screenshot 在浏览器打开时返回真实 3D 视图 PNG（scripts/mcp-screenshot-test.ts），未打开时报可读错误。
-> publish/call_service 支持部分字段 JSON（缺省字段按 schema 自动补零值），对 agent 友好。
 
 ### M4.5 — 故障隔离加固（追加）✅（2026-08-13）
 

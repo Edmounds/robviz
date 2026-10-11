@@ -78,7 +78,7 @@ class TopicPeer {
     viewer.onStats(this.currentStats);
 
     this.updateMaxFps();
-    if (!this.ws) {
+    if (!this.ws && this.reconnectTimer === null) {
       this.connect();
     }
   }
@@ -209,10 +209,16 @@ class TopicPeer {
 
   private async handleOffer(sdp: string, encoder: unknown, ws: WebSocket) {
     this.closePeer();
-    const pc = new RTCPeerConnection({
-      iceServers: [],
-      bundlePolicy: "max-bundle",
-    });
+    let pc: RTCPeerConnection;
+    try {
+      pc = new RTCPeerConnection({
+        iceServers: [],
+        bundlePolicy: "max-bundle",
+      });
+    } catch (err) {
+      if (this.ws === ws) this.retryGateway(`Failed to create video peer: ${String(err)}`);
+      return;
+    }
     this.pc = pc;
     const isCurrent = () => this.pc === pc && this.ws === ws;
 
@@ -245,7 +251,7 @@ class TopicPeer {
     pc.onconnectionstatechange = () => {
       if (!isCurrent()) return;
       if (["failed", "disconnected", "closed"].includes(pc.connectionState)) {
-        this.fail(`Video peer ${pc.connectionState}`);
+        this.retryGateway(`Video peer ${pc.connectionState}`);
       }
     };
 
@@ -263,7 +269,7 @@ class TopicPeer {
         ws.send(JSON.stringify({ type: "answer", topic: this.topic, sdp: answer.sdp }));
       }
     } catch (err) {
-      if (isCurrent()) this.fail(`Video negotiation failed: ${String(err)}`);
+      if (isCurrent()) this.retryGateway(`Video negotiation failed: ${String(err)}`);
     }
   }
 

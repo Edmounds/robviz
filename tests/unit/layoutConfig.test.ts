@@ -15,6 +15,7 @@ function fullConfig(): LayoutConfig {
       tfAxesLineWidth: 3,
       fontScale: 1.2,
       disabledPluginIds: ["example-odom-hud"],
+      modeTabOrder: ["map", "3d", "urdf"],
     },
     workspace: {
       sidebarPercent: 24,
@@ -65,6 +66,7 @@ describe("layoutConfig", () => {
       tfAxesLineWidth: 1.5,
       fontScale: 1,
       disabledPluginIds: [],
+      modeTabOrder: [],
     });
     expect(parsed.workspace).toEqual({
       sidebarPercent: 22,

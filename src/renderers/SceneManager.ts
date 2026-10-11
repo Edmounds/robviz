@@ -346,12 +346,6 @@ export class SceneManager {
   }
 
   /** 外部数据更新后标脏（按需渲染） */
-  /** 同步渲染一帧并导出 PNG（未开 preserveDrawingBuffer，必须先渲染再读） */
-  screenshot(): string {
-    this.#render();
-    return this.#renderer.domElement.toDataURL("image/png");
-  }
-
   invalidate(): void {
     this.#dirty = true;
   }

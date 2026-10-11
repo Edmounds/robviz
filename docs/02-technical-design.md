@@ -13,15 +13,11 @@
                                    │  │ TF Buffer  │                         │
                                    │  └───────────┘                          │
                                    └──────────────────────────────────────────┘
-                                   ┌─ MCP Server (Node, M4) ─────────────────┐
-                                   │  复用 src/core，bridge 的平级客户端        │
-                                   └──────────────────────────────────────────┘
 ```
 
 关键点：
 
 - **唯一的机器人侧依赖是 `foxglove_bridge`**（apt 可装，官方维护，多客户端）。
-- Web UI 与 MCP server 是 bridge 的两个平级客户端，共享 `src/core` 代码。
 
 ## 2. 目录结构（单包，非 monorepo）
 
@@ -52,7 +48,6 @@ robviz/
 │   │   └── ...（Image/Plot/Teleop/Urdf/... 按里程碑加）
 │   ├── app/                 # 布局、主题、连接状态
 │   └── main.tsx
-├── mcp/                     # M4：MCP server（Node 入口，import src/core）
 └── tests/                   # vitest：unit/ + integration/
 ```
 
@@ -64,7 +59,7 @@ robviz/
 
 - 服务端 `advertise`：`{id, topic, encoding: "cdr", schemaName, schema}`，schema 为 ros2msg 拼接文本（`===` 分隔符 + `MSG: pkg/Type`）。
 - 客户端 `subscribe(channelId)` → 服务端推二进制帧：`op(1B) + subscriptionId(4B) + receiveTime(8B, ns) + CDR payload`。
-- 客户端能力（M3/M4 用）：`clientPublish`（advertise + 发消息）、`services`（调用 service）、`parameters`。
+- 客户端能力（M3 用）：`clientPublish`（advertise + 发消息）、`services`（调用 service）、`parameters`。
 
 ### 3.2 解码管线
 
@@ -82,7 +77,7 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 
 ### 3.3 Node 复用
 
-`FoxgloveConnection` 构造时注入 WebSocket 实现（浏览器原生 / Node `ws` 包），核心逻辑一份代码。CLI 与 MCP server 直接在 Node 里实例化，不经过 Worker。
+`FoxgloveConnection` 构造时注入 WebSocket 实现（浏览器原生 / Node `ws` 包），核心逻辑一份代码。测试直接在 Node 里实例化，不经过 Worker。
 
 ## 4. TF 系统
 
@@ -107,13 +102,6 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
   - LaserScan / PointCloud2：`THREE.Points` + shader material，着色模式（强度/高度/单色）作 uniform。
   - 累积模式（Point-LIO）：环形写入超大缓冲（默认 4M 点，可配），`drawRange` 控制有效区间。
 - 交互工具（M3）：Nav Goal 通过 raycaster 打到地面平面取点，拖拽定朝向，经 WorkerBridge `clientPublish` 发 `PoseStamped`。
-
-## 6. MCP Server（M4 摘要）
-
-- Node 进程，`@modelcontextprotocol/sdk` + `src/core`。
-- 工具：`list_topics` / `echo_topic(topic, n)` / `get_tf(target, source)` / `publish(topic, type, msg)` / `call_service(name, req)` / `query_series(topic, field, duration, maxPoints)` / `screenshot(panel)`。
-- 截图链路：Web UI 起一个仅本机的 WebSocket 命令通道，MCP 请求 → UI 导出 canvas PNG → 返回 agent。
-- 详细设计在 M4 开工前补充到本文档。
 
 ## 8. 性能与网络韧性（已实现，2026-08-13 实测）
 
@@ -237,18 +225,6 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 - Nav Goal / Pose Estimate：相机反投影到 z=0 平面（`origin + t·dir, t = -o.z/d.z`），
   按下定位置、拖动定朝向、松开发布，frame 用当前 fixed frame。
 
-## 8.7 MCP Server（M4，已实现，2026-08-13 实测）
-
-- `mcp/server.ts`：stdio 传输，数据面复用 `src/core`（FoxgloveConnection + TfBuffer +
-  rosSchemas + msgDefaults），是 bridge 的平级客户端——**agent 不依赖 UI 就能查数据/发指令**。
-- 工具：`list_topics`（含服务）、`echo`（订阅 N 条，TypedArray 截断到 100 元素防炸上下文）、
-  `get_tf`（临时收 /tf 建缓冲，返回平移+四元数+yaw）、`publish` / `call_service`
-  （部分字段 JSON，缺省按 schema 补零值）、`screenshot`。
-- 截图走反向命令通道：MCP 进程开 WS 服务（:8766），UI 启动后主动连入（5s 静默重试）；
-  MCP 发 `{op:"screenshot"}`，UI 同步渲染一帧 `canvas.toDataURL`（不开 preserveDrawingBuffer，
-  避免常态显存翻倍）。UI 未打开时报可读错误。
-- 验收脚本：`scripts/mcp-smoke.ts`（全工具冒烟）、`scripts/mcp-screenshot-test.ts`（真实截图落盘）。
-
 ## 8.8 故障隔离（2026-08-13 注入实测）
 
 原则：**任何单点故障只影响自己那一层，其余功能与数据流照常**。四层舱壁：
@@ -281,7 +257,7 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 ## 8.10 停靠工作区与多机器会话
 
 - 主机器人页面使用 `dockview-react` 的无重叠分割停靠模型。统一注册 3D、图像、曲线、Topics、
-  Echo、Teleop、服务、TF 树和插件面板；图像、曲线、插件 `panels` 可多开，内置工具与插件
+  Teleop、服务、TF 树和插件面板；默认内置右下实用栏仅展示 TF 树；图像、曲线、插件 `panels` 可多开，内置工具与插件
   `sections` 是单实例。Dockview 负责标题、关闭、拖拽、标签合并、最大化和序列化。
 - 每个 `RobotSessionApp` 独占 `WorkerBridge`、`TfBuffer`、Dockview 布局和面板状态。顶层只保存
   `activeSessionId` 与全局主题/语言/插件开关；关闭标签通过 React 卸载完整释放 Worker、订阅、
@@ -292,8 +268,9 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 - SceneManager 跟随 3D canvas 挂载：关闭 3D 即释放 WebGL、3D 显示订阅和临时 PCD；重新添加时
   从会话快照恢复相机、fixed/follow frame、显示话题和地面设置。大帧消费不依赖 3D，因此纯图像
   工作区仍持续更新。
-- 配置 schema 为 v2：顶层保存全部 `sessions[]` 与 active session；v1 在读取时迁移为单标签。
+- 配置 schema 升级为 v3（存储键 `robviz.layout.v3`）：顶层保存全部 `sessions[]` 与 active session；明确拒绝旧 v1/v2 格式，不向下兼容迁移。
   Dockview JSON 作为不透明字段保存，恢复失败只重建对应机器默认布局，其他已验证会话字段不丢失。
+- WebRTC 视频流在断线或 peer/SDP 协商失败时每秒自动重试恢复连接；最后一个观看者退出后立即取消恢复。明确的网关错误与非法信令显式报错，不无限重试。截图采集命令绝不自动重发。
 
 ## 9. 决策记录（只增不删）
 
@@ -305,7 +282,7 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 | D4 | 面板写死枚举，不做插件系统 | Foxglove 复杂度的主要来源；自用工具加面板=加代码 |
 | D5 | URDF 用浏览器拖文件夹（robot_viewer 模式），不做 asset server | 机器人侧零部署；mesh 解析全在前端 |
 | D6 | 解码在 Worker，主线程只消费 TypedArray | 性能生死线；参见 §3.2 |
-| D8 | TF 插值自实现，不依赖 three.js | core 需在 Node 跑（测试/MCP）；slerp 数学量很小 |
+| D8 | TF 插值自实现，不依赖 three.js | core 需在 Node 跑（测试）；slerp 数学量很小 |
 | D9 | 丢帧策略放客户端（latest-wins），不做应用层重传 | WebSocket 是 TCP，无真实丢包；风险是队头阻塞与排队膨胀。可视化只需最新帧，丢过期帧使延迟有界；与真实 bridge 的服务端 send_buffer_limit 丢帧行为互补 |
 | D10 | 按需渲染（脏标记）而非固定 60fps 循环 | 空闲主机占用趋近零；渲染率自动跟随数据率，交互时仍满帧 |
 | D11 | TF 平滑用自适应抖动缓冲而非固定延迟 | 理想网络下延迟代价 ~20ms 接近 rviz；恶劣网络自动加大延迟换平滑，不需要用户调参 |
@@ -314,12 +291,13 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 | D14 | 点云撤销存被移除点而非快照 | 点云无序，追加即恢复；内存正比于删除量而非云大小（千万点快照一步就是百 MB） |
 | D15 | 2D 地图编辑用独立 canvas 面板，不进 3D 场景 | 像素级编辑要平面正交视图 + 精确笔刷，2D canvas 天然合适且实现小一个数量级 |
 | D16 | 发布类型用内置 schema 库，服务类型用服务端 advertise 的 schema | 发布必须客户端编码（常用类型就那几个）；服务调用则完全 schema 驱动，任何类型免配置 |
-| D17 | 服务请求/发布 JSON 支持部分字段，缺省按 schema 补零 | 人和 agent 都只想写 `{"linear":{"x":0.5}}`；补全逻辑一处实现三处受益（UI/MCP/测试） |
+| D17 | 服务请求/发布 JSON 支持部分字段，缺省按 schema 补零 | 人和测试都只想写 `{"linear":{"x":0.5}}`；补全逻辑一处实现两处受益（UI/测试） |
 | D18 | 图像面板主线程上色，不进 Worker | VGA@5Hz 转 RGBA <3ms；进 Worker 反而多一次拷贝，违背收益/复杂度比 |
 | D19 | URDF mesh 按 basename 匹配用户选的文件 | package:// 路径在真实工程千奇百怪；basename 命中率最高且失败可见（报缺哪个文件） |
 | D20 | Display.tick 扩展支持多 frame 显示器 | Marker/URDF 内部含多个 frame，整体变换模型不适用；tick 自管 TF 是最小侵入 |
-| D21 | MCP 截图走反向 WS 命令通道（MCP 开服务、UI 连入） | UI 在浏览器沙箱里无法开端口；反向连接让 agent 与 UI 解耦，UI 不在也不影响数据面工具 |
+| D21 | 已废弃（MCP 与反向截图通道已移除） | 历史用于反向截图 WS 通道；已随 CLI/Agent 清理彻底废弃 |
 | D23 | 四层故障舱壁（ErrorBoundary / 逐 handler 隔离 / 逐显示器隔离 / Worker 自愈），用故障注入验收 | 一个功能崩溃不能拖垮整体；隔离逻辑不注入真实崩溃测过等于没写 |
 | D24 | 终端网关在操作电脑用系统 SSH，不在机器人部署 Web Shell | 保留机器人侧零自研服务；复用 OpenSSH 的 known_hosts、密码/密钥交互与加密链路 |
 | D25 | 主工作区使用 Dockview 无重叠分割停靠，不实现桌面式浮窗 | 对齐 Foxglove 的高密度多视图工作流，同时避免遮挡和窗口层级管理 |
 | D26 | 每台机器独立 Worker/布局/场景，非活动机器保持连接但暂停业务订阅 | 保持快速切换与状态隔离，同时消除后台机器的传感器带宽、解码和主线程传输成本 |
+| D27 | 顶栏主页与功能插件化解耦，开关确认后保存并整页刷新重排 | 顶栏命名改为主页（内部 3D 板块保留“3D 视图”）；5 大功能模块插件化，插件声明承载为顶栏 pages 还是主页 panels；开关全局刷新确保彻底清理状态，主页板块自动重排并保留顶栏排序 |

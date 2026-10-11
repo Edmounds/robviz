@@ -2,7 +2,7 @@
   "name": "robviz",
   "private": true,
   "version": "0.1.0",
-  "description": "Web 机器人上位机：浏览器直连 foxglove_bridge 的 rviz/rqt 替代品，含 3D 可视化、地图/点云编辑、布局配置、插件系统与 agent CLI",
+  "description": "Web 机器人上位机：浏览器直连 foxglove_bridge 的 rviz/rqt 替代品，含 3D 可视化、地图/点云编辑、布局配置与插件系统",
   "license": "MIT",
   "author": "Edmounds",
   "repository": {
@@ -17,7 +17,6 @@
     "preview": "vite preview",
     "terminal": "tsx terminal/server.ts",
     "test": "vitest run",
-    "cli": "tsx cli/robviz.ts",
     "plugin:new": "tsx scripts/new-plugin.ts"
   },
   "dependencies": {

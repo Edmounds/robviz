@@ -50,6 +50,40 @@ export interface PluginViewportTool {
   onPoseSelect: (ctx: PluginContext, interaction: ViewportPoseInteraction) => void;
 }
 
+/** 顶栏页面 props */
+export interface PluginPageProps {
+  ctx: PluginContext;
+  bridgeUrl?: string;
+  mediaUrl?: string;
+  fontScale: number;
+  isMobile: boolean;
+}
+
+export interface PluginPage {
+  /** 插件内唯一 id */
+  id: string;
+  /** 页面标题，支持多语言函数或静态字符串 */
+  title: string | ((ctx: PluginContext) => string);
+  /** 页面组件 */
+  component: ComponentType<PluginPageProps>;
+  /** 兼容旧 mode 标识（如 "map" | "urdf" | "waypoints" | "capture"） */
+  legacyMode?: string;
+}
+
+export type PluginPanelEntry =
+  | {
+      kind: string;
+      title: string | ((ctx: PluginContext) => string);
+      component: ComponentType<PluginPanelProps>;
+      builtinKind?: never;
+    }
+  | {
+      builtinKind: "3d";
+      title: string | ((ctx: PluginContext) => string);
+      kind?: never;
+      component?: never;
+    };
+
 /** 面板坞面板 props */
 export interface PluginPanelProps {
   ctx: PluginContext;
@@ -73,9 +107,11 @@ export interface RobvizPlugin {
   /** 3D 显示器：按消息 schema 注册，出现在话题列表里可勾选 */
   displays?: Array<{ schema: string; create: () => Display }>;
   /** 可多开停靠面板：出现在顶栏“添加面板”菜单 */
-  panels?: Array<{ kind: string; title: string; component: ComponentType<PluginPanelProps> }>;
+  panels?: Array<PluginPanelEntry>;
   /** 单实例停靠区块（可移动、关闭和重新添加） */
   sections?: Array<{ id: string; title: string; component: ComponentType<PluginSectionProps> }>;
   /** 3D 视口交互工具（出现在 3D 视图顶栏，支持点选/拖拽交互） */
   viewportTools?: PluginViewportTool[];
+  /** 顶栏页面 */
+  pages?: PluginPage[];
 }
