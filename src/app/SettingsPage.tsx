@@ -1,7 +1,16 @@
-import { Box, Image, Languages, Plug, RotateCcw, Save } from "lucide-react";
+import { Box, Globe, Image, Languages, Plug, RotateCcw, Save } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
+import type {
+  NetworkServiceOverride,
+  RobotSessionConfig,
+} from "../core/appConfig";
+import {
+  CORE_NETWORK_SERVICES,
+  resolveBaseHost,
+  resolveServiceUrl,
+} from "../core/appConfig";
 import type { LayoutConfig } from "../core/layoutConfig";
 import {
   applyImageSettings,
@@ -10,12 +19,12 @@ import {
   type ImageSettings,
   type ImageStreamSettings,
 } from "../core/waypointApi";
-import type { RobvizPlugin } from "../plugins/types";
+import type { PluginServiceDefinition, RobvizPlugin } from "../plugins/types";
 import type { Theme } from "../renderers/sceneTheme";
 import { useI18n } from "./i18n";
 
 type Settings = LayoutConfig["settings"];
-export type SettingsTab = "general" | "3d" | "images" | "plugins";
+export type SettingsTab = "general" | "3d" | "images" | "plugins" | "network";
 
 function updateStream(
   settings: ImageSettings,
@@ -251,9 +260,125 @@ function ImageTransportSettings({
   );
 }
 
+function NetworkSettingsSection({
+  session,
+  services,
+  onSessionChange,
+}: {
+  session: RobotSessionConfig;
+  services: PluginServiceDefinition[];
+  onSessionChange: (session: RobotSessionConfig) => void;
+}) {
+  const { t } = useI18n();
+  const baseHost = resolveBaseHost(session.url);
+
+  const updateOverride = (serviceId: string, patch: Partial<NetworkServiceOverride>) => {
+    const currentOverrides = session.networkOverrides ?? {};
+    const existing = currentOverrides[serviceId] ?? {};
+    const updated = { ...existing, ...patch };
+    if (!updated.host?.trim()) delete updated.host;
+    if (updated.port === undefined || isNaN(updated.port) || updated.port <= 0) delete updated.port;
+    if (!updated.url?.trim()) delete updated.url;
+
+    const nextOverrides = { ...currentOverrides };
+    if (Object.keys(updated).length === 0) {
+      delete nextOverrides[serviceId];
+    } else {
+      nextOverrides[serviceId] = updated;
+    }
+    onSessionChange({ ...session, networkOverrides: nextOverrides });
+  };
+
+  const clearOverride = (serviceId: string) => {
+    if (!session.networkOverrides?.[serviceId]) return;
+    const nextOverrides = { ...session.networkOverrides };
+    delete nextOverrides[serviceId];
+    onSessionChange({ ...session, networkOverrides: nextOverrides });
+  };
+
+  return (
+    <div className="settings-network">
+      <div className="network-base-card">
+        <div>
+          <span>{t("baseRobotHost")}: </span>
+          <strong>{baseHost}</strong>
+        </div>
+        <small>({t("derivedFromSessionUrl")}: <code>{session.url}</code>)</small>
+      </div>
+      <p className="settings-hint">{t("networkHint")}</p>
+
+      <div className="network-services-list">
+        {services.map((service) => {
+          const override = session.networkOverrides?.[service.id];
+          const hasOverride = !!override && (override.port !== undefined || !!override.host || !!override.url);
+          const effectiveUrl = resolveServiceUrl(service, session);
+
+          return (
+            <div key={service.id} className="network-service-card">
+              <div className="network-service-main">
+                <div className="network-service-title">
+                  <strong>{service.label}</strong>
+                  <span className="network-tag">{service.protocol.toUpperCase()}</span>
+                  <span className="network-port-tag">:{service.defaultPort}</span>
+                </div>
+                {service.description && (
+                  <p className="network-service-desc">{service.description}</p>
+                )}
+                <div className="network-effective">
+                  <span>{t("effectiveTarget")}: </span>
+                  <code>{effectiveUrl}</code>
+                </div>
+              </div>
+
+              <div className="network-service-inputs">
+                <label className="network-input-group">
+                  <span>{t("hostOverride")}</span>
+                  <input
+                    type="text"
+                    placeholder={baseHost}
+                    value={override?.host ?? ""}
+                    onChange={(e) => updateOverride(service.id, { host: e.target.value })}
+                  />
+                </label>
+                <label className="network-input-group">
+                  <span>{t("portOverride")}</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    placeholder={String(service.defaultPort)}
+                    value={override?.port ?? ""}
+                    onChange={(e) => updateOverride(service.id, {
+                      port: e.target.value === "" ? undefined : Number(e.target.value),
+                    })}
+                  />
+                </label>
+                {hasOverride && (
+                  <button
+                    type="button"
+                    className="chip-btn"
+                    onClick={() => clearOverride(service.id)}
+                    title={t("resetToDefault")}
+                  >
+                    <RotateCcw style={{ width: 12, height: 12 }} />
+                    <span>{t("resetToDefault")}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPage({
   tab,
   settings,
+  session,
+  networkServices,
+  onSessionChange,
   theme,
   plugins,
   onTabChange,
@@ -266,6 +391,9 @@ export function SettingsPage({
 }: {
   tab: SettingsTab;
   settings: Settings;
+  session?: RobotSessionConfig;
+  networkServices?: PluginServiceDefinition[];
+  onSessionChange?: (session: RobotSessionConfig) => void;
   theme: Theme;
   plugins: RobvizPlugin[];
   onTabChange: (tab: SettingsTab) => void;
@@ -294,10 +422,23 @@ export function SettingsPage({
         <button className={tab === "plugins" ? "active" : ""} onClick={() => onTabChange("plugins")}>
           <Plug /> {t("plugins")}
         </button>
+        <button className={tab === "network" ? "active" : ""} onClick={() => onTabChange("network")}>
+          <Globe /> {t("network")}
+        </button>
       </nav>
 
       <div className="settings-content">
-        <h1>{tab === "general" ? t("general") : tab === "3d" ? t("threeD") : tab === "images" ? t("imageSettings") : t("plugins")}</h1>
+        <h1>
+          {tab === "general"
+            ? t("general")
+            : tab === "3d"
+              ? t("threeD")
+              : tab === "images"
+                ? t("imageSettings")
+                : tab === "network"
+                  ? t("networkSettings")
+                  : t("plugins")}
+        </h1>
 
         {tab === "general" && (
           <>
@@ -429,6 +570,14 @@ export function SettingsPage({
               );
             })}
           </section>
+        )}
+
+        {tab === "network" && session && onSessionChange && (
+          <NetworkSettingsSection
+            session={session}
+            services={networkServices ?? CORE_NETWORK_SERVICES}
+            onSessionChange={onSessionChange}
+          />
         )}
       </div>
     </section>

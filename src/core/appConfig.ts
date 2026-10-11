@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import type { PluginServiceDefinition } from "../plugins/types";
 import {
   DEFAULT_APP_SETTINGS,
   pointCloudSettingsSchema,
@@ -27,11 +28,19 @@ const activeTopicSchema = z.object({
   pointCloud: pointCloudSettingsSchema.optional(),
 });
 
+const networkOverrideSchema = z.object({
+  port: z.number().int().min(1).max(65535).optional(),
+  host: z.string().optional(),
+  url: z.string().optional(),
+});
+export type NetworkServiceOverride = z.infer<typeof networkOverrideSchema>;
+
 const robotSessionSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   url: z.string(),
   mediaUrl: z.string().optional(),
+  networkOverrides: z.record(z.string(), networkOverrideSchema).default({}),
   mode: z.string().regex(/^[a-z0-9-]+(:[a-z0-9-]+)?$/).default("3d"),
   fixedFrame: z.string(),
   scene: z.object({
@@ -110,6 +119,79 @@ export function renameAppSession(config: AppConfig, id: string, draft: string): 
   };
 }
 
+export const CORE_NETWORK_SERVICES: PluginServiceDefinition[] = [
+  {
+    id: "foxglove",
+    label: "Foxglove Bridge",
+    defaultPort: 8765,
+    protocol: "ws",
+    description: "ROS 2 话题与服务主连接通道",
+  },
+  {
+    id: "video",
+    label: "WebRTC 视频网关",
+    defaultPort: 8787,
+    protocol: "ws",
+    description: "实时视频流 (H.264) 与相机数据流",
+  },
+  {
+    id: "terminal",
+    label: "Web 终端服务",
+    defaultPort: 8767,
+    protocol: "ws",
+    description: "浏览器在线远程 Shell 终端",
+  },
+  {
+    id: "web",
+    label: "RobViz Web 服务",
+    defaultPort: 8000,
+    protocol: "http",
+    description: "航点文件、图像设置与静态文件服务",
+  },
+];
+
+export function resolveBaseHost(sessionUrl: string): string {
+  try {
+    const raw = sessionUrl.trim();
+    if (!raw) return "localhost";
+    const url = raw.includes("://") ? raw : `ws://${raw}`;
+    const parsed = new URL(url);
+    const host = parsed.hostname || "localhost";
+    return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  } catch {
+    return "localhost";
+  }
+}
+
+export function resolveServiceUrl(
+  service: PluginServiceDefinition,
+  session: RobotSessionConfig,
+): string {
+  const override = session.networkOverrides?.[service.id];
+  if (override?.url && override.url.trim()) {
+    return override.url.trim();
+  }
+
+  const baseHost = resolveBaseHost(session.url);
+  const host = (override?.host && override.host.trim()) ? override.host.trim() : baseHost;
+  const formattedHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  const port = override?.port ?? service.defaultPort;
+
+  let protocol: "ws:" | "wss:" | "http:" | "https:" = service.protocol === "ws" ? "ws:" : "http:";
+  if (service.protocol === "ws") {
+    try {
+      const parsed = new URL(session.url.includes("://") ? session.url : `ws://${session.url}`);
+      if (parsed.protocol === "wss:") {
+        protocol = "wss:";
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return `${protocol}//${formattedHost}:${port}`;
+}
+
 export function getDefaultMediaUrl(foxgloveUrl: string): string {
   try {
     const parsed = new URL(foxgloveUrl);
@@ -135,6 +217,7 @@ export function createDefaultSession(id: string, name: string): RobotSessionConf
     id,
     name,
     url: "ws://localhost:8765",
+    networkOverrides: {},
     mode: "3d",
     fixedFrame: "map",
     scene: {

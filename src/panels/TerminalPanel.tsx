@@ -20,6 +20,7 @@ type TerminalStatus = "idle" | "connecting" | "open" | "exited" | "error";
 
 export default function TerminalPanel({
   bridgeUrl,
+  gatewayUrl,
   theme,
   visible,
   height,
@@ -28,6 +29,7 @@ export default function TerminalPanel({
   onHide,
 }: {
   bridgeUrl: string;
+  gatewayUrl?: string;
   theme: "dark" | "light";
   visible: boolean;
   height: number;
@@ -103,7 +105,7 @@ export default function TerminalPanel({
     setStatus("connecting");
     sessionHostRef.current = targetHost;
 
-    const socket = new WebSocket(GATEWAY_URL);
+    const socket = new WebSocket(gatewayUrl ?? GATEWAY_URL);
     socketRef.current = socket;
     socket.onopen = () => {
       if (socketRef.current !== socket) return;
@@ -173,7 +175,7 @@ export default function TerminalPanel({
         setStatus("error");
       }
     };
-  }, [bridgeUrl, closeSocket, password, t, targetHost, username]);
+  }, [bridgeUrl, closeSocket, gatewayUrl, password, t, targetHost, username]);
 
   const endSession = useCallback(() => {
     const socket = socketRef.current;

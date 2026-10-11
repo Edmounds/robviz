@@ -32,6 +32,7 @@ import {
   shouldRetainWorkspacePanelOnClose,
   type WorkspacePanel,
 } from "../core/workspacePanels";
+import { resolveServiceUrl } from "../core/appConfig";
 import { ImagePanel } from "../panels/ImagePanel";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { PointCloudSettingsPanel } from "../panels/PointCloudSettingsPanel";
@@ -52,7 +53,7 @@ import type { PluginViewportToolDef } from "../plugins/registry";
 import type { PcdWorkerResponse } from "../worker/pcd.worker";
 import type { MessagePayload, StreamStats } from "../worker/protocol";
 import { I18nProvider, translate } from "./i18n";
-import { SettingsPage } from "./SettingsPage";
+import { SettingsPage, type SettingsTab } from "./SettingsPage";
 import { WorkspaceDock } from "./WorkspaceDock";
 import type { SerializedDockview } from "dockview-react";
 
@@ -259,7 +260,7 @@ function RobotSessionApp({
   const [dropTarget, setDropTarget] = useState<{ id: string; edge: "before" | "after" } | null>(null);
   const draggedIdRef = useRef<string | null>(null);
   const hasDraggedRef = useRef(false);
-  const [settingsTab, setSettingsTab] = useState<"general" | "3d" | "images" | "plugins">("general");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
   const theme = globalTheme;
   const [settings, setSettings] = useState<LayoutConfig["settings"]>(
     {
@@ -693,6 +694,7 @@ function RobotSessionApp({
     name: session.name,
     url,
     mediaUrl: session.mediaUrl,
+    networkOverrides: session.networkOverrides ?? {},
     mode: mode === "settings" ? sessionModeRef.current : mode,
     fixedFrame,
     scene: {
@@ -713,7 +715,7 @@ function RobotSessionApp({
     panels: panels.map((panel) => ({ ...panel })),
     dockLayout,
     camera: sceneRef.current?.getCameraState() ?? savedCameraRef.current,
-  }), [desired, dockLayout, fixedFrame, followFrame, initializedPluginSectionIds, mode, panels, pcdVoxel, pluginStates, session.autoAddPluginSections, session.id, session.mediaUrl, session.name, settings.groundVisible, settings.tfAxesLineWidth, url, workspace.urdfInspectorPercent]);
+  }), [desired, dockLayout, fixedFrame, followFrame, initializedPluginSectionIds, mode, panels, pcdVoxel, pluginStates, session.autoAddPluginSections, session.id, session.mediaUrl, session.name, session.networkOverrides, settings.groundVisible, settings.tfAxesLineWidth, url, workspace.urdfInspectorPercent]);
 
   const buildSessionConfigRef = useRef(buildSessionConfig);
   buildSessionConfigRef.current = buildSessionConfig;
@@ -1105,6 +1107,16 @@ function RobotSessionApp({
   });
   const hasThreeDPanel = visiblePanels.some((panel) => panel.kind === "3d");
 
+  const getServiceUrl = useCallback((serviceId: string) => {
+    const serviceDef = resolvedPlugins.services.find((s) => s.id === serviceId) ?? {
+      id: serviceId,
+      label: serviceId,
+      defaultPort: 80,
+      protocol: "http" as const,
+    };
+    return resolveServiceUrl(serviceDef, session);
+  }, [resolvedPlugins.services, session]);
+
   // 插件上下文（ready 后 refs 一定已就绪）
   const pluginCtx = useMemo<PluginContext | undefined>(() => {
     if (!ready) return undefined;
@@ -1119,8 +1131,9 @@ function RobotSessionApp({
       connectionState: connState,
       pluginStates,
       onPluginStateChange: updatePluginState,
+      getServiceUrl,
     };
-  }, [active, connState, fixedFrame, pluginStates, ready, settings.language, theme, topics, updatePluginState]);
+  }, [active, connState, fixedFrame, getServiceUrl, pluginStates, ready, settings.language, theme, topics, updatePluginState]);
 
   pluginCtxRef.current = pluginCtx ?? null;
   viewportToolsRef.current = resolvedPlugins.viewportTools;
@@ -1381,8 +1394,9 @@ function RobotSessionApp({
       connectionState: connState,
       pluginStates,
       onPluginStateChange: updatePluginState,
+      getServiceUrl,
     }),
-    [active, connState, fixedFrame, pluginStates, settings.language, theme, topics, updatePluginState],
+    [active, connState, fixedFrame, getServiceUrl, pluginStates, settings.language, theme, topics, updatePluginState],
   );
 
   const availablePageIds = useMemo(
@@ -1750,7 +1764,7 @@ function RobotSessionApp({
             <activePluginPage.component
               ctx={pluginCtx ?? fallbackCtx}
               bridgeUrl={activeBridgeUrl}
-              mediaUrl={session.mediaUrl}
+              mediaUrl={session.mediaUrl || getServiceUrl("video")}
               fontScale={effectiveFontScale}
               isMobile={isMobile}
             />
@@ -1760,6 +1774,9 @@ function RobotSessionApp({
           <SettingsPage
             tab={settingsTab}
             settings={settings}
+            session={session}
+            networkServices={resolvedPlugins.services}
+            onSessionChange={onSessionChange}
             theme={theme}
             plugins={plugins}
             onTabChange={setSettingsTab}
@@ -1785,6 +1802,7 @@ function RobotSessionApp({
         >
           <TerminalPanel
             bridgeUrl={activeBridgeUrl}
+            gatewayUrl={getServiceUrl("terminal")}
             theme={theme}
             visible={terminalVisible}
             fontScale={effectiveFontScale}

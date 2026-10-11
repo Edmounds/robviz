@@ -14,6 +14,20 @@ import type { Display } from "../renderers/SceneManager";
 import type { Theme } from "../renderers/sceneTheme";
 import type { Locale } from "../app/i18n";
 
+/** 插件服务定义（用于向平台暴露所需网络端点） */
+export interface PluginServiceDefinition {
+  /** 服务唯一标识（如 "runtime", "video", "terminal"） */
+  id: string;
+  /** 显示名称 */
+  label: string;
+  /** 默认端口 */
+  defaultPort: number;
+  /** 通信协议 */
+  protocol: "http" | "ws";
+  /** 服务说明 */
+  description?: string;
+}
+
 /** 插件可用的宿主能力（每次渲染更新，topics/fixedFrame/theme 是最新值） */
 export interface PluginContext {
   /** 订阅/发布话题、调用服务（唯一的数据通道，不要自己开 WebSocket） */
@@ -36,6 +50,8 @@ export interface PluginContext {
   pluginStates: Readonly<Record<string, unknown>>;
   /** 更新当前会话中某个插件的持久化状态 */
   onPluginStateChange: (pluginId: string, state: unknown) => void;
+  /** 获取指定服务的最终解析 URL（自动应用 Session 基准主机与网络端口覆盖） */
+  getServiceUrl: (serviceId: string) => string;
 }
 
 export interface ViewportPoseInteraction {
@@ -114,4 +130,6 @@ export interface RobvizPlugin {
   viewportTools?: PluginViewportTool[];
   /** 顶栏页面 */
   pages?: PluginPage[];
+  /** 主动暴露的服务及默认端口（显示在网络设置中并允许用户自定义覆盖） */
+  services?: PluginServiceDefinition[];
 }

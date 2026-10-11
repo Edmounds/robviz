@@ -13,6 +13,15 @@ const plugin: RobvizPlugin = {
   id: "fruit-arm",
   name: "机械臂 (Fruit Arm)",
   pages: [{ id: "main", title: (ctx) => ctx.locale === "en" ? "Arm" : "机械臂", component: ArmPage }],
+  services: [
+    {
+      id: "runtime",
+      label: "机械臂运行管理",
+      defaultPort: 8001,
+      protocol: "http",
+      description: "常驻后台任务管理与节点按需启动 API",
+    },
+  ],
 };
 
 export default plugin;

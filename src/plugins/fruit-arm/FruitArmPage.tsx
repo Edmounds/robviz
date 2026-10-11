@@ -69,6 +69,7 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
   const en = ctx.locale === "en";
   const tr = (cn: string, english: string) => en ? english : cn;
   const url = bridgeUrl ?? ctx.bridge.url;
+  const runtimeBaseUrl = ctx.getServiceUrl("runtime");
   const connected = ctx.active && ctx.connectionState === "open";
   const [file, setFile] = useState<ArmDocument | null>(null);
   const [memory, setMemory] = useState<LoadedSnapshot | null>(null);
@@ -166,7 +167,7 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
     setPoseResult(null); setPoseError(""); setHistory([]); setBusy(false); setEvents([]);
     setRuntime(null); setRuntimeStarting(false); setRuntimeError("");
     const stored = storedSchema.safeParse(ctx.pluginStates["fruit-arm"]);
-    runtimeRequest("tasks/arm", url, undefined, "GET", controller.signal).then((value) => {
+    runtimeRequest("tasks/arm", runtimeBaseUrl, undefined, "GET", controller.signal).then((value) => {
       if (generation.current !== current) return;
       setRuntime(runtimeTaskSchema.parse(value));
     }).catch((error) => { if (!controller.signal.aborted) log(String(error)); });
@@ -454,12 +455,12 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
     setRuntimeStarting(true); setRuntimeError("");
     const current = generation.current;
     try {
-      const checkVal = runtimeTaskSchema.parse(await runtimeRequest("tasks/arm", url, undefined, "GET"));
+      const checkVal = runtimeTaskSchema.parse(await runtimeRequest("tasks/arm", runtimeBaseUrl, undefined, "GET"));
       if (generation.current !== current) return;
       setRuntime(checkVal);
       if (checkVal.ready) { log(tr("机械臂任务已在运行，无需重复启动", "Arm task is already running")); return; }
       log(tr("正在启动机械臂任务及其缺失依赖...", "Starting the arm task and missing dependencies..."));
-      const reply = runtimeTaskReplySchema.parse(await runtimeRequest("tasks/arm/start", url, {}, "POST", undefined, 15_000));
+      const reply = runtimeTaskReplySchema.parse(await runtimeRequest("tasks/arm/start", runtimeBaseUrl, {}, "POST", undefined, 25_000));
       if (generation.current !== current) return;
       setRuntime(reply.task); log(reply.task.detail);
       if (!reply.task.ready) setRuntimeError(tr("机械臂任务未就绪", "Arm task is not ready"));
@@ -533,9 +534,10 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
 
   return <div className="fruit-arm">
     <div className="fruit-arm-toolbar"><strong>{tr("机械臂", "Arm")}</strong><span>{!connected ? tr("离线", "Offline") : `${tr("在线", "Online")} · ${!memory ? tr("配置未加载", "Config not loaded") : !feedbackValid ? tr("等待/无效反馈", "Waiting/invalid feedback") : tr("已收到有效反馈（时效由 planner 判断）", "Valid feedback received (timing checked by planner)")}`}</span>
-      <button disabled={runtimeStarting} onClick={() => void handleStartNodes()}>{runtimeStarting ? tr("启动中...", "Starting...") : runtime?.ready ? tr("任务就绪", "Task ready") : tr("一键启动机械臂", "Start arm")}</button>
-      {runtime && <span className={`fruit-arm-runtime-tag ${runtime.ready ? "ready" : "missing"}`} title={runtime.detail}>
-        {runtime.state} · {runtime.detail}</span>}
+      <button disabled={runtimeStarting} onClick={() => void handleStartNodes()}>{runtimeStarting ? tr("启动中...", "Starting...") : runtime?.ready ? tr("节点就绪", "Nodes ready") : tr("一键启动节点", "Start nodes")}</button>
+      {runtime && <span className="fruit-arm-runtime-badges" aria-label={tr("节点状态", "Node status")}>{runtime.dependencies.map((dep) => <span key={dep.id}
+        className={`fruit-arm-runtime-tag ${dep.ready ? "ready" : "missing"}`} title={`${dep.id}: ${dep.detail}`}>
+        {dep.id === "serial_controller" ? tr("串口", "Serial") : dep.id === "arm_planner_node" ? tr("规划器", "Planner") : "Foxglove"}{dep.ready ? " ✓" : " ✗"}</span>)}</span>}
       {runtimeError && <span className="fruit-arm-runtime-error" role="alert">{runtimeError}</span>}
       <button disabled={!connected || !memory || !feedbackValid || busy} aria-pressed={enabled} onClick={() => {
         if (enabled) { if (jog && pending.current?.sent) void stop(); else clearInput(); }

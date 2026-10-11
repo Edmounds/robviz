@@ -4,12 +4,14 @@
  */
 import type { ComponentType } from "react";
 
+import { CORE_NETWORK_SERVICES } from "../core/appConfig";
 import type { Display } from "../renderers/SceneManager";
 import type {
   PluginContext,
   PluginPageProps,
   PluginPanelProps,
   PluginSectionProps,
+  PluginServiceDefinition,
   RobvizPlugin,
   ViewportPoseInteraction,
 } from "./types";
@@ -90,6 +92,7 @@ export interface ResolvedPlugins {
   displays: Record<string, () => Display>;
   viewportTools: PluginViewportToolDef[];
   pages: PluginPageDef[];
+  services: PluginServiceDefinition[];
 }
 
 /** 先固定 display schema 的首个所有者，再过滤启用状态，避免运行时切换导致接管。 */
@@ -187,7 +190,20 @@ export function resolvePlugins(
     }
   }
 
-  return { activePlugins, panels, sections, displays, viewportTools, pages };
+  const allServices: PluginServiceDefinition[] = [...CORE_NETWORK_SERVICES];
+  const seenServiceIds = new Set<string>(CORE_NETWORK_SERVICES.map((s) => s.id));
+  for (const plugin of activePlugins) {
+    for (const service of plugin.services ?? []) {
+      if (seenServiceIds.has(service.id)) {
+        console.warn(`[plugins] 重复服务 id "${service.id}"（来自插件 ${plugin.id}），已跳过`);
+        continue;
+      }
+      seenServiceIds.add(service.id);
+      allServices.push(service);
+    }
+  }
+
+  return { activePlugins, panels, sections, displays, viewportTools, pages, services: allServices };
 }
 
 const resolved = resolvePlugins(plugins, []);
@@ -196,3 +212,4 @@ export const pluginSections = resolved.sections;
 export const pluginDisplays = resolved.displays;
 export const pluginViewportTools = resolved.viewportTools;
 export const pluginPages = resolved.pages;
+export const pluginServices = resolved.services;

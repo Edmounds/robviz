@@ -71,24 +71,25 @@ export const configurationReplySchema = resultSchema.extend({
   max_trajectory_points: finite.int().min(2).max(64),
 });
 
-export const runtimeTaskSchema = z.object({
-  id: z.string().optional(),
-  task_id: z.string().optional(),
+export interface RuntimeTask {
+  id: string;
+  state: "STOPPED" | "STARTING" | "RUNNING";
+  ready: boolean;
+  detail: string;
+  pid: number | null;
+  dependencies: RuntimeTask[];
+  checked_at: string;
+}
+
+export const runtimeTaskSchema: z.ZodType<RuntimeTask> = z.lazy(() => z.object({
+  id: z.string(),
   state: z.enum(["STOPPED", "STARTING", "RUNNING"]),
   ready: z.boolean(),
   detail: z.string(),
   pid: z.number().int().nullable(),
-  dependencies: z.array(z.object({
-    id: z.string().optional(),
-    task_id: z.string().optional(),
-    state: z.enum(["STOPPED", "STARTING", "RUNNING"]),
-    ready: z.boolean(),
-    detail: z.string(),
-    pid: z.number().int().nullable(),
-    dependencies: z.array(z.unknown()),
-  })),
-});
-export type RuntimeTask = z.infer<typeof runtimeTaskSchema>;
+  dependencies: z.array(runtimeTaskSchema),
+  checked_at: z.string(),
+}));
 
 export const runtimeTaskReplySchema = z.object({
   task: runtimeTaskSchema,
@@ -112,19 +113,8 @@ export function same(a: unknown, b: unknown): boolean {
   return JSON.stringify(ordered(a)) === JSON.stringify(ordered(b));
 }
 
-/** Keep the same-origin write boundary and never edit a different robot's files. */
-function checkMachine(bridgeUrl?: string): void {
-  if (!bridgeUrl) return;
-  const host = new URL(bridgeUrl).hostname;
-  const local = (name: string) => ["localhost", "127.0.0.1", "[::1]"].includes(name);
-  if (host !== location.hostname && !(local(host) && local(location.hostname))) {
-    throw new Error(`Open this robot's editor at http://${host}:8000 before editing its arm`);
-  }
-}
-
-export async function armRequest(path: string, bridgeUrl?: string, body?: unknown,
+export async function armRequest(path: string, _bridgeUrl?: string, body?: unknown,
   method = "POST", signal?: AbortSignal, timeoutMs = 10_000): Promise<unknown> {
-  checkMachine(bridgeUrl);
   const deadline = AbortSignal.timeout(timeoutMs);
   const waiting = signal ? AbortSignal.any([signal, deadline]) : deadline;
   const response = await fetch(`/api/arm/${path}`, body === undefined
@@ -138,12 +128,10 @@ export async function armRequest(path: string, bridgeUrl?: string, body?: unknow
   return payload;
 }
 
-export async function runtimeRequest(path: string, bridgeUrl?: string, body?: unknown,
+export async function runtimeRequest(path: string, serviceBaseUrl: string, body?: unknown,
   method = "POST", signal?: AbortSignal, timeoutMs = 10_000): Promise<unknown> {
-  checkMachine(bridgeUrl);
-  const host = bridgeUrl ? new URL(bridgeUrl).hostname : location.hostname;
-  const formattedHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-  const target = `${location.protocol}//${formattedHost}:8001/api/runtime/${path}`;
+  const base = serviceBaseUrl.replace(/\/+$/, "");
+  const target = `${base}/api/runtime/${path}`;
   const deadline = AbortSignal.timeout(timeoutMs);
   const waiting = signal ? AbortSignal.any([signal, deadline]) : deadline;
   const response = await fetch(target, body === undefined
