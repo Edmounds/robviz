@@ -11,16 +11,13 @@ const MARKER_TOPIC = "/fruit/waypoint_maker/markers";
 const ODOM_TOPIC = "/odometry";
 const ODOM_SCHEMA = "nav_msgs/msg/Odometry";
 const POINT_TYPES = ["waypoint", "goal"] as const;
-const FINAL_YAW_MODES = ["blend_on_path", "rotate_at_goal"] as const;
 
 type PointType = (typeof POINT_TYPES)[number];
-type FinalYawMode = (typeof FINAL_YAW_MODES)[number];
 
 interface MakerPluginState {
   name: string;
   pointType: PointType;
   overwrite: boolean;
-  finalYawMode: FinalYawMode;
 }
 
 interface WaypointPoint {
@@ -53,7 +50,6 @@ interface RecorderState {
     cursor: number;
     nextGoal: string;
     nextName: string;
-    finalYawMode: FinalYawMode;
     template: TemplateEntry[];
   };
   navigation: {
@@ -66,6 +62,12 @@ interface RecorderState {
   };
 }
 
+interface BoundRouteQueue {
+  fileId: string;
+  version: string;
+  names: string[];
+}
+
 interface OdomStatus {
   receivedAt: number;
   linear: number;
@@ -76,7 +78,6 @@ const DEFAULT_MAKER_STATE: MakerPluginState = {
   name: "",
   pointType: "goal",
   overwrite: false,
-  finalYawMode: "blend_on_path",
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -86,16 +87,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function readMakerState(raw: unknown): MakerPluginState {
   if (!isRecord(raw)) return { ...DEFAULT_MAKER_STATE };
   const pointType = raw.pointType;
-  const finalYawMode = raw.finalYawMode;
   return {
     name: typeof raw.name === "string" ? raw.name : DEFAULT_MAKER_STATE.name,
     pointType: POINT_TYPES.includes(pointType as PointType)
       ? (pointType as PointType)
       : DEFAULT_MAKER_STATE.pointType,
     overwrite: typeof raw.overwrite === "boolean" ? raw.overwrite : DEFAULT_MAKER_STATE.overwrite,
-    finalYawMode: FINAL_YAW_MODES.includes(finalYawMode as FinalYawMode)
-      ? (finalYawMode as FinalYawMode)
-      : DEFAULT_MAKER_STATE.finalYawMode,
   };
 }
 
@@ -144,7 +141,6 @@ export function readRecorderState(raw: unknown): RecorderState | undefined {
         }];
       })
     : [];
-  const finalYawMode = waypoints.final_yaw_mode;
   return {
     status: typeof data.status === "string" ? data.status : "idle",
     message: typeof data.message === "string" ? data.message : "",
@@ -161,9 +157,6 @@ export function readRecorderState(raw: unknown): RecorderState | undefined {
       cursor: typeof waypoints.cursor === "number" ? waypoints.cursor : 0,
       nextGoal: typeof waypoints.next_goal === "string" ? waypoints.next_goal : "",
       nextName: typeof waypoints.next_name === "string" ? waypoints.next_name : "",
-      finalYawMode: FINAL_YAW_MODES.includes(finalYawMode as FinalYawMode)
-        ? (finalYawMode as FinalYawMode)
-        : DEFAULT_MAKER_STATE.finalYawMode,
       template,
     },
     navigation: {
@@ -188,9 +181,9 @@ function MakerSection({ ctx }: PluginSectionProps) {
   const [name, setName] = useState(stored.name);
   const [pointType, setPointType] = useState<PointType>(stored.pointType);
   const [overwrite, setOverwrite] = useState(stored.overwrite);
-  const [finalYawMode, setFinalYawMode] = useState<FinalYawMode>(stored.finalYawMode);
   const [directTarget, setDirectTarget] = useState("");
-  const [routeQueue, setRouteQueue] = useState<string[]>([]);
+  const [routeQueue, setRouteQueue] = useState<BoundRouteQueue>({ fileId: "", version: "", names: [] });
+  const [filePending, setFilePending] = useState(false);
   const [localError, setLocalError] = useState("");
   const [odom, setOdom] = useState<OdomStatus>();
   const [lastTfAt, setLastTfAt] = useState(0);
@@ -211,11 +204,13 @@ function MakerSection({ ctx }: PluginSectionProps) {
     const unsubscribeState = ctx.bridge.subscribe(STATE_TOPIC, (payload) => {
       if (payload.kind !== "raw") return;
       setRecorder(readRecorderState(payload.message));
+      setFilePending(false);
     });
     const unsubscribePrompt = ctx.bridge.subscribe(PROMPT_TOPIC, (payload) => {
       if (payload.kind !== "raw") return;
       const message = payload.message as { data?: unknown };
       if (typeof message.data === "string") setPrompt(message.data);
+      setFilePending(false);
     });
     const unsubscribeTf = ctx.bridge.subscribe("/tf", (payload) => {
       if (payload.kind !== "raw") return;
@@ -255,7 +250,6 @@ function MakerSection({ ctx }: PluginSectionProps) {
   useEffect(() => setName(stored.name), [stored.name]);
   useEffect(() => setPointType(stored.pointType), [stored.pointType]);
   useEffect(() => setOverwrite(stored.overwrite), [stored.overwrite]);
-  useEffect(() => setFinalYawMode(stored.finalYawMode), [stored.finalYawMode]);
 
   const persist = useCallback((next: Partial<MakerPluginState>) => {
     ctx.onPluginStateChange("waypoints-maker", { ...readMakerState(ctx.pluginStates["waypoints-maker"]), ...next });
@@ -268,9 +262,25 @@ function MakerSection({ ctx }: PluginSectionProps) {
     }
   }, [name, persist, recorder?.fileId, recorder?.formal, recorder?.waypoints.template]);
 
+  useEffect(() => {
+    if (recorder?.fileId || recorder?.version) {
+      setRouteQueue((prev) => {
+        if (prev.names.length > 0 && (prev.fileId !== recorder.fileId || prev.version !== recorder.version)) {
+          return { fileId: recorder.fileId, version: recorder.version, names: [] };
+        }
+        return prev;
+      });
+      setDirectTarget((prev) => {
+        const recorded = (recorder.points ?? []).map((p) => p.name);
+        return recorded.includes(prev) ? prev : "";
+      });
+    }
+  }, [recorder?.fileId, recorder?.version, recorder?.points]);
+
   const send = (command: Record<string, unknown>): boolean => {
     if (!canWrite(ctx)) {
       setLocalError(ctx.locale === "en" ? "Active online session required" : "需要活动且在线的机器会话");
+      setFilePending(false);
       return false;
     }
     try {
@@ -279,6 +289,7 @@ function MakerSection({ ctx }: PluginSectionProps) {
       return true;
     } catch (error) {
       setLocalError(error instanceof Error ? error.message : String(error));
+      setFilePending(false);
       return false;
     }
   };
@@ -330,50 +341,79 @@ function MakerSection({ ctx }: PluginSectionProps) {
   };
 
   const runToTarget = () => {
+    if (filePending || !recorder?.fileId || !recorder?.version) {
+      setLocalError(ctx.locale === "en" ? "Waypoint file is loading" : "航点文件加载中");
+      return;
+    }
     if (!effectiveDirectTarget) {
       setLocalError(ctx.locale === "en" ? "No recorded waypoint selected" : "未选择已录制航点");
       return;
     }
     send({
       command: "run_to_waypoint",
+      file_id: recorder.fileId,
+      version: recorder.version,
       name: effectiveDirectTarget,
-      final_yaw_mode: finalYawMode,
     });
   };
 
   const addToQueue = () => {
-    if (!effectiveDirectTarget) return;
-    setRouteQueue((prev) => [...prev, effectiveDirectTarget]);
+    if (filePending || !recorder?.fileId || !recorder?.version || !effectiveDirectTarget) return;
+    setRouteQueue((prev) => {
+      if (prev.fileId !== recorder.fileId || prev.version !== recorder.version) {
+        return { fileId: recorder.fileId, version: recorder.version, names: [effectiveDirectTarget] };
+      }
+      return { ...prev, names: [...prev.names, effectiveDirectTarget] };
+    });
   };
 
   const clearQueue = () => {
-    setRouteQueue([]);
+    setRouteQueue({ fileId: recorder?.fileId ?? "", version: recorder?.version ?? "", names: [] });
   };
 
   const removeFromQueue = (index: number) => {
-    setRouteQueue((prev) => prev.filter((_, i) => i !== index));
+    setRouteQueue((prev) => ({
+      ...prev,
+      names: prev.names.filter((_, i) => i !== index),
+    }));
   };
 
   const runRoute = () => {
-    if (routeQueue.length === 0) {
+    if (filePending || !recorder?.fileId || !recorder?.version) {
+      setLocalError(ctx.locale === "en" ? "Waypoint file is loading" : "航点文件加载中");
+      return;
+    }
+    if (routeQueue.names.length === 0) {
       setLocalError(ctx.locale === "en" ? "Route queue is empty" : "路径队列为空");
+      return;
+    }
+    if (routeQueue.fileId !== recorder.fileId || routeQueue.version !== recorder.version) {
+      setLocalError(ctx.locale === "en" ? "Queue expired due to file or version change" : "队列因航点文件或版本变化已失效");
+      setRouteQueue({ fileId: recorder.fileId, version: recorder.version, names: [] });
       return;
     }
     send({
       command: "run_route",
-      names: routeQueue,
-      final_yaw_mode: finalYawMode,
+      file_id: recorder.fileId,
+      version: recorder.version,
+      names: routeQueue.names,
     });
   };
 
   const loadFile = (fileId: string) => {
     if (fileId === recorder?.fileId) return;
     if (recorder?.dirty && !window.confirm(ctx.locale === "en" ? "Discard unsaved waypoint changes?" : "放弃未保存的航点修改？")) return;
+    setFilePending(true);
+    setRouteQueue({ fileId: "", version: "", names: [] });
+    setDirectTarget("");
     send({ command: "load_waypoint_file", file_id: fileId, confirm_discard: true });
   };
 
   const reloadFile = () => {
     if (recorder?.dirty && !window.confirm(ctx.locale === "en" ? "Discard unsaved waypoint changes?" : "放弃未保存的航点修改？")) return;
+    setFilePending(true);
+    setRouteQueue({ fileId: "", version: "", names: [] });
+    setDirectTarget("");
     send({ command: "reload", confirm_discard: true });
   };
 
@@ -408,7 +448,7 @@ function MakerSection({ ctx }: PluginSectionProps) {
           className="topic-input"
           value={recorder?.fileId || "odom"}
           onChange={(event) => loadFile(event.target.value)}
-          disabled={!canWrite(ctx) || busy}
+          disabled={!canWrite(ctx) || busy || filePending}
         >
           <option value="odom">odom / formal</option>
           <option value="debug">odom / debug</option>
@@ -490,30 +530,12 @@ function MakerSection({ ctx }: PluginSectionProps) {
         <button type="button" onClick={() => send({ command: "undo" })} disabled={!canWrite(ctx) || busy}>
           {en ? "Undo" : "撤销"}
         </button>
-        <button type="button" onClick={reloadFile} disabled={!canWrite(ctx) || busy}>
+        <button type="button" onClick={reloadFile} disabled={!canWrite(ctx) || busy || filePending}>
           {en ? "Reload" : "重载"}
         </button>
         <button type="button" onClick={() => send({ command: "save" })} disabled={!canWrite(ctx) || busy}>
           {en ? "Save" : "保存"}
         </button>
-      </div>
-
-      <div className="waypoint-maker-actions">
-        <label className="side-label" htmlFor="waypoint-maker-yaw">{en ? "Final yaw" : "终点朝向"}</label>
-        <select
-          id="waypoint-maker-yaw"
-          className="topic-input"
-          value={finalYawMode}
-          onChange={(event) => {
-            const next = event.target.value as FinalYawMode;
-            setFinalYawMode(next);
-            persist({ finalYawMode: next });
-            send({ command: "set_final_yaw_mode", final_yaw_mode: next });
-          }}
-          disabled={!canWrite(ctx) || navigationActive}
-        >
-          {FINAL_YAW_MODES.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
-        </select>
       </div>
 
       <div className="side-row">
@@ -523,7 +545,7 @@ function MakerSection({ ctx }: PluginSectionProps) {
           className="topic-input"
           value={effectiveDirectTarget}
           onChange={(event) => setDirectTarget(event.target.value)}
-          disabled={!canWrite(ctx) || busy || recordedNames.length === 0}
+          disabled={!canWrite(ctx) || busy || filePending || recordedNames.length === 0}
         >
           {recordedNames.length === 0 ? (
             <option value="">{en ? "No recorded points" : "无已录制航点"}</option>
@@ -539,7 +561,7 @@ function MakerSection({ ctx }: PluginSectionProps) {
         <button
           type="button"
           onClick={runToTarget}
-          disabled={!canWrite(ctx) || busy || !effectiveDirectTarget}
+          disabled={!canWrite(ctx) || busy || filePending || !effectiveDirectTarget || !recorder?.fileId || !recorder?.version}
           title={en ? "Navigate directly to target in straight line" : "从当前位置直线导航前往该目标点"}
         >
           {en ? "Go to point" : "前往该点"}
@@ -547,35 +569,35 @@ function MakerSection({ ctx }: PluginSectionProps) {
         <button
           type="button"
           onClick={addToQueue}
-          disabled={!canWrite(ctx) || busy || !effectiveDirectTarget}
+          disabled={!canWrite(ctx) || busy || filePending || !effectiveDirectTarget || !recorder?.fileId || !recorder?.version}
           title={en ? "Add point to continuous route queue" : "将该点追加到连续路径队列"}
         >
           {en ? "+ Add queue" : "+ 加入队列"}
         </button>
       </div>
 
-      {routeQueue.length > 0 && (
+      {routeQueue.names.length > 0 && (
         <div className="waypoint-maker-queue-card">
           <div className="waypoint-maker-queue-title">
-            <span>{en ? `Queue (${routeQueue.length})` : `连续路径队列 (${routeQueue.length}点)`}</span>
+            <span>{en ? `Queue (${routeQueue.names.length})` : `连续路径队列 (${routeQueue.names.length}点)`}</span>
             <button
               type="button"
               className="queue-clear-btn"
               onClick={clearQueue}
-              disabled={busy}
+              disabled={busy || filePending}
             >
               {en ? "Clear" : "清空"}
             </button>
           </div>
           <div className="waypoint-maker-queue-tags">
-            {routeQueue.map((pointName, index) => (
+            {routeQueue.names.map((pointName, index) => (
               <span key={`${pointName}-${index}`} className="waypoint-queue-tag">
                 <span className="tag-index">{index + 1}.</span> {pointName}
                 <button
                   type="button"
                   className="tag-remove"
                   onClick={() => removeFromQueue(index)}
-                  disabled={busy}
+                  disabled={busy || filePending}
                   title={en ? "Remove" : "移除"}
                 >
                   ×
@@ -587,9 +609,9 @@ function MakerSection({ ctx }: PluginSectionProps) {
             type="button"
             className="queue-run-btn"
             onClick={runRoute}
-            disabled={!canWrite(ctx) || busy || routeQueue.length === 0}
+            disabled={!canWrite(ctx) || busy || filePending || routeQueue.names.length === 0 || routeQueue.fileId !== recorder?.fileId || routeQueue.version !== recorder?.version}
           >
-            {en ? `Run route queue (${routeQueue.length})` : `执行连续路径 (${routeQueue.length}点)`}
+            {en ? `Run route queue (${routeQueue.names.length})` : `执行连续路径 (${routeQueue.names.length}点)`}
           </button>
         </div>
       )}
@@ -597,7 +619,7 @@ function MakerSection({ ctx }: PluginSectionProps) {
       <div className="waypoint-maker-actions">
         <button
           type="button"
-          onClick={() => send({ command: "run_next_test", final_yaw_mode: finalYawMode })}
+          onClick={() => send({ command: "run_next_test" })}
           disabled={!canWrite(ctx) || busy || !recorder?.waypoints.nextGoal}
         >
           {en ? "Run next goal" : "运行下一段"}
