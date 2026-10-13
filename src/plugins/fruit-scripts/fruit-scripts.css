@@ -1,0 +1,53 @@
+.fruit-scripts {
+  height: 100%; min-height: 0; min-width: 0; display: flex; flex-direction: column;
+  padding: var(--panel-gap, 8px); gap: var(--panel-gap, 8px);
+  color: var(--foreground); background: var(--canvas); font-size: var(--fs-body);
+}
+.fruit-scripts * { box-sizing: border-box; }
+.fruit-scripts button, .fruit-scripts select {
+  font: inherit; font-size: var(--fs-ui); color: var(--foreground); background: var(--canvas);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-ctl, 6px);
+  padding: 5px 9px; min-height: var(--ctl-min-h, 24px);
+}
+.fruit-scripts button { cursor: pointer; }
+.fruit-scripts button:hover:not(:disabled) { background: var(--surface-soft); }
+.fruit-scripts button:disabled { opacity: .5; cursor: default; }
+.fruit-scripts :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.fruit-scripts-toolbar {
+  flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--border-soft);
+  border-radius: var(--panel-radius, 12px); background: var(--surface-soft);
+}
+.fruit-scripts .fruit-scripts-kill { background: #b4232f; border-color: #b4232f; color: #fff; font-weight: 700; min-width: 80px; }
+.fruit-scripts .fruit-scripts-kill:hover:not(:disabled) { background: #8f1b25; }
+.fruit-scripts-toolbar > span { font-size: var(--fs-ui); }
+.fruit-scripts-error { color: #d92d20; overflow-wrap: anywhere; font-size: var(--fs-ui); }
+.fruit-scripts-main { flex: 1; min-width: 0; min-height: 0; }
+.fruit-scripts-controls { height: 100%; overflow: auto; display: flex; flex-direction: column; gap: var(--panel-gap, 8px); }
+.fruit-scripts-card {
+  flex: none; padding: 12px; border: 1px solid var(--border-soft);
+  border-radius: var(--panel-radius, 12px); background: var(--canvas);
+}
+.fruit-scripts-card.running { border-color: #38a88b; }
+.fruit-scripts-card > header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.fruit-scripts-card strong { overflow-wrap: anywhere; font: var(--fs-ui) var(--mono); }
+.fruit-scripts-badge { margin-left: auto; color: var(--text-muted); font-size: var(--fs-meta); }
+.fruit-scripts-card.running .fruit-scripts-badge { color: #38a88b; }
+.fruit-scripts-parameters { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+.fruit-scripts-parameters label { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: var(--fs-ui); }
+.fruit-scripts-parameters select { width: 100%; min-width: 0; }
+.fruit-scripts-boolean { display: flex; align-items: center; gap: 5px; min-height: var(--ctl-min-h, 24px); }
+.fruit-scripts small { display: block; color: var(--text-muted); font-size: var(--fs-meta); }
+.fruit-scripts-preview { display: block; padding: 8px 0; overflow-wrap: anywhere; font: var(--fs-meta) var(--mono); color: var(--text-muted); }
+.fruit-scripts-separator { flex: none; position: relative; }
+.fruit-scripts-separator.vertical { width: 12px; cursor: col-resize; }
+.fruit-scripts-separator.horizontal { height: 12px; cursor: row-resize; }
+.fruit-scripts-separator::after { content: ""; position: absolute; background: var(--border-soft); border-radius: 4px; }
+.fruit-scripts-separator.vertical::after { top: 40%; bottom: 40%; width: 3px; left: 4px; }
+.fruit-scripts-separator.horizontal::after { left: 40%; right: 40%; height: 3px; top: 4px; }
+.fruit-scripts-separator:hover::after, .fruit-scripts-separator[data-separator="active"]::after { background: var(--focus-ring); }
+.fruit-scripts-log { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--border-soft); border-radius: var(--panel-radius, 12px); }
+.fruit-scripts-log > header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 12px; background: var(--surface-soft); border-bottom: 1px solid var(--border-soft); font-size: var(--fs-ui); }
+.fruit-scripts-log > header code { flex: 1; overflow-wrap: anywhere; font: var(--fs-meta) var(--mono); }
+.fruit-scripts-terminal { flex: 1; min-height: 0; min-width: 0; padding: 8px; overflow: hidden; }
+.fruit-scripts-terminal .xterm { height: 100%; }
