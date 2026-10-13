@@ -133,7 +133,7 @@ export function ImagePanel({
   topics,
   initialTopic,
   fixedTopic,
-  initialPreferRaw = false,
+  initialPreferRaw = true,
   initialUseWebRtc = true,
   mediaUrl: configuredMediaUrl,
   onTopicChange,
@@ -284,11 +284,14 @@ export function ImagePanel({
   }, []);
 
   const isImageTopic = topics.some(
-    (cand) => cand.topic === topic && cand.schemaName === "sensor_msgs/msg/Image",
+    (cand) =>
+      cand.topic === topic &&
+      (cand.schemaName === "sensor_msgs/msg/Image" ||
+        cand.schemaName === "sensor_msgs/msg/CompressedImage"),
   );
   const isManaged = Boolean(webrtcStats?.transport);
   const isJpegMode = webrtcStats?.transport === "jpeg";
-  const activeWebRtc = !isJpegMode && useWebRtc && isImageTopic;
+  const activeWebRtc = !isJpegMode && useWebRtc && (isImageTopic || isManaged);
   const activeCompressedTopic = isJpegMode
     ? (webrtcStats?.compressedTopic ?? `${topic}/compressed`)
     : topic;
@@ -315,7 +318,9 @@ export function ImagePanel({
     if (preferred !== topic) setTopic(preferred);
   }, [fixedTopic, initialTopic, topic, topics]);
 
-  const shouldWatchGateway = Boolean(active && !collapsed && topic && isImageTopic && useWebRtc);
+  const shouldWatchGateway = Boolean(
+    active && !collapsed && topic && (isImageTopic || isManaged) && useWebRtc,
+  );
 
   useEffect(() => {
     if (!shouldWatchGateway) return;
@@ -450,11 +455,7 @@ export function ImagePanel({
           <select
             value={topic}
             onChange={(e) => {
-              preferRawRef.current = topics.some(
-                (candidate) =>
-                  candidate.topic === e.target.value &&
-                  candidate.schemaName === "sensor_msgs/msg/Image",
-              );
+              preferRawRef.current = !e.target.value.endsWith("/compressed");
               setTopic(e.target.value);
             }}
           >

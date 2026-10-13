@@ -1337,7 +1337,7 @@ function RobotSessionApp({
           bridge={bridgeRef.current!}
           topics={topics}
           initialTopic={imageState?.topic}
-          initialPreferRaw={imageState?.preferRaw}
+          initialPreferRaw={imageState?.preferRaw ?? true}
           initialUseWebRtc={imageState?.useWebRtc !== false}
           mediaUrl={session.mediaUrl}
           onTopicChange={(topic, preferRaw, useWebRtc) =>

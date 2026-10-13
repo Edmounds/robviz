@@ -30,7 +30,33 @@ export function preferredImageTopic(
   initialTopic: string | undefined,
   preferRaw: boolean,
 ): string {
-  if (preferRaw || currentTopic.endsWith(COMPRESSED_SUFFIX)) return currentTopic;
+  if (preferRaw) {
+    if (currentTopic) {
+      if (currentTopic.endsWith(COMPRESSED_SUFFIX)) {
+        const raw = currentTopic.slice(0, -COMPRESSED_SUFFIX.length);
+        if (topics.some((info) => info.topic === raw && info.schemaName === RAW_IMAGE_SCHEMA)) {
+          return raw;
+        }
+      }
+      return currentTopic;
+    }
+    if (initialTopic) {
+      const raw = initialTopic.endsWith(COMPRESSED_SUFFIX)
+        ? initialTopic.slice(0, -COMPRESSED_SUFFIX.length)
+        : initialTopic;
+      if (topics.some((info) => info.topic === raw && info.schemaName === RAW_IMAGE_SCHEMA)) {
+        return raw;
+      }
+      if (topics.some((info) => info.topic === initialTopic)) {
+        return initialTopic;
+      }
+    }
+    const rawTopics = topics.filter((info) => info.schemaName === RAW_IMAGE_SCHEMA);
+    if (rawTopics.length === 1) return rawTopics[0].topic;
+    return "";
+  }
+
+  if (currentTopic.endsWith(COMPRESSED_SUFFIX)) return currentTopic;
 
   if (initialTopic) {
     const compressed = `${initialTopic}${COMPRESSED_SUFFIX}`;
