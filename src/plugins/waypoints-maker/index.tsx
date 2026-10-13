@@ -210,7 +210,6 @@ function MakerSection({ ctx }: PluginSectionProps) {
       if (payload.kind !== "raw") return;
       const message = payload.message as { data?: unknown };
       if (typeof message.data === "string") setPrompt(message.data);
-      setFilePending(false);
     });
     const unsubscribeTf = ctx.bridge.subscribe("/tf", (payload) => {
       if (payload.kind !== "raw") return;
@@ -450,8 +449,9 @@ function MakerSection({ ctx }: PluginSectionProps) {
           onChange={(event) => loadFile(event.target.value)}
           disabled={!canWrite(ctx) || busy || filePending}
         >
-          <option value="odom">odom / formal</option>
-          <option value="debug">odom / debug</option>
+          <option value="odom">ABC / odom_waypoints.yaml</option>
+          <option value="odom_acb">ACB / odom_waypoints_acb.yaml</option>
+          <option value="debug">debug / debug_waypoints.yaml</option>
         </select>
       </div>
 
@@ -524,16 +524,16 @@ function MakerSection({ ctx }: PluginSectionProps) {
       </div>
 
       <div className="waypoint-maker-actions">
-        <button type="button" onClick={record} disabled={!canWrite(ctx) || busy || !poseAvailable}>
+        <button type="button" onClick={record} disabled={!canWrite(ctx) || busy || filePending || !poseAvailable}>
           {en ? "Record" : "录点"}
         </button>
-        <button type="button" onClick={() => send({ command: "undo" })} disabled={!canWrite(ctx) || busy}>
+        <button type="button" onClick={() => send({ command: "undo" })} disabled={!canWrite(ctx) || busy || filePending}>
           {en ? "Undo" : "撤销"}
         </button>
         <button type="button" onClick={reloadFile} disabled={!canWrite(ctx) || busy || filePending}>
           {en ? "Reload" : "重载"}
         </button>
-        <button type="button" onClick={() => send({ command: "save" })} disabled={!canWrite(ctx) || busy}>
+        <button type="button" onClick={() => send({ command: "save" })} disabled={!canWrite(ctx) || busy || filePending}>
           {en ? "Save" : "保存"}
         </button>
       </div>
@@ -620,14 +620,14 @@ function MakerSection({ ctx }: PluginSectionProps) {
         <button
           type="button"
           onClick={() => send({ command: "run_next_test" })}
-          disabled={!canWrite(ctx) || busy || !recorder?.waypoints.nextGoal}
+          disabled={!canWrite(ctx) || busy || filePending || !recorder?.waypoints.nextGoal}
         >
           {en ? "Run next goal" : "运行下一段"}
         </button>
         <button
           type="button"
           onClick={() => send({ command: "reset_test_cursor" })}
-          disabled={!canWrite(ctx) || busy}
+          disabled={!canWrite(ctx) || busy || filePending}
         >
           {en ? "Reset cursor" : "复位游标"}
         </button>
@@ -643,7 +643,7 @@ function MakerSection({ ctx }: PluginSectionProps) {
       <div className="waypoint-maker-status">
         <span>{en ? "Next" : "下一目标"}: {recorder?.navigation.nextGoal || "N/A"}</span>
         <span className="waypoint-maker-spacer" />
-        <span>{recorder ? `${recorder.points.length}/${recorder.waypoints.count}` : "N/A"}</span>
+        <span>{recorder ? `${recorder.points.length}/${formal ? template.length : recorder.waypoints.count}` : "N/A"}</span>
       </div>
       <div className="waypoint-maker-status">
         <span>{en ? "Pose" : "位姿"}: {poseText}</span>

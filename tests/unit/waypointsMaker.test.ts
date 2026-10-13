@@ -56,6 +56,29 @@ describe("waypoints-maker plugin", () => {
     expect(readRecorderState(badMsg)).toBeUndefined();
   });
 
+  it("keeps the ACB file ID, matching template and next missing name", () => {
+    const parsed = readRecorderState({ data: JSON.stringify({
+      file_id: "odom_acb",
+      formal: true,
+      waypoints: {
+        count: 1,
+        next_name: "A_left1",
+        template: [
+          { name: "A_left1", type: "goal", recorded: false },
+          { name: "stop", type: "waypoint", recorded: true },
+        ],
+      },
+      navigation: { active: false },
+      points: [{ name: "stop", type: "waypoint", position: { x: 1, y: 2, z: 0 } }],
+    }) });
+
+    expect(parsed?.fileId).toBe("odom_acb");
+    expect(parsed?.formal).toBe(true);
+    expect(parsed?.waypoints.nextName).toBe("A_left1");
+    expect(parsed?.waypoints.template.map((entry) => entry.name)).toEqual(["A_left1", "stop"]);
+    expect(parsed?.points.map((point) => point.name)).toEqual(["stop"]);
+  });
+
   it("detects disk_synced false when disk_version differs", () => {
     const innerState = {
       status: "idle",
