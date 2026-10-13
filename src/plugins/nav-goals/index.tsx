@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 
 import type { PluginContext, PluginSectionProps, RobvizPlugin, ViewportPoseInteraction } from "../types";
+import { TextInput } from "../../app/EditableInput";
 
 const DEFAULT_NAV_TOPICS = {
   goalTopic: "/goal_pose",
@@ -83,14 +84,16 @@ function NavConfigSection({ ctx }: PluginSectionProps) {
   useEffect(() => setInitialPoseTopic(stored.initialPoseTopic), [stored.initialPoseTopic]);
 
   const updateGoal = (val: string) => {
+    setGoalTopic(val);
+    if (!val.trim()) return;
     const next = { ...readNavPluginState(ctx.pluginStates["nav-goals"]), goalTopic: val.trim() || DEFAULT_NAV_TOPICS.goalTopic };
-    setGoalTopic(next.goalTopic);
     ctx.onPluginStateChange("nav-goals", next);
   };
 
   const updateInitialPose = (val: string) => {
+    setInitialPoseTopic(val);
+    if (!val.trim()) return;
     const next = { ...readNavPluginState(ctx.pluginStates["nav-goals"]), initialPoseTopic: val.trim() || DEFAULT_NAV_TOPICS.initialPoseTopic };
-    setInitialPoseTopic(next.initialPoseTopic);
     ctx.onPluginStateChange("nav-goals", next);
   };
 
@@ -98,20 +101,24 @@ function NavConfigSection({ ctx }: PluginSectionProps) {
     <>
       <div className="side-row">
         <span className="side-label">{isEn ? "Goal Topic" : "目标话题"}</span>
-        <input
+        <TextInput
           className="topic-input"
+          aria-label={isEn ? "Goal Topic" : "目标话题"}
           value={goalTopic}
           onChange={(e) => updateGoal(e.target.value)}
           spellCheck={false}
+          required
         />
       </div>
       <div className="side-row">
         <span className="side-label">{isEn ? "Initial Pose Topic" : "初始位姿话题"}</span>
-        <input
+        <TextInput
           className="topic-input"
+          aria-label={isEn ? "Initial Pose Topic" : "初始位姿话题"}
           value={initialPoseTopic}
           onChange={(e) => updateInitialPose(e.target.value)}
           spellCheck={false}
+          required
         />
       </div>
     </>

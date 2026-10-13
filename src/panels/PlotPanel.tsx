@@ -1,5 +1,6 @@
 import { Eye, EyeOff, Pause, Play, RotateCcw, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { TextInput } from "../app/EditableInput";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 
@@ -79,6 +80,7 @@ export function PlotPanel({
 }) {
   const { t } = useI18n();
   const plotRef = useRef<HTMLDivElement>(null);
+  const fieldRef = useRef<HTMLInputElement>(null);
   const uplotRef = useRef<uPlot>(null);
   const seriesRef = useRef<Series[]>([]);
   const subscriptionsRef = useRef(new Map<string, () => void>());
@@ -450,7 +452,9 @@ export function PlotPanel({
             <option key={topic.topic} value={topic.topic}>{topic.topic}</option>
           ))}
         </select>
-        <input
+        <TextInput
+          ref={fieldRef}
+          required
           className="field-input"
           placeholder={t("fieldPath")}
           value={newField}
@@ -465,9 +469,10 @@ export function PlotPanel({
         </datalist>
         <button
           onClick={() => {
+            if (!fieldRef.current?.checkValidity()) return;
             if (addEntry({ topic: newTopic, field: newField })) setNewField("");
           }}
-          disabled={!newTopic || !newField.trim() || duplicate}
+          disabled={!newTopic || duplicate}
         >
           {t("add")}
         </button>

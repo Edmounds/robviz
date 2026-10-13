@@ -20,6 +20,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useI18n } from "../app/i18n";
+import { NumberInput, TextInput, validateInputs } from "../app/EditableInput";
 import type {
   WaypointDocument,
   WaypointFileInfo,
@@ -58,14 +59,10 @@ function PointValue({
   onChange: (value: number) => void;
 }) {
   return (
-    <input
-      type="number"
-      step="0.001"
-      value={Number.isFinite(value) ? value : ""}
-      onChange={(event) => {
-        const next = Number(event.target.value);
-        if (Number.isFinite(next)) onChange(next);
-      }}
+    <NumberInput
+      value={value}
+      onValueChange={(next) => onChange(next ?? NaN)}
+      onInvalidValue={() => onChange(NaN)}
     />
   );
 }
@@ -76,6 +73,8 @@ export function WaypointsEditorPage({
   fontScale?: number;
 }) {
   const { locale } = useI18n();
+  const fields = useRef<HTMLElement>(null);
+  const addFields = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasWrapRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<View2DTransform | undefined>(undefined);
@@ -159,6 +158,7 @@ export function WaypointsEditorPage({
   const canvasSizeRef = useRef<CanvasSize>({ width: 640, height: 420 });
 
   const fitView = useCallback((points: WaypointPoint[], size?: CanvasSize) => {
+    points = points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
     const currentSize = size ?? canvasSizeRef.current;
     if (points.length === 0) {
       setViewTransform({
@@ -336,7 +336,7 @@ export function WaypointsEditorPage({
     const labelFontSize = Math.max(10, Math.round(12 * fontScale));
     ctx.font = `${labelFontSize}px ui-monospace, monospace`;
 
-    const pointPixList = draftPoints.map((point) => {
+    const pointPixList = draftPoints.filter((point) => [point.x, point.y, point.yaw_deg].every(Number.isFinite)).map((point) => {
       const [px, py] = worldToCanvas(view, point.x, point.y);
       return { name: point.name, px, py, point };
     });
@@ -443,6 +443,7 @@ export function WaypointsEditorPage({
   );
 
   const handleAddTemplatePoint = useCallback(() => {
+    if (!validateInputs(addFields.current)) return;
     const trimmed = newPointName.trim();
     if (!trimmed) {
       setError(locale === "en" ? "Please enter a point name" : "请输入点位名称");
@@ -540,7 +541,12 @@ export function WaypointsEditorPage({
   }, [dirty, loadDocument, locale, selectedFileId]);
 
   const save = useCallback(async () => {
+    if (!validateInputs(fields.current?.querySelector(isTemplate ? ".waypoints-template-list" : ".waypoint-form") ?? null)) return;
     if (!waypointDocument || !dirty || busy) return;
+    if (!isTemplate && draftPoints.some((point) => ![point.x, point.y, point.z, point.yaw_deg].every(Number.isFinite))) {
+      setError(locale === "en" ? "Fill in all waypoint coordinates" : "请填写所有航点坐标");
+      return;
+    }
     if (isTemplate) {
       if (templateStats.hasEmpty) {
         setError(locale === "en" ? "Point names cannot be empty" : "点位名称不能为空");
@@ -757,7 +763,7 @@ export function WaypointsEditorPage({
   }, [draftPoints, fitView]);
 
   return (
-    <section className="waypoints-editor-page">
+    <section className="waypoints-editor-page" ref={fields}>
       {/* 顶部工具栏 */}
       <div className="waypoints-toolbar">
         <FileText />
@@ -900,14 +906,15 @@ export function WaypointsEditorPage({
               <div className="waypoints-section-title">
                 <ListOrdered /> {locale === "en" ? "Template sequence" : "模板航点序列"}
               </div>
-              <div className="waypoints-template-add-bar">
-                <input
+              <div className="waypoints-template-add-bar" ref={addFields}>
+                <TextInput
                   type="text"
                   placeholder={locale === "en" ? "New point name (e.g. A5)" : "新点位名称 (例如 A5)"}
                   value={newPointName}
                   onChange={(e) => setNewPointName(e.target.value)}
                   onKeyDown={(e) => { if (e.key === "Enter") handleAddTemplatePoint(); }}
                   spellCheck={false}
+                  required
                 />
                 <select value={newPointType} onChange={(e) => setNewPointType(e.target.value as "goal" | "waypoint")}>
                   <option value="goal">goal</option>
@@ -925,17 +932,18 @@ export function WaypointsEditorPage({
               ) : (
                 draftPoints.map((point, index) => (
                   <div
-                    key={`${index}-${point.name}`}
+                    key={index}
                     className={`waypoints-template-row ${selectedName === point.name ? "active" : ""}`}
                     onClick={() => setSelectedName(point.name)}
                   >
                     <span className="template-row-idx">#{index + 1}</span>
-                    <input
+                    <TextInput
                       className="template-name-input"
                       value={point.name}
                       onChange={(e) => updateTemplatePointName(index, e.target.value)}
                       placeholder={locale === "en" ? "Point name" : "点位名称"}
                       spellCheck={false}
+                      required
                     />
                     <select
                       className="template-type-select"
@@ -1163,7 +1171,7 @@ export function WaypointsEditorPage({
               );
             }
             return (
-              <div className="waypoint-form">
+              <div className="waypoint-form" key={point.name}>
                 <label>
                   <span>{locale === "en" ? "Name" : "名称"}</span>
                   <input value={point.name} readOnly />

@@ -54,6 +54,7 @@ import type { PcdWorkerResponse } from "../worker/pcd.worker";
 import type { MessagePayload, StreamStats } from "../worker/protocol";
 import { I18nProvider, translate } from "./i18n";
 import { SettingsPage, type SettingsTab } from "./SettingsPage";
+import { TextInput, validateInputs } from "./EditableInput";
 import { WorkspaceDock } from "./WorkspaceDock";
 import type { SerializedDockview } from "dockview-react";
 
@@ -247,6 +248,7 @@ function RobotSessionApp({
   const selectStartRef = useRef<[number, number]>(null);
   const navStartRef = useRef<[number, number]>(null); // 地面坐标
   const connectedUrlRef = useRef(DEFAULT_URL);
+  const connectionFields = useRef<HTMLDivElement>(null);
   const initialUrlRef = useRef(session.url);
   const initialActiveRef = useRef(active);
   const savedCameraRef = useRef(session.camera);
@@ -581,6 +583,7 @@ function RobotSessionApp({
   }, [pcdTool, navTool]);
 
   const connect = useCallback(() => {
+    if (!validateInputs(connectionFields.current)) return;
     setLastError(undefined);
     if (connectedUrlRef.current !== url) {
       tfRef.current?.clear();
@@ -721,10 +724,12 @@ function RobotSessionApp({
   buildSessionConfigRef.current = buildSessionConfig;
 
   const saveConfig = useCallback(() => {
+    if (!validateInputs(connectionFields.current)) return;
     onSaveAll(buildSessionConfig());
   }, [buildSessionConfig, onSaveAll]);
 
   const saveConfigAsFile = useCallback(() => {
+    if (!validateInputs(connectionFields.current)) return;
     onSaveAllAsFile(buildSessionConfig());
   }, [buildSessionConfig, onSaveAllAsFile]);
 
@@ -1486,12 +1491,14 @@ function RobotSessionApp({
     <I18nProvider locale={settings.language}>
     {active && headerActionsSlot && createPortal(
       <>
-        <div className="topbar-connection-group">
-          <input
+        <div className="topbar-connection-group" ref={connectionFields}>
+          <TextInput
             value={url}
+            aria-label="Foxglove URL"
             onChange={(e) => setUrl(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && connect()}
             spellCheck={false}
+            required
           />
           <button onClick={connect}>{t("connect")}</button>
           <span className={`status ${connState}`}>
@@ -2053,10 +2060,11 @@ export default function App() {
                 >
                   <span className={`session-status ${state}`} aria-hidden="true" />
                   {editingSessionId === session.id ? (
-                    <input
+                    <TextInput
                       className="session-name-input"
                       value={editingSessionName}
                       autoFocus
+                      required
                       aria-label={t("renameMachine")}
                       onChange={(event) => setEditingSessionName(event.target.value)}
                       onClick={(event) => event.stopPropagation()}
@@ -2071,7 +2079,7 @@ export default function App() {
                           cancelRenameSession(session.id);
                         }
                       }}
-                      onBlur={() => commitRenameSession(session.id)}
+                      onBlur={(event) => { if (event.currentTarget.validity.valid) commitRenameSession(session.id); }}
                     />
                   ) : (
                     <span className="session-label" title={session.url}>

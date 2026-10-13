@@ -37,6 +37,17 @@
   --ctl-min-h: max(24px, calc(24px * var(--effective-font-scale, 1)));
 }
 
+.editable-input-field { display: contents; }
+.editable-input-field > input[aria-invalid="true"] {
+  border-color: var(--status-error);
+  outline: 1px solid var(--status-error);
+}
+.editable-input-field > .editable-input-error {
+  color: var(--status-error);
+  font-size: var(--fs-meta);
+}
+.fruit-arm-number > .editable-input-field > input { width: 100%; min-width: 0; }
+
 /* 亮色主题（03-ui-design.md：令牌体系保证可切换，组件不硬编码深色值） */
 :root[data-theme="light"] {
   --canvas: #ffffff;

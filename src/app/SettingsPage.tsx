@@ -1,5 +1,5 @@
 import { Box, Globe, Image, Languages, Plug, RotateCcw, Save } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
 import type {
@@ -22,6 +22,7 @@ import {
 import type { PluginServiceDefinition, RobvizPlugin } from "../plugins/types";
 import type { Theme } from "../renderers/sceneTheme";
 import { useI18n } from "./i18n";
+import { NumberInput, validateInputs } from "./EditableInput";
 
 type Settings = LayoutConfig["settings"];
 export type SettingsTab = "general" | "3d" | "images" | "plugins" | "network";
@@ -74,26 +75,24 @@ function ImageStreamSettingsForm({
 
       <label className="settings-row settings-slider">
         <span>{isEn ? "Bandwidth Budget" : "带宽预算"}</span>
-        <input
-          type="number"
+        <NumberInput
           min={0.1}
           max={1000}
-          step={0.5}
+          step="any"
           value={value.bandwidth_mbps}
-          onChange={(event) => onChange({ bandwidth_mbps: Number(event.target.value) })}
+          onValueChange={(value) => { if (value !== undefined) onChange({ bandwidth_mbps: value }); }}
         />
         <output>Mbps</output>
       </label>
 
       <label className="settings-row settings-slider">
         <span>{isEn ? "Max Frame Rate" : "帧率上限"}</span>
-        <input
-          type="number"
+        <NumberInput
           min={1}
           max={60}
           step={1}
           value={value.max_fps}
-          onChange={(event) => onChange({ max_fps: Number(event.target.value) })}
+          onValueChange={(value) => { if (value !== undefined) onChange({ max_fps: value }); }}
         />
         <output>FPS</output>
       </label>
@@ -101,13 +100,12 @@ function ImageStreamSettingsForm({
       {isWebRtc ? (
         <label className="settings-row settings-slider">
           <span>{isEn ? "Target Bitrate" : "目标码率"}</span>
-          <input
-            type="number"
+          <NumberInput
             min={0.1}
             max={value.bandwidth_mbps}
             step={0.1}
             value={value.target_bitrate_mbps}
-            onChange={(event) => onChange({ target_bitrate_mbps: Number(event.target.value) })}
+            onValueChange={(value) => { if (value !== undefined) onChange({ target_bitrate_mbps: value }); }}
           />
           <output>Mbps</output>
         </label>
@@ -168,6 +166,7 @@ function ImageTransportSettings({
   const [settings, setSettings] = useState<ImageSettings>();
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<{ kind: "ok" | "error"; text: string }>();
+  const fields = useRef<HTMLDivElement>(null);
 
   const reloadRos = useCallback(async (version: number, session: string) => {
     if (connectionState !== "open") {
@@ -208,6 +207,7 @@ function ImageTransportSettings({
   }, []);
 
   const apply = useCallback(async () => {
+    if (!validateInputs(fields.current)) return;
     if (!settings || busy) return;
     setBusy(true);
     setStatus(undefined);
@@ -224,6 +224,7 @@ function ImageTransportSettings({
   }, [busy, isEn, reloadRos, settings]);
 
   const saveDefaults = useCallback(async () => {
+    if (!validateInputs(fields.current)) return;
     if (!settings || busy) return;
     setBusy(true);
     setStatus(undefined);
@@ -240,7 +241,7 @@ function ImageTransportSettings({
   }, [busy, isEn, reloadRos, settings]);
 
   return (
-    <div className="settings-image-transport">
+    <div className="settings-image-transport" ref={fields}>
       <p className="settings-hint">{isEn ? "These settings control the bounded compressed previews. Changes require a successful ROS reload." : "这些设置控制有界的压缩预览。配置只有在 ROS 重载成功后才算生效。"}</p>
       {settings ? (
         <>
@@ -342,14 +343,14 @@ function NetworkSettingsSection({
                 </label>
                 <label className="network-input-group">
                   <span>{t("portOverride")}</span>
-                  <input
-                    type="number"
+                  <NumberInput
+                    required={false}
                     min={1}
                     max={65535}
                     placeholder={String(service.defaultPort)}
-                    value={override?.port ?? ""}
-                    onChange={(e) => updateOverride(service.id, {
-                      port: e.target.value === "" ? undefined : Number(e.target.value),
+                    value={override?.port}
+                    onValueChange={(value) => updateOverride(service.id, {
+                      port: value,
                     })}
                   />
                 </label>

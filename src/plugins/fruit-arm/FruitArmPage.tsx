@@ -3,6 +3,7 @@ import { Group, Panel, Separator } from "react-resizable-panels";
 import { z } from "zod";
 
 import type { PluginPageProps } from "../types";
+import { NumberInput, validateInputs } from "../../app/EditableInput";
 import { armRequest, runtimeRequest, runtimeTaskReplySchema, runtimeTaskSchema,
   configurationReplySchema, documentSchema, draftsSchema, fmt, hasValidFeedback, poseSchema,
   presetsSchema, resultSchema, same, snapshotSchema, telemetrySchema } from "./api";
@@ -42,13 +43,12 @@ const storedSchema = z.object({
   layout: layoutSchema.optional(),
 });
 
-function NumberField({ label, value, onChange, min, max, step = "any" }: {
+function NumberField({ label, value, onChange, min, max, required = true, step = "any" }: {
   label: string; value: number | undefined; onChange: (value: number | undefined) => void;
-  min?: number; max?: number; step?: number | "any";
+  min?: number; max?: number; step?: number | "any"; required?: boolean;
 }) {
-  return <label className="fruit-arm-number"><span>{label}</span><input type="number" min={min} max={max} step={step}
-    value={value !== undefined && Number.isFinite(value) ? value : ""}
-    onChange={(event) => onChange(event.currentTarget.value === "" ? undefined : event.currentTarget.valueAsNumber)} /></label>;
+  return <label className="fruit-arm-number"><span>{label}</span><NumberInput min={min} max={max} step={step} required={required}
+    value={value} onValueChange={onChange} onInvalidValue={() => onChange(NaN)} /></label>;
 }
 
 function layoutValue(value: unknown, fallback: number): number {
@@ -103,6 +103,9 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
   const [runtimeError, setRuntimeError] = useState("");
   const generation = useRef(0);
   const mounted = useRef(false);
+  const presetFields = useRef<HTMLElement>(null);
+  const controlFields = useRef<HTMLElement>(null);
+  const jogFields = useRef<HTMLElement>(null);
   const jogTarget = useRef<Target | null>(null);
   const jogDirty = useRef(false);
   const pendingGripper = useRef<number | null>(null);
@@ -245,7 +248,7 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
   }, [connected, ctx.bridge]);
 
   useEffect(() => {
-    if (!config) return;
+    if (!config || !target.every(Number.isFinite)) { setPoseResult(null); setPoseError(""); return; }
     const controller = new AbortController();
     const key = poseKey;
     const timer = setTimeout(() => {
@@ -367,6 +370,7 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
   };
 
   const jogStepFor = (axis: number, sign: number) => {
+    if (!validateInputs(jogFields.current)) return;
     const state = latest.current;
     if (!state.jog || !state.enabled || !hasValidFeedback(state.telemetry, state.memory?.configuration ?? null)) return;
     const message = state.telemetry!;
@@ -418,6 +422,7 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
   };
 
   const appendCurrentToPreset = (name: string) => {
+    if (!validateInputs(controlFields.current)) return;
     const current = draft[name];
     if (!current || !pose || !config) { log(tr("需要有效直控姿态和预设", "A valid direct-control pose and preset are required")); return; }
     const pointTarget = current.coordinate_frame === "cartesian" ? pose.tcp
@@ -489,9 +494,8 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
         value={value} onChange={(next) => editWaypoint(name, index, { target: point.target.map((old, valueIndex) => valueIndex === targetIndex ? next ?? NaN : old) })} />)}</div>
       <div className="fruit-arm-grid"><NumberField label="duration_ms" value={point.duration_ms} min={1} step={1}
         onChange={(next) => editWaypoint(name, index, { duration_ms: next ?? NaN })} />
-        <NumberField label="dwell_ms" value={point.dwell_ms} min={0} step={1} onChange={(next) => {
-          const nextPoint = { ...point }; if (next === undefined) delete nextPoint.dwell_ms; else nextPoint.dwell_ms = next;
-          editWaypoint(name, index, nextPoint);
+        <NumberField label="dwell_ms" value={point.dwell_ms} min={0} step={1} required={false} onChange={(next) => {
+          editWaypoint(name, index, { dwell_ms: next });
         }} /></div>
       <div className="fruit-arm-waypoint-options"><label>gripper<select value={point.gripper ?? 0} onChange={(event) => editWaypoint(name, index, { gripper: Number(event.target.value) })}>
         <option value={0}>HOLD</option><option value={1}>OPEN</option><option value={2}>CLOSE</option></select></label>
@@ -551,7 +555,7 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
         if (!meta.isUserInteraction) return;
         setLayoutValue("main", mapPanelLayout(value, ["presets", "control", "status"], layout.main));
       }}>
-      <Panel id="presets" minSize={22}><aside className="fruit-arm-panel fruit-arm-presets"><div className="fruit-arm-panel-title"><h3>{tr("预设路径点集", "Preset waypoint sets")}</h3><span>{Object.keys(draft).length}</span></div>
+      <Panel id="presets" minSize={22}><aside className="fruit-arm-panel fruit-arm-presets" ref={presetFields}><div className="fruit-arm-panel-title"><h3>{tr("预设路径点集", "Preset waypoint sets")}</h3><span>{Object.keys(draft).length}</span></div>
         <label>{tr("追加目标到", "Append target to")}<select aria-label={tr("预设", "Preset")} value={selected} onChange={(event) => { setSelected(event.target.value); setPointIndex(0); }}>
           <option value="">{tr("选择预设", "Select preset")}</option>{Object.keys(draft).map((name) => <option key={name}>{name}</option>)}</select></label>
         <button disabled={!selected || !pose} onClick={() => appendCurrentToPreset(selected)}>{tr("追加当前直控目标", "Append current direct target")}</button>
@@ -567,7 +571,9 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
         <p>{dirty ? tr("未保存草稿", "Unsaved draft") : tr("文件未修改", "File unchanged")} · {applied ? tr("预设已应用", "Presets applied") : tr("预设未应用/未知", "Presets not applied / unknown")}</p>
         {file && baseVersion !== file.version && <p className="fruit-arm-error" role="alert">{tr("草稿基线与文件冲突，不会覆盖。", "Draft baseline conflicts with the file. No overwrite.")}</p>}
         {file && memory && file.file !== memory.config_path && <p className="fruit-arm-error" role="alert">{tr("文件路径与 planner 路径不同，不能重载或执行。", "Editor and planner paths differ. Reload and execution are blocked.")}</p>}
-        <div className="fruit-arm-actions"><button disabled={!file || !validDraft || saving || !dirty || baseVersion !== file.version} onClick={async () => {
+        <div className="fruit-arm-actions"><button disabled={!file || saving || !dirty || baseVersion !== file.version} onClick={async () => {
+          if (!validateInputs(presetFields.current)) return;
+          if (!validDraft) { log(tr("请填写有效的预设字段，展开预设检查空值", "Fill in valid preset fields. Expand presets to check empty values.")); return; }
           setSaving(true); const current = generation.current;
           try { const saved = documentSchema.parse(await armRequest("presets", url, { version: baseVersion, presets: draft }, "PUT"));
             if (current !== generation.current) return; setFile(saved); setBaseVersion(saved.version); persist(draft, saved.version); log(tr("已保存，尚未重载", "Saved, not reloaded"));
@@ -592,18 +598,22 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
         resizeTargetMinimumSize={{ fine: 8, coarse: 20 }} onLayoutChanged={(value, meta) => {
           if (!meta.isUserInteraction) return; setLayoutValue("control", mapPanelLayout(value, ["direct", "jog"], layout.control));
         }}>
-        <Panel id="direct" minSize={30}><section className="fruit-arm-panel fruit-arm-controls"><h3>{tr("直接控制", "Direct control")}</h3>
+        <Panel id="direct" minSize={30}><section className="fruit-arm-panel fruit-arm-controls" ref={controlFields}><h3>{tr("直接控制", "Direct control")}</h3>
           <label>{tr("输入模式", "Input mode")}<select value={controlMode} onChange={(event) => changeControlMode(event.target.value as ControlMode)}>
             <option value="cartesian">TCP / Cartesian</option><option value="joints">{tr("原始电机角 / Joints", "Raw motor angles / Joints")}</option></select></label>
-          <div className="fruit-arm-grid">{target.map((value, index) => <NumberField key={index}
+          <div className="fruit-arm-grid">{target.map((value, index) => <NumberField key={`${controlMode}-${index}`}
             label={controlMode === "cartesian" ? ["X / m", "Y / m", "Z / m", "pitch / °"][index] : `motor ${index + 1} / °`}
             value={value} onChange={(next) => setTarget(target.map((old, targetIndex) => targetIndex === index ? next ?? NaN : old) as Target)} />)}</div>
           <NumberField label={tr("时长 ms，0=默认", "Duration ms, 0=default")} value={duration} min={0} max={0xffffffff} step={1} onChange={(next) => setDuration(next ?? NaN)} />
           <label>{tr("夹爪动作", "Gripper action")}<select value={gripper} onChange={(event) => setGripper(Number(event.target.value))}><option value={0}>HOLD</option><option value={1}>OPEN</option><option value={2}>CLOSE</option></select></label>
           <label><input type="checkbox" checked={linear} disabled={controlMode !== "cartesian"} onChange={(event) => setLinear(event.target.checked)} /> LIN {tr("否则 PTP", "otherwise PTP")}</label>
           <p className={pose ? "" : "fruit-arm-error"}>{pose ? `TCP: ${pose.tcp.map((value, index) => `${fmt(value)}${index === 3 ? "°" : "m"}`).join(" · ")}` : poseError || tr("目标等待校验", "Target awaiting validation")}</p>
-          <div className="fruit-arm-actions"><button disabled={!canMove || !pose || jog || !Number.isInteger(duration) || duration < 0 || duration > 0xffffffff}
-            onClick={() => void perform("manual", "pose", (snapshot, start) => targetCall(snapshot, start, [...target], controlMode, duration, gripper, controlMode === "cartesian" && linear))}>{tr("下发当前目标", "Dispatch target")}</button>
+          <div className="fruit-arm-actions"><button disabled={!canMove || jog}
+            onClick={() => {
+              if (!validateInputs(controlFields.current)) return;
+              if (!pose || !Number.isInteger(duration) || duration < 0 || duration > 0xffffffff) { log(tr("目标或时长无效", "Invalid target or duration")); return; }
+              void perform("manual", "pose", (snapshot, start) => targetCall(snapshot, start, [...target], controlMode, duration, gripper, controlMode === "cartesian" && linear));
+            }}>{tr("下发当前目标", "Dispatch target")}</button>
             <button disabled={!canMove || jog || !memory?.configuration.presets.home} onClick={() => void perform("manual", "home", async () => ({ service: "home", request: {} }))}>Home</button>
             <button disabled={!canMove || jog || !selectedPreset || dirty || !applied || !file || !memory || file.file !== memory.config_path}
               onClick={() => void perform("manual", `preset ${selected}`, async (snapshot) => {
@@ -617,10 +627,10 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
           }}>{name}</button>)}</div>
         </section></Panel>
         <Separator className="fruit-arm-resize-handle horizontal" />
-        <Panel id="jog" minSize={25}><section className="fruit-arm-panel fruit-arm-jog-panel"><h3>Jog</h3>
+        <Panel id="jog" minSize={25}><section className="fruit-arm-panel fruit-arm-jog-panel" ref={jogFields}><h3>Jog</h3>
           <button aria-pressed={jog} disabled={!enabled || !feedbackValid || (busy && !jog)} onClick={() => {
             if (jog) { if (pending.current?.sent) void stop(); else { setJog(false); jogDirty.current = false; jogTarget.current = null; pendingGripper.current = null; } }
-            else { jogTarget.current = null; setJog(true); }
+            else { if (!validateInputs(jogFields.current)) return; jogTarget.current = null; setJog(true); }
           }}>{jog ? tr("停用 Jog", "Disable Jog") : tr("启用 Jog", "Enable Jog")}</button>
           <div className="fruit-arm-grid"><NumberField label="XYZ / m" value={step} min={0.0001} max={0.1} onChange={(value) => { if (value !== undefined && Number.isFinite(value) && value > 0 && value <= 0.1) {
             setStep(value); persist(draft, baseVersion, selected, pointIndex, { step: value }); } }} />

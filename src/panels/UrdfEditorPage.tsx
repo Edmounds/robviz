@@ -32,6 +32,7 @@ import { UrdfRenderer } from "../renderers/UrdfRenderer";
 import { SceneManager } from "../renderers/SceneManager";
 import type { Translate } from "../app/i18n";
 import { useI18n } from "../app/i18n";
+import { NumberInput } from "../app/EditableInput";
 
 const URDF_DISPLAY_KEY = "__urdf_editor__";
 
@@ -498,7 +499,8 @@ export default function UrdfEditorPage({
                       <span><strong>{joint.name}</strong><small>{joint.type}</small></span>
                       <div>
                         <input type="range" min={lower} max={upper} step={(upper - lower) / 500 || 0.001} value={Math.min(upper, Math.max(lower, value))} disabled={followJointStates} onChange={(event) => setJoint(joint.name, fromDisplayValue(Number(event.target.value), joint.type))} />
-                        <input type="number" step="any" value={Number(value.toFixed(5))} disabled={followJointStates} onChange={(event) => setJoint(joint.name, fromDisplayValue(Number(event.target.value), joint.type))} />
+                        <NumberInput key={angleUnit} step="any" aria-label={joint.name} value={Number(value.toFixed(5))} disabled={followJointStates}
+                          onValueChange={(value) => { if (value !== undefined) setJoint(joint.name, fromDisplayValue(value, joint.type)); }} />
                       </div>
                     </label>
                   );

@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { PluginContext, PluginSectionProps, RobvizPlugin } from "../types";
+import { TextInput, validateInputs } from "../../app/EditableInput";
 
 type TeleopPluginState = {
   topic: string;
@@ -46,6 +47,8 @@ export function TeleopSection({ ctx }: PluginSectionProps) {
   const [maxLin, setMaxLin] = useState(stored.maxLin);
   const [maxAng, setMaxAng] = useState(stored.maxAng);
   const [active, setActive] = useState({ lin: 0, ang: 0 });
+  const topicFields = useRef<HTMLDivElement>(null);
+  const commandTopic = topic.trim() || stored.topic;
 
   const cmdRef = useRef({ lin: 0, ang: 0 });
   const keysRef = useRef(new Set<string>());
@@ -93,6 +96,7 @@ export function TeleopSection({ ctx }: PluginSectionProps) {
   // 显式切换启用状态
   const toggleEnabled = useCallback(() => {
     if (!enabled) {
+      if (!validateInputs(topicFields.current)) return;
       if (!canTeleopWrite(sessionActive, connectionState)) return;
       setEnabled(true);
     } else {
@@ -101,7 +105,7 @@ export function TeleopSection({ ctx }: PluginSectionProps) {
       // 用户主动停用且当前处于活跃在线状态时，尽力发送一帧零速
       if (canTeleopWrite(sessionActive, connectionState)) {
         try {
-          bridge.publish(topic, "geometry_msgs/msg/Twist", {
+          bridge.publish(commandTopic, "geometry_msgs/msg/Twist", {
             linear: { x: 0, y: 0, z: 0 },
             angular: { x: 0, y: 0, z: 0 },
           });
@@ -110,7 +114,7 @@ export function TeleopSection({ ctx }: PluginSectionProps) {
         }
       }
     }
-  }, [enabled, connectionState, sessionActive, clearHeldState, bridge, topic]);
+  }, [enabled, connectionState, sessionActive, clearHeldState, bridge, commandTopic]);
 
   useEffect(() => {
     if (!enabled || !canTeleopWrite(sessionActive, connectionState)) {
@@ -148,7 +152,7 @@ export function TeleopSection({ ctx }: PluginSectionProps) {
       if (!canTeleopWrite(sessionActiveRef.current, connectionStateRef.current)) return;
       const { lin, ang } = cmdRef.current;
       try {
-        bridge.publish(topic, "geometry_msgs/msg/Twist", {
+        bridge.publish(commandTopic, "geometry_msgs/msg/Twist", {
           linear: { x: lin * maxLin, y: 0, z: 0 },
           angular: { x: 0, y: 0, z: ang * maxAng },
         });
@@ -163,7 +167,7 @@ export function TeleopSection({ ctx }: PluginSectionProps) {
       window.removeEventListener("blur", handleBlur);
       clearInterval(timer);
     };
-  }, [enabled, sessionActive, connectionState, topic, maxLin, maxAng, bridge, compute, clearHeldState]);
+  }, [enabled, sessionActive, connectionState, commandTopic, maxLin, maxAng, bridge, compute, clearHeldState]);
 
   const hold = (lin: number, ang: number) => ({
     onPointerDown: () => {
@@ -187,16 +191,18 @@ export function TeleopSection({ ctx }: PluginSectionProps) {
 
   return (
     <>
-      <div className="side-row">
-        <input
+      <div className="side-row" ref={topicFields}>
+        <TextInput
           className="topic-input"
+          aria-label={isEn ? "Command topic" : "控制话题"}
           value={topic}
           onChange={(e) => {
             const next = e.target.value;
             setTopic(next);
-            persist({ topic: next });
+            if (next.trim()) persist({ topic: next });
           }}
           spellCheck={false}
+          required
         />
         <button
           className={`toggle ${enabled ? "on" : ""}`}

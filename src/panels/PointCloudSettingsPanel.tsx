@@ -2,6 +2,7 @@ import { Eraser } from "lucide-react";
 
 import type { PointCloudSettings } from "../core/layoutConfig";
 import { useI18n } from "../app/i18n";
+import { NumberInput } from "../app/EditableInput";
 
 export function PointCloudSettingsPanel({
   settings,
@@ -87,20 +88,18 @@ export function PointCloudSettingsPanel({
           </label>
           {manualRange && (
             <div className="cloud-range-row">
-              <input
-                type="number"
+              <NumberInput
                 step="any"
                 aria-label={t("rangeMin")}
                 value={settings.rangeMin ?? autoRange[0]}
-                onChange={(event) => patch({ rangeMin: Number(event.target.value) })}
+                onValueChange={(value) => { if (value !== undefined) patch({ rangeMin: value }); }}
               />
               <span>{t("to")}</span>
-              <input
-                type="number"
+              <NumberInput
                 step="any"
                 aria-label={t("rangeMax")}
                 value={settings.rangeMax ?? autoRange[1]}
-                onChange={(event) => patch({ rangeMax: Number(event.target.value) })}
+                onValueChange={(value) => { if (value !== undefined) patch({ rangeMax: value }); }}
               />
             </div>
           )}

@@ -11,6 +11,7 @@ import {
   validateTerminalUsername,
 } from "../core/terminalProtocol";
 import { useI18n } from "../app/i18n";
+import { TextInput, validateInputs } from "../app/EditableInput";
 
 const GATEWAY_URL = "ws://127.0.0.1:8767";
 const USERNAME_KEY = "robviz.terminal.username";
@@ -40,6 +41,7 @@ export default function TerminalPanel({
   const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const usernameRef = useRef<HTMLInputElement>(null);
+  const connectFields = useRef<HTMLFormElement>(null);
   const terminalRef = useRef<Terminal | undefined>(undefined);
   const fitRef = useRef<FitAddon | undefined>(undefined);
   const socketRef = useRef<WebSocket | undefined>(undefined);
@@ -84,6 +86,7 @@ export default function TerminalPanel({
   }, []);
 
   const openSession = useCallback(() => {
+    if (!validateInputs(connectFields.current)) return;
     let cleanUsername: string;
     try {
       cleanUsername = validateTerminalUsername(username);
@@ -350,6 +353,8 @@ export default function TerminalPanel({
       </div>
       {showConnectForm && (
         <form
+          ref={connectFields}
+          noValidate
           className="terminal-connect-bar"
           onSubmit={(event) => {
             event.preventDefault();
@@ -357,7 +362,7 @@ export default function TerminalPanel({
           }}
         >
           <span className="terminal-readonly-target">{targetHost}</span>
-          <input
+          <TextInput
             ref={usernameRef}
             value={username}
             onChange={(event) => setUsername(event.target.value)}
@@ -365,6 +370,7 @@ export default function TerminalPanel({
             aria-label={t("terminalUsername")}
             spellCheck={false}
             autoComplete="username"
+            required
           />
           <input
             type="password"
