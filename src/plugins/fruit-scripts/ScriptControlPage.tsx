@@ -138,7 +138,7 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
         }
       }
       const path = script ? `scripts/${encodeURIComponent(script.id)}/start` : "scripts/kill";
-      const reply = actionSchema.parse(await runtimeRequest(path, base, script ? { parameters: selected } : {}, "POST", controller.signal));
+      const reply = actionSchema.parse(await runtimeRequest(path, base, script ? { parameters: selected } : {}, "POST", controller.signal, script ? 10_000 : 35_000));
       if (identity.current === generation) setCurrent(reply.current);
     } catch (reason) {
       if (identity.current === generation && !controller.signal.aborted) setError(String(reason));
