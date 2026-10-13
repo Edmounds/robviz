@@ -156,8 +156,8 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
     <header className="fruit-scripts-toolbar">
       <button className="fruit-scripts-kill" disabled={disabled} onClick={() => void perform()}>Kill</button>
       <strong>{tr("脚本控制", "Script control")}</strong>
-      <span>{tr("停止进程，非硬件急停。每次启动先清理旧任务。", "Process cleanup, not hardware ESTOP. Every start cleans up old tasks.")}</span>
-      <span role="status">{busy || operation ? tr("正在清理 / 启动…", "Cleaning up / starting…") : available ? tr("运行服务在线", "Runtime online") : tr("运行服务离线", "Runtime offline")}</span>
+      <span>{tr("停止进程，非硬件急停。", "Process cleanup, not hardware ESTOP.")}</span>
+      <span role="status">{operation === "KILLING" ? tr("正在清理…", "Cleaning up…") : busy || operation === "STARTING" ? tr("正在启动…", "Starting…") : available ? tr("运行服务在线", "Runtime online") : tr("运行服务离线", "Runtime offline")}</span>
     </header>
     {(error || connectionError) && <div className="fruit-scripts-error" role="alert">{error || connectionError}</div>}
     <Group id="fruit-scripts-main" className="fruit-scripts-main" orientation={isMobile ? "vertical" : "horizontal"}
@@ -191,7 +191,7 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
               {!Object.keys(script.parameters).length && <small>{tr("无参数", "No parameters")}</small>}
               {script.note && <small>{script.note}</small>}
               <code className="fruit-scripts-preview">./{script.script}{valid ? ` ${args.join(" ")}` : tr(" [先选择必填参数]", " [select required parameters]")}</code>
-              <button disabled={disabled || !valid} onClick={() => void perform(script)}>{tr("清理并启动", "Clean up and start")}</button>
+              <button disabled={disabled || !valid} onClick={() => void perform(script)}>{tr("启动", "Start")}</button>
             </article>;
           })}
         </section>
