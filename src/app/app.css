@@ -1472,6 +1472,82 @@ body {
   flex: 1 1 150px;
 }
 
+.waypoint-maker-queue-card {
+  margin: 4px 12px;
+  padding: 8px;
+  background: var(--surface-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.waypoint-maker-queue-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+
+.waypoint-maker-queue-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.waypoint-queue-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-ctl);
+  font-family: var(--mono);
+  font-size: var(--fs-meta);
+}
+
+.waypoint-queue-tag .tag-index {
+  color: var(--text-muted);
+}
+
+.waypoint-queue-tag .tag-remove {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+}
+
+.waypoint-queue-tag .tag-remove:hover {
+  color: var(--status-error);
+}
+
+.queue-clear-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-ctl);
+  padding: 1px 6px;
+  font-size: var(--fs-meta);
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.queue-clear-btn:hover {
+  color: var(--foreground);
+}
+
+.queue-run-btn {
+  width: 100%;
+  padding: 4px 8px;
+}
+
 .waypoint-maker-message {
   margin: 3px 12px 0;
   color: var(--text-muted);

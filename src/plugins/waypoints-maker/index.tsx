@@ -189,6 +189,8 @@ function MakerSection({ ctx }: PluginSectionProps) {
   const [pointType, setPointType] = useState<PointType>(stored.pointType);
   const [overwrite, setOverwrite] = useState(stored.overwrite);
   const [finalYawMode, setFinalYawMode] = useState<FinalYawMode>(stored.finalYawMode);
+  const [directTarget, setDirectTarget] = useState("");
+  const [routeQueue, setRouteQueue] = useState<string[]>([]);
   const [localError, setLocalError] = useState("");
   const [odom, setOdom] = useState<OdomStatus>();
   const [lastTfAt, setLastTfAt] = useState(0);
@@ -287,6 +289,13 @@ function MakerSection({ ctx }: PluginSectionProps) {
   const selectedTemplate = template.find((entry) => entry.name === effectiveName);
   const effectiveType = formal ? selectedTemplate?.type ?? pointType : pointType;
   const existing = recorder?.points.some((point) => point.name === effectiveName) === true;
+  const recordedNames = useMemo(
+    () => (recorder?.points ?? []).map((p) => p.name),
+    [recorder?.points]
+  );
+  const effectiveDirectTarget = (directTarget && recordedNames.includes(directTarget))
+    ? directTarget
+    : (recordedNames[0] || "");
   const odomAgeMs = odom ? Date.now() - odom.receivedAt : Number.POSITIVE_INFINITY;
   const tfAgeMs = lastTfAt > 0 ? Date.now() - lastTfAt : Number.POSITIVE_INFINITY;
   const odomFresh = odomAgeMs <= 1500;
@@ -317,6 +326,43 @@ function MakerSection({ ctx }: PluginSectionProps) {
       point_type: effectiveType,
       confirm_overwrite: overwrite,
       auto_name: false,
+    });
+  };
+
+  const runToTarget = () => {
+    if (!effectiveDirectTarget) {
+      setLocalError(ctx.locale === "en" ? "No recorded waypoint selected" : "未选择已录制航点");
+      return;
+    }
+    send({
+      command: "run_to_waypoint",
+      name: effectiveDirectTarget,
+      final_yaw_mode: finalYawMode,
+    });
+  };
+
+  const addToQueue = () => {
+    if (!effectiveDirectTarget) return;
+    setRouteQueue((prev) => [...prev, effectiveDirectTarget]);
+  };
+
+  const clearQueue = () => {
+    setRouteQueue([]);
+  };
+
+  const removeFromQueue = (index: number) => {
+    setRouteQueue((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const runRoute = () => {
+    if (routeQueue.length === 0) {
+      setLocalError(ctx.locale === "en" ? "Route queue is empty" : "路径队列为空");
+      return;
+    }
+    send({
+      command: "run_route",
+      names: routeQueue,
+      final_yaw_mode: finalYawMode,
     });
   };
 
@@ -469,6 +515,84 @@ function MakerSection({ ctx }: PluginSectionProps) {
           {FINAL_YAW_MODES.map((mode) => <option key={mode} value={mode}>{mode}</option>)}
         </select>
       </div>
+
+      <div className="side-row">
+        <label className="side-label" htmlFor="waypoint-maker-direct">{en ? "Target" : "直达目标"}</label>
+        <select
+          id="waypoint-maker-direct"
+          className="topic-input"
+          value={effectiveDirectTarget}
+          onChange={(event) => setDirectTarget(event.target.value)}
+          disabled={!canWrite(ctx) || busy || recordedNames.length === 0}
+        >
+          {recordedNames.length === 0 ? (
+            <option value="">{en ? "No recorded points" : "无已录制航点"}</option>
+          ) : (
+            recordedNames.map((pName) => (
+              <option key={pName} value={pName}>{pName}</option>
+            ))
+          )}
+        </select>
+      </div>
+
+      <div className="waypoint-maker-actions">
+        <button
+          type="button"
+          onClick={runToTarget}
+          disabled={!canWrite(ctx) || busy || !effectiveDirectTarget}
+          title={en ? "Navigate directly to target in straight line" : "从当前位置直线导航前往该目标点"}
+        >
+          {en ? "Go to point" : "前往该点"}
+        </button>
+        <button
+          type="button"
+          onClick={addToQueue}
+          disabled={!canWrite(ctx) || busy || !effectiveDirectTarget}
+          title={en ? "Add point to continuous route queue" : "将该点追加到连续路径队列"}
+        >
+          {en ? "+ Add queue" : "+ 加入队列"}
+        </button>
+      </div>
+
+      {routeQueue.length > 0 && (
+        <div className="waypoint-maker-queue-card">
+          <div className="waypoint-maker-queue-title">
+            <span>{en ? `Queue (${routeQueue.length})` : `连续路径队列 (${routeQueue.length}点)`}</span>
+            <button
+              type="button"
+              className="queue-clear-btn"
+              onClick={clearQueue}
+              disabled={busy}
+            >
+              {en ? "Clear" : "清空"}
+            </button>
+          </div>
+          <div className="waypoint-maker-queue-tags">
+            {routeQueue.map((pointName, index) => (
+              <span key={`${pointName}-${index}`} className="waypoint-queue-tag">
+                <span className="tag-index">{index + 1}.</span> {pointName}
+                <button
+                  type="button"
+                  className="tag-remove"
+                  onClick={() => removeFromQueue(index)}
+                  disabled={busy}
+                  title={en ? "Remove" : "移除"}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="queue-run-btn"
+            onClick={runRoute}
+            disabled={!canWrite(ctx) || busy || routeQueue.length === 0}
+          >
+            {en ? `Run route queue (${routeQueue.length})` : `执行连续路径 (${routeQueue.length}点)`}
+          </button>
+        </div>
+      )}
 
       <div className="waypoint-maker-actions">
         <button
