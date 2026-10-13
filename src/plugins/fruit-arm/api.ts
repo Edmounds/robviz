@@ -38,7 +38,7 @@ export const configSchema = z.object({
   joint_mapping: z.object({ q1: channel, q2: channel, q3: channel, q4: channel }).passthrough(),
   planning: z.object({ default_duration_ms: finite.int().positive(), interpolation_step_ms: finite.int().positive(),
     default_dwell_ms: finite.int().nonnegative(), status_max_age_sec: finite.positive().max(10),
-    hover_height_m: finite, mode_start_delay_ms: finite.int().nonnegative() }).passthrough(),
+    hover_height_m: finite }).passthrough(),
   presets: presetsSchema,
 });
 export type ArmConfiguration = z.infer<typeof configSchema>;
@@ -48,7 +48,11 @@ export type ArmPose = z.infer<typeof poseSchema>;
 export const snapshotSchema = z.object({ configuration: configSchema, revision: z.string().min(1),
   presets_revision: z.string().min(1) });
 export type Snapshot = z.infer<typeof snapshotSchema>;
-export const documentSchema = snapshotSchema.extend({ version: z.string().min(1), file: z.string() });
+export const documentSchema = snapshotSchema.extend({
+  version: z.string().min(1),
+  file: z.string(),
+  preset_order: z.array(z.string().min(1)).optional(),
+});
 export type ArmDocument = z.infer<typeof documentSchema>;
 const stamp = z.object({ sec: finite.int(), nanosec: finite.int().min(0).max(999999999) });
 const header = z.object({ frame_id: z.literal("arm_base_link"), stamp });
@@ -101,6 +105,42 @@ export type RuntimeTaskReply = z.infer<typeof runtimeTaskReplySchema>;
 
 export function fmt(value: number, places = 3): string {
   return Number.isFinite(value) ? value.toFixed(places) : "?";
+}
+
+export function reorderArray<T>(list: T[], fromIndex: number, toIndex: number): T[] {
+  if (fromIndex < 0 || fromIndex >= list.length || toIndex < 0 || toIndex >= list.length || fromIndex === toIndex) {
+    return [...list];
+  }
+  const result = [...list];
+  const [item] = result.splice(fromIndex, 1);
+  result.splice(toIndex, 0, item);
+  return result;
+}
+
+export function normalizePresetOrder(order: string[] | undefined, presets: Record<string, unknown> | undefined): string[] {
+  if (!presets) return [];
+  const existingKeys = Object.keys(presets);
+  if (!order || !order.length) return existingKeys;
+  const valid = new Set(existingKeys);
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const key of order) {
+    if (valid.has(key) && !seen.has(key)) {
+      seen.add(key);
+      result.push(key);
+    }
+  }
+  for (const key of existingKeys) {
+    if (!seen.has(key)) {
+      result.push(key);
+    }
+  }
+  return result;
+}
+
+export function isPresetOrderEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((item, i) => item === b[i]);
 }
 
 export function same(a: unknown, b: unknown): boolean {

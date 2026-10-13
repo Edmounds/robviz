@@ -5,8 +5,9 @@ import { z } from "zod";
 import type { PluginPageProps } from "../types";
 import { NumberInput, validateInputs } from "../../app/EditableInput";
 import { armRequest, runtimeRequest, runtimeTaskReplySchema, runtimeTaskSchema,
-  configurationReplySchema, documentSchema, draftsSchema, fmt, hasValidFeedback, poseSchema,
-  presetsSchema, resultSchema, same, snapshotSchema, telemetrySchema } from "./api";
+  configurationReplySchema, documentSchema, draftsSchema, fmt, hasValidFeedback,
+  isPresetOrderEqual, normalizePresetOrder, poseSchema, presetsSchema, reorderArray,
+  resultSchema, same, snapshotSchema, telemetrySchema } from "./api";
 import type { ArmDocument, ArmPose, RuntimeTask, ControlMode, CoordinateFrame,
   Presets, Snapshot, Telemetry, Waypoint } from "./api";
 import "./fruit-arm.css";
@@ -33,6 +34,7 @@ const layoutSchema = z.object({
 const storedSchema = z.object({
   baseVersion: z.string(),
   presets: draftsSchema,
+  presetOrder: z.array(z.string()).optional(),
   selected: z.string(),
   pointIndex: z.number().int().nonnegative().optional(),
   step: z.number().positive().max(0.1).optional(),
@@ -74,10 +76,12 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
   const [file, setFile] = useState<ArmDocument | null>(null);
   const [memory, setMemory] = useState<LoadedSnapshot | null>(null);
   const [draft, setDraft] = useState<Presets>({});
+  const [presetOrder, setPresetOrder] = useState<string[]>([]);
+  const [dragOverInfo, setDragOverInfo] = useState<{ name: string; position: "above" | "below" } | null>(null);
   const [baseVersion, setBaseVersion] = useState("");
   const [selected, setSelected] = useState("");
   const [pointIndex, setPointIndex] = useState(0);
-  const [history, setHistory] = useState<Presets[]>([]);
+  const [history, setHistory] = useState<{ presets: Presets; presetOrder: string[] }[]>([]);
   const [controlMode, setControlMode] = useState<ControlMode>("cartesian");
   const [target, setTarget] = useState<Target>([0, 0, 0, 0]);
   const [duration, setDuration] = useState(0);
@@ -110,6 +114,7 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
   const jogDirty = useRef(false);
   const pendingGripper = useRef<number | null>(null);
   const pending = useRef<{ kind: string; sent: boolean; cancelled: boolean } | null>(null);
+  const draggedPreset = useRef<string | null>(null);
   const draggedWaypoint = useRef<{ name: string; index: number } | null>(null);
   const latest = useRef({ ctx, enabled, jog, telemetry, memory, target, controlMode, step, pitchStep, jointJogStep });
   latest.current = { ctx, enabled, jog, telemetry, memory, target, controlMode, step, pitchStep, jointJogStep };
@@ -118,7 +123,10 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
   const feedbackValid = connected && hasValidFeedback(telemetry, memory?.configuration ?? null);
   const measuredKey = memory && telemetry ? JSON.stringify([memory.revision, telemetry.model_joint_state.position]) : "";
   const measured = feedbackValid && measuredResult?.key === measuredKey ? measuredResult.pose : null;
-  const dirty = !!file && !same(draft, file.configuration.presets);
+  const baseOrder = normalizePresetOrder(file?.preset_order, file?.configuration.presets);
+  const orderDirty = !isPresetOrderEqual(presetOrder, baseOrder);
+  const contentDirty = !!file && !same(draft, file.configuration.presets);
+  const dirty = !!file && (contentDirty || orderDirty);
   const validDraft = presetsSchema.safeParse(draft).success;
   const applied = !!file && !!memory && file.file === memory.config_path && file.presets_revision === memory.presets_revision;
   const poseKey = JSON.stringify([memory?.revision ?? file?.revision, controlMode, target]);
@@ -132,11 +140,13 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
 
   const persist = useCallback((presets: Presets, version: string, name = selected, index = pointIndex, overrides?: {
     layout?: Layout; step?: number; pitchStep?: number; jointJogStep?: number;
-    controlMode?: ControlMode; expandedPresets?: string[];
+    controlMode?: ControlMode; expandedPresets?: string[]; presetOrder?: string[];
   }) => {
     if (!draftsSchema.safeParse(presets).success) return;
+    const currentOrder = overrides?.presetOrder ?? presetOrder;
     ctx.onPluginStateChange("fruit-arm", {
       presets,
+      presetOrder: currentOrder,
       baseVersion: version,
       selected: name,
       pointIndex: index,
@@ -147,12 +157,21 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
       expandedPresets: overrides?.expandedPresets ?? expandedPresets,
       layout: overrides?.layout ?? layout,
     });
-  }, [ctx, controlMode, expandedPresets, jointJogStep, layout, pitchStep, pointIndex, selected, step]);
+  }, [ctx, controlMode, expandedPresets, jointJogStep, layout, pitchStep, pointIndex, presetOrder, selected, step]);
 
-  const edit = useCallback((next: Presets, name = selected, index = pointIndex) => {
-    setHistory((old) => [...old.slice(-39), structuredClone(draft)]);
-    setDraft(next); setSelected(name); setPointIndex(index); persist(next, baseVersion, name, index);
-  }, [baseVersion, draft, persist, pointIndex, selected]);
+  const edit = useCallback((next: Presets, name = selected, index = pointIndex, nextOrder = presetOrder) => {
+    if (saving) return;
+    setHistory((old) => [...old.slice(-39), { presets: structuredClone(draft), presetOrder: [...presetOrder] }]);
+    setDraft(next); setPresetOrder(nextOrder); setSelected(name); setPointIndex(index);
+    persist(next, baseVersion, name, index, { presetOrder: nextOrder });
+  }, [baseVersion, draft, persist, pointIndex, presetOrder, saving, selected]);
+
+  const movePreset = useCallback((fromIndex: number, toIndex: number) => {
+    if (saving) return;
+    if (fromIndex === toIndex || fromIndex < 0 || fromIndex >= presetOrder.length || toIndex < 0 || toIndex >= presetOrder.length) return;
+    const nextOrder = reorderArray(presetOrder, fromIndex, toIndex);
+    edit(draft, selected, pointIndex, nextOrder);
+  }, [draft, edit, pointIndex, presetOrder, saving, selected]);
 
   const readMemory = async (signal?: AbortSignal): Promise<LoadedSnapshot> => {
     const response = configurationReplySchema.parse(await ctx.bridge.callService(ROOT + "get_configuration", {}));
@@ -179,10 +198,13 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
       const doc = documentSchema.parse(value);
       setFile(doc);
       const presets = stored.success ? stored.data.presets : doc.configuration.presets;
-      const name = stored.success && presets[stored.data.selected] ? stored.data.selected : Object.keys(presets)[0] ?? "";
+      const order = stored.success && stored.data.presetOrder
+        ? normalizePresetOrder(stored.data.presetOrder, presets)
+        : normalizePresetOrder(doc.preset_order, presets);
+      const name = stored.success && presets[stored.data.selected] ? stored.data.selected : order[0] ?? "";
       const index = Math.min(stored.success ? stored.data.pointIndex ?? 0 : 0, Math.max(0, (presets[name]?.waypoints.length ?? 0) - 1));
       const restoredLayout = stored.success ? readLayout(stored.data.layout) : DEFAULT_LAYOUT;
-      setDraft(presets); setBaseVersion(stored.success ? stored.data.baseVersion : doc.version); setSelected(name); setPointIndex(index);
+      setDraft(presets); setPresetOrder(order); setBaseVersion(stored.success ? stored.data.baseVersion : doc.version); setSelected(name); setPointIndex(index);
       setStep(stored.success ? stored.data.step ?? 0.01 : 0.01);
       setPitchStep(stored.success ? stored.data.pitchStep ?? 5 : 5);
       setJointJogStep(stored.success ? stored.data.jointJogStep ?? 5 : 5);
@@ -198,6 +220,8 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
       }
     }).catch((error) => { if (!controller.signal.aborted) log(String(error)); });
     return () => {
+      draggedPreset.current = null;
+      draggedWaypoint.current = null;
       const command = pending.current;
       if (command?.kind === "jog" && command.sent && ctx.bridge.state === "open" && ctx.bridge.url === url) {
         ctx.bridge.callService(ROOT + "stop", {}).catch((error) => console.error("Arm jog cleanup STOP failed", error));
@@ -443,11 +467,13 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
   };
 
   const renamePreset = () => {
+    if (saving) return;
     const name = prompt(tr("新预设名称", "New preset name"), selected)?.trim();
     if (!name || name === selected || !selectedPreset) return;
     if (Object.hasOwn(draft, name)) { log("Duplicate preset name"); return; }
     const next = Object.fromEntries(Object.entries(draft).map(([key, value]) => [key === selected ? name : key, value]));
-    edit(next, name);
+    const nextOrder = presetOrder.map((key) => key === selected ? name : key);
+    edit(next, name, pointIndex, nextOrder);
   };
 
   const setLayoutValue = (key: keyof Layout, value: Record<string, number>) => {
@@ -474,64 +500,145 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
   };
 
   const renderWaypoint = (name: string, point: Waypoint, index: number, coordinateFrame: CoordinateFrame) => (
-    <li key={`${name}-${index}`} className="fruit-arm-waypoint" draggable onDragStart={() => { draggedWaypoint.current = { name, index }; }}
-      onDragOver={(event) => event.preventDefault()} onDrop={() => {
+    <li key={`${name}-${index}`} className="fruit-arm-waypoint" draggable={!saving} onDragStart={(event) => {
+      event.stopPropagation();
+      draggedWaypoint.current = { name, index };
+    }}
+      onDragOver={(event) => {
+        if (!draggedWaypoint.current) return;
+        event.preventDefault();
+        event.stopPropagation();
+      }} onDrop={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
         const dragged = draggedWaypoint.current; draggedWaypoint.current = null;
         if (dragged?.name === name) reorderWaypoint(name, dragged.index, index);
       }}>
       <div className="fruit-arm-waypoint-header"><span className="fruit-arm-drag-handle" aria-label={tr("拖动排序", "Drag to reorder")}>☷</span>
-        <button className={selected === name && pointIndex === index ? "selected" : ""} onClick={() => selectPoint(name, index)}>{index + 1}</button>
+        <button className={selected === name && pointIndex === index ? "selected" : ""} disabled={saving} onClick={() => selectPoint(name, index)}>{index + 1}</button>
         <span>{coordinateFrame} · {point.linear ? "LIN" : "PTP"}</span>
         <button onClick={() => { const points = [...draft[name].waypoints]; [points[index - 1], points[index]] = [points[index], points[index - 1]];
-          if (index > 0) edit({ ...draft, [name]: { ...draft[name], waypoints: points } }, name, index - 1); }} disabled={index === 0}>↑</button>
+          if (index > 0) edit({ ...draft, [name]: { ...draft[name], waypoints: points } }, name, index - 1); }} disabled={saving || index === 0}>↑</button>
         <button onClick={() => { const points = [...draft[name].waypoints]; [points[index + 1], points[index]] = [points[index], points[index + 1]];
-          if (index < draft[name].waypoints.length - 1) edit({ ...draft, [name]: { ...draft[name], waypoints: points } }, name, index + 1); }} disabled={index === draft[name].waypoints.length - 1}>↓</button>
-        <button onClick={() => { const points = draft[name].waypoints.filter((_, pointIndexValue) => pointIndexValue !== index);
+          if (index < draft[name].waypoints.length - 1) edit({ ...draft, [name]: { ...draft[name], waypoints: points } }, name, index + 1); }} disabled={saving || index === draft[name].waypoints.length - 1}>↓</button>
+        <button disabled={saving} onClick={() => { const points = draft[name].waypoints.filter((_, pointIndexValue) => pointIndexValue !== index);
           edit({ ...draft, [name]: { ...draft[name], waypoints: points } }, name, Math.max(0, index - 1)); }}>×</button>
       </div>
       <div className="fruit-arm-grid">{point.target.slice(0, 4).map((value, targetIndex) => <NumberField key={targetIndex}
         label={coordinateFrame === "cartesian" ? ["X / m", "Y / m", "Z / m", "pitch / °"][targetIndex] : `angle ${targetIndex + 1} / °`}
-        value={value} onChange={(next) => editWaypoint(name, index, { target: point.target.map((old, valueIndex) => valueIndex === targetIndex ? next ?? NaN : old) })} />)}</div>
+        value={value} onChange={(next) => { if (!saving) editWaypoint(name, index, { target: point.target.map((old, valueIndex) => valueIndex === targetIndex ? next ?? NaN : old) }); }} />)}</div>
       <div className="fruit-arm-grid"><NumberField label="duration_ms" value={point.duration_ms} min={1} step={1}
-        onChange={(next) => editWaypoint(name, index, { duration_ms: next ?? NaN })} />
+        onChange={(next) => { if (!saving) editWaypoint(name, index, { duration_ms: next ?? NaN }); }} />
         <NumberField label="dwell_ms" value={point.dwell_ms} min={0} step={1} required={false} onChange={(next) => {
+          if (saving) return;
           editWaypoint(name, index, { dwell_ms: next });
         }} /></div>
-      <div className="fruit-arm-waypoint-options"><label>gripper<select value={point.gripper ?? 0} onChange={(event) => editWaypoint(name, index, { gripper: Number(event.target.value) })}>
+      <div className="fruit-arm-waypoint-options"><label>gripper<select value={point.gripper ?? 0} disabled={saving} onChange={(event) => editWaypoint(name, index, { gripper: Number(event.target.value) })}>
         <option value={0}>HOLD</option><option value={1}>OPEN</option><option value={2}>CLOSE</option></select></label>
-        <label><input type="checkbox" checked={point.linear ?? false} disabled={coordinateFrame !== "cartesian" && !point.linear}
+        <label><input type="checkbox" checked={point.linear ?? false} disabled={saving || (coordinateFrame !== "cartesian" && !point.linear)}
           onChange={(event) => editWaypoint(name, index, { linear: event.target.checked })} /> LIN</label>
-        <label><input type="checkbox" checked={point.is_via_point ?? false}
+        <label><input type="checkbox" checked={point.is_via_point ?? false} disabled={saving}
           onChange={(event) => editWaypoint(name, index, { is_via_point: event.target.checked })} /> {tr("途经点", "Via point")}</label></div>
     </li>
   );
 
-  const renderPresetCard = (name: string) => {
+  const renderPresetCard = (name: string, index: number) => {
     const item = draft[name]; if (!item) return null;
     const isExpanded = expandedPresets.includes(name);
     const canExecute = canMove && !jog && !dirty && applied && !!file && !!memory && file.file === memory.config_path
       && same(item, memory.configuration.presets[name]);
-    return <article className={`fruit-arm-preset-card ${isExpanded ? "expanded" : ""}`} key={name}>
-      <header className="fruit-arm-preset-header"><button className="fruit-arm-expand" onClick={() => {
-        const next = isExpanded ? expandedPresets.filter((value) => value !== name) : [...expandedPresets, name];
-        setExpandedPresets(next); persist(draft, baseVersion, selected, pointIndex, { expandedPresets: next });
-      }} aria-expanded={isExpanded}>{isExpanded ? "▾" : "▸"}</button>
+    const isDraggingThis = draggedPreset.current === name;
+    const isDropAbove = dragOverInfo?.name === name && dragOverInfo.position === "above";
+    const isDropBelow = dragOverInfo?.name === name && dragOverInfo.position === "below";
+
+    return <article
+      className={`fruit-arm-preset-card ${isExpanded ? "expanded" : ""} ${isDraggingThis ? "dragging" : ""} ${isDropAbove ? "drop-above" : ""} ${isDropBelow ? "drop-below" : ""}`}
+      key={name}
+      onDragOver={(event) => {
+        if (!draggedPreset.current || draggedPreset.current === name) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const rect = event.currentTarget.getBoundingClientRect();
+        const midpoint = rect.top + rect.height / 2;
+        const position = event.clientY < midpoint ? "above" : "below";
+        setDragOverInfo({ name, position });
+      }}
+      onDragLeave={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+        if (dragOverInfo?.name === name) setDragOverInfo(null);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const sourceName = draggedPreset.current;
+        draggedPreset.current = null;
+        const info = dragOverInfo;
+        setDragOverInfo(null);
+        if (!sourceName || sourceName === name || !info) return;
+        const fromIdx = presetOrder.indexOf(sourceName);
+        let toIdx = presetOrder.indexOf(name);
+        if (fromIdx < 0 || toIdx < 0) return;
+        if (info.position === "below") toIdx += 1;
+        if (fromIdx < toIdx) toIdx -= 1;
+        movePreset(fromIdx, toIdx);
+      }}
+    >
+      <header className="fruit-arm-preset-header">
+        <span
+          className="fruit-arm-preset-drag-handle"
+          draggable={!saving}
+          tabIndex={saving ? -1 : 0}
+          role="button"
+          aria-label={tr(`拖动排序预设 ${name}`, `Drag to reorder preset ${name}`)}
+          onDragStart={(event) => {
+            if (saving) { event.preventDefault(); return; }
+            draggedPreset.current = name;
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", name);
+          }}
+          onDragEnd={() => {
+            draggedPreset.current = null;
+            setDragOverInfo(null);
+          }}
+        >⋮⋮</span>
+        <button
+          className="fruit-arm-order-btn"
+          aria-label={tr(`上移预设 ${name}`, `Move preset ${name} up`)}
+          disabled={saving || index === 0}
+          onClick={(event) => {
+            event.stopPropagation();
+            movePreset(index, index - 1);
+          }}
+        >↑</button>
+        <button
+          className="fruit-arm-order-btn"
+          aria-label={tr(`下移预设 ${name}`, `Move preset ${name} down`)}
+          disabled={saving || index === presetOrder.length - 1}
+          onClick={(event) => {
+            event.stopPropagation();
+            movePreset(index, index + 1);
+          }}
+        >↓</button>
+        <button className="fruit-arm-expand" disabled={saving} onClick={() => {
+          const next = isExpanded ? expandedPresets.filter((value) => value !== name) : [...expandedPresets, name];
+          setExpandedPresets(next); persist(draft, baseVersion, selected, pointIndex, { expandedPresets: next });
+        }} aria-expanded={isExpanded}>{isExpanded ? "▾" : "▸"}</button>
         <button className="fruit-arm-preset-title" onClick={() => { setSelected(name); setPointIndex(0); }}>{name}</button>
         <span>{item.coordinate_frame} · {item.waypoints.length}</span>
-        <button disabled={!canExecute} onClick={() => void perform("preset", `preset ${name}`, async (snapshot) => {
+        <button disabled={saving || !canExecute} onClick={() => void perform("preset", `preset ${name}`, async (snapshot) => {
           const currentFile = documentSchema.parse(await armRequest("document", url));
           if (currentFile.presets_revision !== snapshot.presets_revision || !same(item, snapshot.configuration.presets[name])) throw new Error("Save and reload this preset first");
           return { service: "execute_preset", request: { preset_name: name } };
         })}>{tr("执行", "Execute")}</button>
       </header>
-      {isExpanded && <div className="fruit-arm-preset-body"><label>{tr("描述", "Description")}<textarea value={item.description ?? ""}
+      {isExpanded && <div className="fruit-arm-preset-body"><label>{tr("描述", "Description")}<textarea value={item.description ?? ""} disabled={saving}
         onChange={(event) => edit({ ...draft, [name]: { ...item, description: event.target.value } }, name)} /></label>
-        <label>{tr("坐标类型", "Coordinate frame")}<select value={item.coordinate_frame} disabled={item.waypoints.length > 0}
+        <label>{tr("坐标类型", "Coordinate frame")}<select value={item.coordinate_frame} disabled={saving || item.waypoints.length > 0}
           onChange={(event) => edit({ ...draft, [name]: { ...item, coordinate_frame: event.target.value as CoordinateFrame } }, name)}>
           <option>cartesian</option><option>joints</option><option>link_angles</option></select></label>
-        <ol className="fruit-arm-point-list">{item.waypoints.map((point, index) => renderWaypoint(name, point, index, item.coordinate_frame))}</ol>
-        <div className="fruit-arm-actions"><button onClick={() => addWaypoint(name)}>{tr("新增航点", "Add waypoint")}</button>
-          <button disabled={!pose} onClick={() => appendCurrentToPreset(name)}>{tr("追加当前直控目标", "Append direct target")}</button></div>
+        <ol className="fruit-arm-point-list">{item.waypoints.map((point, pointIndexValue) => renderWaypoint(name, point, pointIndexValue, item.coordinate_frame))}</ol>
+        <div className="fruit-arm-actions"><button disabled={saving} onClick={() => addWaypoint(name)}>{tr("新增航点", "Add waypoint")}</button>
+          <button disabled={saving || !pose} onClick={() => appendCurrentToPreset(name)}>{tr("追加当前直控目标", "Append direct target")}</button></div>
       </div>}
     </article>;
   };
@@ -555,28 +662,50 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
         if (!meta.isUserInteraction) return;
         setLayoutValue("main", mapPanelLayout(value, ["presets", "control", "status"], layout.main));
       }}>
-      <Panel id="presets" minSize={22}><aside className="fruit-arm-panel fruit-arm-presets" ref={presetFields}><div className="fruit-arm-panel-title"><h3>{tr("预设路径点集", "Preset waypoint sets")}</h3><span>{Object.keys(draft).length}</span></div>
-        <label>{tr("追加目标到", "Append target to")}<select aria-label={tr("预设", "Preset")} value={selected} onChange={(event) => { setSelected(event.target.value); setPointIndex(0); }}>
-          <option value="">{tr("选择预设", "Select preset")}</option>{Object.keys(draft).map((name) => <option key={name}>{name}</option>)}</select></label>
-        <button disabled={!selected || !pose} onClick={() => appendCurrentToPreset(selected)}>{tr("追加当前直控目标", "Append current direct target")}</button>
-        <div className="fruit-arm-actions"><button onClick={() => { const name = prompt(tr("新预设名称", "New preset name"))?.trim(); if (!name) return;
+      <Panel id="presets" minSize={22}><aside className="fruit-arm-panel fruit-arm-presets" ref={presetFields}><div className="fruit-arm-panel-title"><h3>{tr("预设路径点集", "Preset waypoint sets")}</h3><span>{presetOrder.length}</span></div>
+        <label>{tr("追加目标到", "Append target to")}<select aria-label={tr("预设", "Preset")} value={selected} disabled={saving} onChange={(event) => { setSelected(event.target.value); setPointIndex(0); }}>
+          <option value="">{tr("选择预设", "Select preset")}</option>{presetOrder.map((name) => <option key={name}>{name}</option>)}</select></label>
+        <button disabled={saving || !selected || !pose} onClick={() => appendCurrentToPreset(selected)}>{tr("追加当前直控目标", "Append current direct target")}</button>
+        <div className="fruit-arm-actions"><button disabled={saving} onClick={() => {
+          const name = prompt(tr("新预设名称", "New preset name"))?.trim(); if (!name) return;
           if (Object.hasOwn(draft, name)) { log("Duplicate preset name"); return; }
-          edit({ ...draft, [name]: { coordinate_frame: "cartesian", description: "", waypoints: [] } }, name); setExpandedPresets([...expandedPresets, name]); }}>{tr("新建", "New")}</button>
-          <button disabled={!selectedPreset} onClick={renamePreset}>{tr("改名", "Rename")}</button>
-          <button disabled={!selectedPreset} onClick={() => { const name = prompt(tr("副本名称", "Copy name"), `${selected}_copy`)?.trim();
-            if (name && !Object.hasOwn(draft, name)) edit({ ...draft, [name]: structuredClone(selectedPreset) }, name); }}>{tr("复制", "Copy")}</button>
-          <button disabled={!selectedPreset} onClick={() => { if (!confirm(tr("删除此草稿预设？", "Delete this draft preset?"))) return;
-            const next = Object.fromEntries(Object.entries(draft).filter(([key]) => key !== selected)); edit(next, Object.keys(next)[0] ?? "", 0); }}>{tr("删除", "Delete")}</button></div>
-        <div className="fruit-arm-preset-list">{Object.keys(draft).map(renderPresetCard)}</div>
+          const next: Presets = { ...draft, [name]: { coordinate_frame: "cartesian", description: "", waypoints: [] } };
+          const nextOrder = [...presetOrder, name];
+          edit(next, name, 0, nextOrder); setExpandedPresets([...expandedPresets, name]); }}>{tr("新建", "New")}</button>
+          <button disabled={saving || !selectedPreset} onClick={renamePreset}>{tr("改名", "Rename")}</button>
+          <button disabled={saving || !selectedPreset} onClick={() => {
+            const name = prompt(tr("副本名称", "Copy name"), `${selected}_copy`)?.trim();
+            if (name && !Object.hasOwn(draft, name)) {
+              const next = { ...draft, [name]: structuredClone(selectedPreset) };
+              const nextOrder = [...presetOrder, name];
+              edit(next, name, 0, nextOrder);
+            } }}>{tr("复制", "Copy")}</button>
+          <button disabled={saving || !selectedPreset} onClick={() => {
+            if (!confirm(tr("删除此草稿预设？", "Delete this draft preset?"))) return;
+            const next = Object.fromEntries(Object.entries(draft).filter(([key]) => key !== selected));
+            const nextOrder = presetOrder.filter((key) => key !== selected);
+            edit(next, nextOrder[0] ?? "", 0, nextOrder); }}>{tr("删除", "Delete")}</button></div>
+        <div className="fruit-arm-preset-list">{presetOrder.map((name, index) => renderPresetCard(name, index))}</div>
         <p>{dirty ? tr("未保存草稿", "Unsaved draft") : tr("文件未修改", "File unchanged")} · {applied ? tr("预设已应用", "Presets applied") : tr("预设未应用/未知", "Presets not applied / unknown")}</p>
         {file && baseVersion !== file.version && <p className="fruit-arm-error" role="alert">{tr("草稿基线与文件冲突，不会覆盖。", "Draft baseline conflicts with the file. No overwrite.")}</p>}
         {file && memory && file.file !== memory.config_path && <p className="fruit-arm-error" role="alert">{tr("文件路径与 planner 路径不同，不能重载或执行。", "Editor and planner paths differ. Reload and execution are blocked.")}</p>}
         <div className="fruit-arm-actions"><button disabled={!file || saving || !dirty || baseVersion !== file.version} onClick={async () => {
           if (!validateInputs(presetFields.current)) return;
           if (!validDraft) { log(tr("请填写有效的预设字段，展开预设检查空值", "Fill in valid preset fields. Expand presets to check empty values.")); return; }
+          if (!file) return;
+          if (orderDirty && file.preset_order === undefined) {
+            log(tr("后端服务未支持预设排序，无法保存排列顺序，请更新机器端服务", "Backend service does not support preset ordering. Update robot service."));
+            return;
+          }
           setSaving(true); const current = generation.current;
-          try { const saved = documentSchema.parse(await armRequest("presets", url, { version: baseVersion, presets: draft }, "PUT"));
-            if (current !== generation.current) return; setFile(saved); setBaseVersion(saved.version); persist(draft, saved.version); log(tr("已保存，尚未重载", "Saved, not reloaded"));
+          try {
+            const payload: Record<string, unknown> = { version: baseVersion, presets: draft };
+            if (file.preset_order !== undefined || orderDirty) { payload.preset_order = presetOrder; }
+            const saved = documentSchema.parse(await armRequest("presets", url, payload, "PUT"));
+            if (current !== generation.current) return;
+            const confirmedOrder = normalizePresetOrder(saved.preset_order, saved.configuration.presets);
+            setFile(saved); setBaseVersion(saved.version); setPresetOrder(confirmedOrder);
+            persist(draft, saved.version, selected, pointIndex, { presetOrder: confirmedOrder }); log(tr("已保存，尚未重载", "Saved, not reloaded"));
           } catch (error) { log(String(error)); } finally { if (current === generation.current) setSaving(false); }
         }}>{tr("保存文件", "Save file")}</button>
           <button disabled={!connected || busy || saving || file?.file !== memory?.config_path} onClick={async () => {
@@ -586,12 +715,16 @@ export default function FruitArmPage({ ctx, bridgeUrl, isMobile }: PluginPagePro
                 if (current === generation.current) { setMemory(snapshot); setFile(doc); setBaseVersion(doc.version); } }
             } catch (error) { log(String(error)); }
           }}>{tr("重载预设", "Reload presets")}</button>
-          <button onClick={async () => { if (dirty && !confirm(tr("丢弃未保存草稿，重新加载文件？", "Discard unsaved draft and reload file?"))) return;
+          <button disabled={saving} onClick={async () => { if (dirty && !confirm(tr("丢弃未保存草稿，重新加载文件？", "Discard unsaved draft and reload file?"))) return;
             const current = generation.current; try { const doc = documentSchema.parse(await armRequest("document", url)); if (current !== generation.current) return;
-              setFile(doc); setDraft(doc.configuration.presets); setBaseVersion(doc.version); setHistory([]); const name = Object.keys(doc.configuration.presets)[0] ?? "";
-              setSelected(name); setPointIndex(0); persist(doc.configuration.presets, doc.version, name, 0); } catch (error) { log(String(error)); } }}>{tr("重新加载文件", "Reload file")}</button></div>
-        <div className="fruit-arm-actions"><button disabled={!history.length} onClick={() => { const previous = history.at(-1)!; setDraft(previous); setHistory(history.slice(0, -1));
-          const name = previous[selected] ? selected : Object.keys(previous)[0] ?? ""; setSelected(name); setPointIndex(0); persist(previous, baseVersion, name, 0); }}>{tr("撤销", "Undo")}</button></div>
+              const restoredOrder = normalizePresetOrder(doc.preset_order, doc.configuration.presets);
+              setFile(doc); setDraft(doc.configuration.presets); setPresetOrder(restoredOrder); setBaseVersion(doc.version); setHistory([]); const name = restoredOrder[0] ?? "";
+              setSelected(name); setPointIndex(0); persist(doc.configuration.presets, doc.version, name, 0, { presetOrder: restoredOrder }); } catch (error) { log(String(error)); } }}>{tr("重新加载文件", "Reload file")}</button></div>
+        <div className="fruit-arm-actions"><button disabled={saving || !history.length} onClick={() => {
+          const previous = history.at(-1)!;
+          setDraft(previous.presets); setPresetOrder(previous.presetOrder); setHistory(history.slice(0, -1));
+          const name = previous.presets[selected] ? selected : previous.presetOrder[0] ?? "";
+          setSelected(name); setPointIndex(0); persist(previous.presets, baseVersion, name, 0, { presetOrder: previous.presetOrder }); }}>{tr("撤销", "Undo")}</button></div>
       </aside></Panel>
       <Separator className="fruit-arm-resize-handle vertical" />
       <Panel id="control" minSize={28}><Group id="fruit-arm-control" className="fruit-arm-inner-panels" orientation="vertical" disabled={isMobile} defaultLayout={layout.control}
