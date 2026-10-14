@@ -6,7 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import type { PluginPageProps } from "../types";
 import { actionSchema, logSchema, runtimeRequest, scriptArguments, scriptsSchema, storedSchema } from "./api";
-import type { Current, Script, Values } from "./api";
+import type { RunStatus, Script, Values } from "./api";
 import "./fruit-scripts.css";
 
 const ID = "fruit-scripts";
@@ -18,7 +18,8 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
   const tr = (cn: string, english: string) => en ? english : cn;
   const base = ctx.getServiceUrl("runtime");
   const [scripts, setScripts] = useState<Script[]>([]);
-  const [current, setCurrent] = useState<Current>(null);
+  const [runs, setRuns] = useState<Record<string, RunStatus>>({});
+  const [stopping, setStopping] = useState<Record<string, boolean>>({});
   const [operation, setOperation] = useState<string | null>(null);
   const [values, setValues] = useState<Record<string, Values>>({});
   const [layout, setLayout] = useState<Record<string, number>>(DEFAULT_LAYOUT);
@@ -26,13 +27,17 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
   const [available, setAvailable] = useState(false);
   const [error, setError] = useState("");
   const [connectionError, setConnectionError] = useState("");
+  const [activeTab, setActiveTab] = useState<string | null>(null);
+  const [openTabs, setOpenTabs] = useState<string[]>([]);
+
   const logElement = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   const fit = useRef<FitAddon | null>(null);
-  const cursor = useRef({ run_id: "", cursor: 0 });
+  const cursor = useRef({ script_id: "", run_id: "", cursor: 0 });
   const action = useRef<AbortController | null>(null);
   const identity = useRef(0);
   const initial = useRef({ theme: ctx.theme, fontScale });
+
   const cancelAction = useCallback(() => {
     identity.current++;
     action.current?.abort();
@@ -73,14 +78,19 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
     const stored = storedSchema.safeParse(ctx.pluginStates[ID]);
     setValues(stored.success ? stored.data.values : {});
     setLayout(stored.success && stored.data.layout.controls && stored.data.layout.logs ? stored.data.layout : DEFAULT_LAYOUT);
-    setCurrent(null); setScripts([]); setBusy(false); setAvailable(false); setError(""); setConnectionError("");
-    cursor.current = { run_id: "", cursor: 0 };
+    setRuns({}); setScripts([]); setBusy(false); setAvailable(false); setError(""); setConnectionError("");
+    setActiveTab(null); setOpenTabs([]);
+    cursor.current = { script_id: "", run_id: "", cursor: 0 };
     terminal.current?.reset();
     identity.current++;
     return cancelAction;
-    // Restore only on machine changes, not each plugin-state update.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx.bridge, base, cancelAction]);
+
+  const switchTab = useCallback((tabId: string) => {
+    setActiveTab(tabId);
+    cursor.current = { script_id: tabId, run_id: "", cursor: 0 };
+    terminal.current?.reset();
+  }, []);
 
   useEffect(() => {
     if (!ctx.active) return;
@@ -92,16 +102,54 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
         if (!loaded) {
           const reply = scriptsSchema.parse(await runtimeRequest("scripts", base, undefined, "GET", controller.signal));
           if (controller.signal.aborted) return;
-          setScripts(reply.scripts.sort((a, b) => ORDER.indexOf(a.id) - ORDER.indexOf(b.id)));
+          const sorted = reply.scripts.sort((a, b) => ORDER.indexOf(a.id) - ORDER.indexOf(b.id));
+          setScripts(sorted);
+          setRuns(reply.runs ?? {});
+          setOperation(reply.operation);
+          const activeRuns = Object.keys(reply.runs ?? {});
+          if (activeRuns.length > 0) {
+            setOpenTabs(activeRuns);
+            if (reply.current?.id) {
+              switchTab(reply.current.id);
+            } else {
+              switchTab(activeRuns[0]);
+            }
+          }
           loaded = true;
         }
-        const query = new URLSearchParams({ cursor: String(cursor.current.cursor), run_id: cursor.current.run_id });
-        const reply = logSchema.parse(await runtimeRequest(`scripts/log?${query}`, base, undefined, "GET", controller.signal));
-        if (controller.signal.aborted) return;
-        setCurrent(reply.current); setOperation(reply.operation); setAvailable(true); setConnectionError("");
-        if (reply.reset) terminal.current?.reset();
-        if (reply.data) terminal.current?.write(reply.data);
-        cursor.current = { run_id: reply.run_id, cursor: reply.cursor };
+
+        if (cursor.current.script_id) {
+          const query = new URLSearchParams({
+            script_id: cursor.current.script_id,
+            cursor: String(cursor.current.cursor),
+            run_id: cursor.current.run_id,
+          });
+          const reply = logSchema.parse(await runtimeRequest(`scripts/log?${query}`, base, undefined, "GET", controller.signal));
+          if (controller.signal.aborted) return;
+          setOperation(reply.operation);
+          setAvailable(true);
+          setConnectionError("");
+          if (reply.current) {
+            setRuns((prev) => ({ ...prev, [reply.current!.id]: reply.current! }));
+            if (stopping[reply.current.id] && reply.current.state === "EXITED") {
+              setStopping((prev) => ({ ...prev, [reply.current!.id]: false }));
+            }
+          }
+          if (reply.reset) terminal.current?.reset();
+          if (reply.data) terminal.current?.write(reply.data);
+          cursor.current = {
+            script_id: cursor.current.script_id,
+            run_id: reply.run_id,
+            cursor: reply.cursor,
+          };
+        } else {
+          const reply = scriptsSchema.parse(await runtimeRequest("scripts", base, undefined, "GET", controller.signal));
+          if (controller.signal.aborted) return;
+          setRuns(reply.runs ?? {});
+          setOperation(reply.operation);
+          setAvailable(true);
+          setConnectionError("");
+        }
       } catch (reason) {
         if (!controller.signal.aborted) { setAvailable(false); setConnectionError(String(reason)); }
       } finally {
@@ -110,7 +158,7 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
     };
     void poll();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [base, ctx.active]);
+  }, [base, ctx.active, switchTab, stopping]);
 
   const persist = (nextValues: Record<string, Values>, nextLayout = layout) => {
     ctx.onPluginStateChange(ID, { values: nextValues, layout: nextLayout });
@@ -121,7 +169,28 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
     setValues(next); persist(next);
   };
 
-  const perform = async (script?: Script) => {
+  const selectScriptCard = (scriptId: string) => {
+    if (!openTabs.includes(scriptId)) {
+      setOpenTabs((prev) => [...prev, scriptId]);
+    }
+    switchTab(scriptId);
+  };
+
+  const closeTab = (tabId: string) => {
+    const nextTabs = openTabs.filter((id) => id !== tabId);
+    setOpenTabs(nextTabs);
+    if (activeTab === tabId) {
+      if (nextTabs.length > 0) {
+        switchTab(nextTabs[nextTabs.length - 1]);
+      } else {
+        setActiveTab(null);
+        cursor.current = { script_id: "", run_id: "", cursor: 0 };
+        terminal.current?.reset();
+      }
+    }
+  };
+
+  const startScript = async (script: Script) => {
     if (action.current || !ctx.active) return;
     const controller = new AbortController();
     action.current = controller;
@@ -129,17 +198,19 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
     setBusy(true); setError("");
     try {
       const selected: Values = {};
-      if (script) {
-        scriptArguments(script, values[script.id] ?? {});
-        // Persisted values must still match the current server allowlist.
-        for (const [name, definition] of Object.entries(script.parameters)) {
-          const value = values[script.id]?.[name];
-          if (definition.choices ? typeof value === "string" && definition.choices.includes(value) : typeof value === "boolean") selected[name] = value;
+      scriptArguments(script, values[script.id] ?? {});
+      for (const [name, definition] of Object.entries(script.parameters)) {
+        const value = values[script.id]?.[name];
+        if (definition.choices ? typeof value === "string" && definition.choices.includes(value) : typeof value === "boolean") {
+          selected[name] = value;
         }
       }
-      const path = script ? `scripts/${encodeURIComponent(script.id)}/start` : "scripts/kill";
-      const reply = actionSchema.parse(await runtimeRequest(path, base, script ? { parameters: selected } : {}, "POST", controller.signal, script ? 10_000 : 35_000));
-      if (identity.current === generation) setCurrent(reply.current);
+      const path = `scripts/${encodeURIComponent(script.id)}/start`;
+      const reply = actionSchema.parse(await runtimeRequest(path, base, { parameters: selected }, "POST", controller.signal, 10_000));
+      if (identity.current === generation && reply.run) {
+        setRuns((prev) => ({ ...prev, [script.id]: reply.run! }));
+        selectScriptCard(script.id);
+      }
     } catch (reason) {
       if (identity.current === generation && !controller.signal.aborted) setError(String(reason));
     } finally {
@@ -148,13 +219,66 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
     }
   };
 
-  const currentName = current?.id === "kill" ? "kill_fruit_processes.sh" : scripts.find((script) => script.id === current?.id)?.script;
-  const running = current?.state === "RUNNING";
+  const stopScript = async (script: Script) => {
+    if (action.current || !ctx.active) return;
+    const controller = new AbortController();
+    action.current = controller;
+    const generation = identity.current;
+    setStopping((prev) => ({ ...prev, [script.id]: true }));
+    setError("");
+    try {
+      const path = `scripts/${encodeURIComponent(script.id)}/stop`;
+      const reply = actionSchema.parse(await runtimeRequest(path, base, {}, "POST", controller.signal, 10_000));
+      if (identity.current === generation && reply.run) {
+        setRuns((prev) => ({ ...prev, [script.id]: reply.run! }));
+      }
+    } catch (reason) {
+      if (identity.current === generation && !controller.signal.aborted) setError(String(reason));
+    } finally {
+      if (action.current === controller) action.current = null;
+      if (identity.current === generation) {
+        setStopping((prev) => ({ ...prev, [script.id]: false }));
+      }
+    }
+  };
+
+  const killAll = async () => {
+    if (action.current || !ctx.active) return;
+    const controller = new AbortController();
+    action.current = controller;
+    const generation = identity.current;
+    setBusy(true); setError("");
+    try {
+      const reply = actionSchema.parse(await runtimeRequest("scripts/kill", base, {}, "POST", controller.signal, 35_000));
+      if (identity.current === generation) {
+        if (!openTabs.includes("kill")) {
+          setOpenTabs((prev) => [...prev, "kill"]);
+        }
+        switchTab("kill");
+        if (reply.current) {
+          setRuns((prev) => ({ ...prev, kill: reply.current! }));
+        }
+      }
+    } catch (reason) {
+      if (identity.current === generation && !controller.signal.aborted) setError(String(reason));
+    } finally {
+      if (action.current === controller) action.current = null;
+      if (identity.current === generation) setBusy(false);
+    }
+  };
+
+  const getScriptName = (tabId: string) => {
+    if (tabId === "kill") return "kill_fruit_processes.sh";
+    return scripts.find((s) => s.id === tabId)?.script ?? tabId;
+  };
+
+  const activeRun = activeTab ? runs[activeTab] : null;
+  const activeRunning = activeRun?.state === "RUNNING";
   const disabled = busy || !!operation || !available || !ctx.active;
 
   return <div className="fruit-scripts">
     <header className="fruit-scripts-toolbar">
-      <button className="fruit-scripts-kill" disabled={disabled} onClick={() => void perform()}>Kill</button>
+      <button className="fruit-scripts-kill" disabled={disabled} onClick={() => void killAll()}>Kill</button>
       <strong>{tr("脚本控制", "Script control")}</strong>
       <span>{tr("停止进程，非硬件急停。", "Process cleanup, not hardware ESTOP.")}</span>
       <span role="status">{operation === "KILLING" ? tr("正在清理…", "Cleaning up…") : busy || operation === "STARTING" ? tr("正在启动…", "Starting…") : available ? tr("运行服务在线", "Runtime online") : tr("运行服务离线", "Runtime offline")}</span>
@@ -171,27 +295,57 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
             let args: string[] = [];
             let valid = true;
             try { args = scriptArguments(script, values[script.id] ?? {}); } catch { valid = false; }
-            const isCurrent = current?.id === script.id;
-            return <article className={`fruit-scripts-card ${isCurrent && running ? "running" : ""}`} key={script.id}>
-              <header><strong>{script.script}</strong><span className="fruit-scripts-badge">{isCurrent
-                ? running ? tr("运行中", "Running") : `${tr("已退出", "Exited")} (${current.exit_code ?? "?"})`
-                : tr("未运行", "Idle")}</span></header>
-              <div className="fruit-scripts-parameters">{Object.entries(script.parameters).map(([name, definition]) => {
-                const value = values[script.id]?.[name];
-                return <label key={name}>
-                  <span>{definition.flag || name}{definition.required ? " *" : ""}</span>
-                  {definition.choices ? <select disabled={busy} required={definition.required} value={typeof value === "string" && definition.choices.includes(value) ? value : ""}
-                    onChange={(event) => changeValue(script, name, event.target.value)}>
-                    <option value="">{definition.required ? tr("请选择", "Select") : `${tr("默认", "Default")}: ${definition.default}`}</option>
-                    {definition.choices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}
-                  </select> : <span className="fruit-scripts-boolean"><input type="checkbox" disabled={busy} checked={value === true}
-                    onChange={(event) => changeValue(script, name, event.target.checked)} />{tr("启用（默认关闭）", "Enable (default off)")}</span>}
-                </label>;
-              })}</div>
+            const run = runs[script.id];
+            const isRunning = run?.state === "RUNNING";
+            const isStopping = !!stopping[script.id];
+            const isSelected = activeTab === script.id;
+
+            let badgeText = tr("未运行", "Idle");
+            if (isStopping) badgeText = tr("正在停止…", "Stopping…");
+            else if (isRunning) badgeText = `${tr("运行中", "Running")} (PID ${run.pid ?? "?"})`;
+            else if (run?.state === "EXITED") badgeText = `${tr("已退出", "Exited")} (${run.exit_code ?? "?"})`;
+
+            return <article
+              className={`fruit-scripts-card ${isRunning ? "running" : ""} ${isSelected ? "selected" : ""}`}
+              key={script.id}
+              onClick={() => selectScriptCard(script.id)}>
+              <header>
+                <strong>{script.script}</strong>
+                <span className={`fruit-scripts-badge ${isStopping ? "stopping" : ""}`}>
+                  {badgeText}
+                </span>
+              </header>
+              <div className="fruit-scripts-parameters" onClick={(e) => e.stopPropagation()}>
+                {Object.entries(script.parameters).map(([name, definition]) => {
+                  const value = values[script.id]?.[name];
+                  return <label key={name}>
+                    <span>{definition.flag || name}{definition.required ? " *" : ""}</span>
+                    {definition.choices ? <select disabled={busy || isRunning || isStopping} required={definition.required} value={typeof value === "string" && definition.choices.includes(value) ? value : ""}
+                      onChange={(event) => changeValue(script, name, event.target.value)}>
+                      <option value="">{definition.required ? tr("请选择", "Select") : `${tr("默认", "Default")}: ${definition.default}`}</option>
+                      {definition.choices.map((choice) => <option key={choice} value={choice}>{choice}</option>)}
+                    </select> : <span className="fruit-scripts-boolean"><input type="checkbox" disabled={busy || isRunning || isStopping} checked={value === true}
+                      onChange={(event) => changeValue(script, name, event.target.checked)} />{tr("启用（默认关闭）", "Enable (default off)")}</span>}
+                  </label>;
+                })}
+              </div>
               {!Object.keys(script.parameters).length && <small>{tr("无参数", "No parameters")}</small>}
               {script.note && <small>{script.note}</small>}
               <code className="fruit-scripts-preview">./{script.script}{valid ? ` ${args.join(" ")}` : tr(" [先选择必填参数]", " [select required parameters]")}</code>
-              <button disabled={disabled || !valid} onClick={() => void perform(script)}>{tr("启动", "Start")}</button>
+              <div className="fruit-scripts-card-actions">
+                <button
+                  className="fruit-scripts-btn-start"
+                  disabled={disabled || !valid || isRunning || isStopping}
+                  onClick={(e) => { e.stopPropagation(); void startScript(script); }}>
+                  {tr("启动", "Start")}
+                </button>
+                <button
+                  className="fruit-scripts-btn-stop"
+                  disabled={disabled || !isRunning || isStopping}
+                  onClick={(e) => { e.stopPropagation(); void stopScript(script); }}>
+                  {isStopping ? tr("停止中…", "Stopping…") : tr("停止", "Stop")}
+                </button>
+              </div>
             </article>;
           })}
         </section>
@@ -199,8 +353,36 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
       <Separator className={`fruit-scripts-separator ${isMobile ? "horizontal" : "vertical"}`} />
       <Panel id="logs" minSize={isMobile ? "160px" : "240px"}>
         <section className="fruit-scripts-log" aria-label={tr("当前脚本日志", "Current script log")}>
-          <header><strong>{tr("当前日志", "Current log")}</strong><code>{currentName ?? tr("尚未启动", "Not started")}</code>
-            <span>{current ? running ? `PID ${current.pid}` : `${tr("退出码", "Exit code")} ${current.exit_code ?? "?"}` : ""}</span>
+          <div className="fruit-scripts-tabs">
+            {openTabs.length === 0 ? (
+              <span className="fruit-scripts-tabs-empty">{tr("点击左侧卡片或启动脚本以查看日志", "Select card or start script to view log")}</span>
+            ) : (
+              openTabs.map((tabId) => {
+                const tabRun = runs[tabId];
+                const isTabRunning = tabRun?.state === "RUNNING";
+                const isTabActive = activeTab === tabId;
+                return <button
+                  key={tabId}
+                  className={`fruit-scripts-tab ${isTabActive ? "active" : ""} ${isTabRunning ? "running" : ""}`}
+                  onClick={() => switchTab(tabId)}>
+                  {isTabRunning && <span className="fruit-scripts-tab-dot" />}
+                  <span>{getScriptName(tabId)}</span>
+                  {!isTabRunning && (
+                    <span
+                      className="fruit-scripts-tab-close"
+                      title={tr("关闭标签", "Close tab")}
+                      onClick={(e) => { e.stopPropagation(); closeTab(tabId); }}>
+                      ×
+                    </span>
+                  )}
+                </button>;
+              })
+            )}
+          </div>
+          <header>
+            <strong>{tr("当前日志", "Current log")}</strong>
+            <code>{activeTab ? getScriptName(activeTab) : tr("尚未选择", "None selected")}</code>
+            <span>{activeRun ? activeRunning ? `PID ${activeRun.pid}` : `${tr("退出码", "Exit code")} ${activeRun.exit_code ?? "?"}` : ""}</span>
             <button onClick={() => terminal.current?.clear()}>{tr("清屏", "Clear screen")}</button>
           </header>
           <div className="fruit-scripts-terminal" ref={logElement} />

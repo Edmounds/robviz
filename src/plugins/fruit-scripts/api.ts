@@ -8,22 +8,40 @@ const parameterSchema = z.object({
   default: z.union([z.string(), z.boolean()]).optional(),
   required: z.boolean().optional(),
 });
+export const runStatusSchema = z.object({
+  id: z.string(), run_id: z.string(), state: z.enum(["RUNNING", "EXITED"]),
+  exit_code: z.number().int().nullable(), pid: z.number().int().nullable(),
+});
+export type RunStatus = z.infer<typeof runStatusSchema>;
+export const currentSchema = runStatusSchema.nullable();
+export type Current = z.infer<typeof currentSchema>;
 export const scriptSchema = z.object({
   id: z.string().min(1), script: z.string().min(1), note: z.string(),
   parameters: z.record(z.string(), parameterSchema),
+  status: runStatusSchema.nullable().optional(),
 });
 export type Script = z.infer<typeof scriptSchema>;
 export type Values = Record<string, string | boolean>;
-export const currentSchema = z.object({
-  id: z.string(), run_id: z.string(), state: z.enum(["RUNNING", "EXITED"]),
-  exit_code: z.number().int().nullable(), pid: z.number().int().nullable(),
-}).nullable();
-export type Current = z.infer<typeof currentSchema>;
 const operationSchema = z.enum(["KILLING", "STARTING"]).nullable();
-export const scriptsSchema = z.object({ scripts: z.array(scriptSchema), current: currentSchema, operation: operationSchema });
-export const logSchema = z.object({ current: currentSchema, operation: operationSchema,
-  run_id: z.string(), cursor: z.number().int().nonnegative(), data: z.string(), reset: z.boolean() });
-export const actionSchema = z.object({ current: currentSchema });
+export const scriptsSchema = z.object({
+  scripts: z.array(scriptSchema),
+  runs: z.record(z.string(), runStatusSchema).optional().default({}),
+  current: currentSchema,
+  operation: operationSchema,
+});
+export const logSchema = z.object({
+  id: z.string().optional(),
+  current: currentSchema,
+  operation: operationSchema,
+  run_id: z.string(),
+  cursor: z.number().int().nonnegative(),
+  data: z.string(),
+  reset: z.boolean(),
+});
+export const actionSchema = z.object({
+  run: currentSchema.optional(),
+  current: currentSchema.optional(),
+});
 export const storedSchema = z.object({
   values: z.record(z.string(), z.record(z.string(), z.union([z.string(), z.boolean()]))),
   layout: z.record(z.string(), z.number().finite().positive().lte(100)),
