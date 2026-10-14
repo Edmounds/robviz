@@ -213,7 +213,8 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
         }
       }
       const localize = (script.id === "mission" || script.id === "mission_acb") && selected.phase === "localize";
-      const path = localize ? "competition/localize" : `scripts/${encodeURIComponent(script.id)}/start`;
+      const flow = script.id === "mission_acb" ? "acb" : selected.flow ?? script.parameters.flow?.default ?? "full";
+      const path = localize ? `competition/localize/${encodeURIComponent(String(flow))}` : `scripts/${encodeURIComponent(script.id)}/start`;
       if (localize) {
         await runtimeRequest(path, base, {}, "POST", controller.signal, 5_000);
       } else {
