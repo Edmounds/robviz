@@ -7,7 +7,11 @@
 顶部 Kill 不需要确认，它清理所有进程但不代表硬件急停。
 它也会清理机械臂插件或终端启动的机器人任务。
 
-七个脚本来自机器人上的 `runtime_tasks.yaml`。
+八个脚本来自机器人上的 `runtime_tasks.yaml`。
+`start_fruit_mission_acb.sh` 提供独立 ACB 卡片，支持 `phase` 和 `debug`。
+ACB 固定 A 去程开环、A 回程及 C 闭环，不提供开环开关。
+ABC、ACB 共用比赛会话锁，不能同时拥有硬件。
+`localize` 只请求已准备会话启动定位，不改变准备参数或路线。
 `test_voice.sh` 和 `test_qr.sh` 无参数控件。
 启动请求只传任务 ID 和白名单参数，不传 shell 命令。
 页面复用机械臂插件的 `runtimeRequest` 和 runtime 服务地址。
@@ -29,5 +33,5 @@
 
 ```bash
 npm run build
-npm test -- tests/unit/fruitScriptsProtocol.test.ts
+npm test -- tests/unit/fruitScriptsProtocol.test.ts tests/unit/fruitCompetitionProtocol.test.ts
 ```

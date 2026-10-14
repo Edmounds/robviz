@@ -7,10 +7,11 @@ import "@xterm/xterm/css/xterm.css";
 import type { PluginPageProps } from "../types";
 import { actionSchema, logSchema, runtimeRequest, scriptArguments, scriptsSchema, storedSchema } from "./api";
 import type { RunStatus, Script, Values } from "./api";
+import { getCompetitionStatus } from "../fruit-competition/api";
 import "./fruit-scripts.css";
 
 const ID = "fruit-scripts";
-const ORDER = ["mission", "teleop", "waypoint_recording", "camera_arm_target", "perception", "voice_test", "qr_test"];
+const ORDER = ["mission", "mission_acb", "teleop", "waypoint_recording", "camera_arm_target", "perception", "voice_test", "qr_test"];
 const DEFAULT_LAYOUT = { controls: 38, logs: 62 };
 
 export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPageProps) {
@@ -29,6 +30,7 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
   const [connectionError, setConnectionError] = useState("");
   const [activeTab, setActiveTab] = useState<string | null>(null);
   const [openTabs, setOpenTabs] = useState<string[]>([]);
+  const [competitionPhase, setCompetitionPhase] = useState("");
 
   const logElement = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
@@ -81,6 +83,7 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
     setLayout(stored.success && stored.data.layout.controls && stored.data.layout.logs ? stored.data.layout : DEFAULT_LAYOUT);
     setRuns({}); setScripts([]); setBusy(false); setAvailable(false); setError(""); setConnectionError("");
     setStopping({});
+    setCompetitionPhase("");
     setActiveTab(null); setOpenTabs([]);
     tabsInitialized.current = false;
     cursor.current = { script_id: "", run_id: "", cursor: 0 };
@@ -122,6 +125,19 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
             const added = Object.keys(status.runs).filter((id) => status.runs[id].state === "RUNNING" && !prev.includes(id));
             return added.length ? [...prev, ...added] : prev;
           });
+        }
+        try {
+          const competition = await getCompetitionStatus(base, controller.signal);
+          if (controller.signal.aborted) return;
+          setCompetitionPhase(competition.phase ?? "");
+          if (["PREPARING", "PREPARED", "LOCALIZING", "RUNNING"].includes(competition.phase ?? "") && competition.parameters) {
+            const scriptId = competition.parameters.flow === "acb" ? "mission_acb" : "mission";
+            setValues((previous) => ({ ...previous, [scriptId]: {
+              ...previous[scriptId], ...competition.parameters,
+            }}));
+          }
+        } catch {
+          setCompetitionPhase("");
         }
 
         const requested = cursor.current;
@@ -196,11 +212,16 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
           selected[name] = value;
         }
       }
-      const path = `scripts/${encodeURIComponent(script.id)}/start`;
-      const reply = actionSchema.parse(await runtimeRequest(path, base, { parameters: selected }, "POST", controller.signal, 10_000));
-      if (identity.current === generation && reply.run) {
-        setRuns((prev) => ({ ...prev, [script.id]: reply.run! }));
-        selectScriptCard(script.id);
+      const localize = (script.id === "mission" || script.id === "mission_acb") && selected.phase === "localize";
+      const path = localize ? "competition/localize" : `scripts/${encodeURIComponent(script.id)}/start`;
+      if (localize) {
+        await runtimeRequest(path, base, {}, "POST", controller.signal, 5_000);
+      } else {
+        const reply = actionSchema.parse(await runtimeRequest(path, base, { parameters: selected }, "POST", controller.signal, 10_000));
+        if (identity.current === generation && reply.run) {
+          setRuns((prev) => ({ ...prev, [script.id]: reply.run! }));
+          selectScriptCard(script.id);
+        }
       }
     } catch (reason) {
       if (identity.current === generation && !controller.signal.aborted) setError(String(reason));
@@ -270,6 +291,7 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
       <strong>{tr("脚本控制", "Script control")}</strong>
       <span>{tr("停止进程，非硬件急停。", "Process cleanup, not hardware ESTOP.")}</span>
       <span role="status">{operation === "KILLING" ? tr("正在清理…", "Cleaning up…") : busy || operation === "STARTING" ? tr("正在启动…", "Starting…") : available ? tr("运行服务在线", "Runtime online") : tr("运行服务离线", "Runtime offline")}</span>
+      {competitionPhase && <span>{tr(`比赛：${competitionPhase}`, `Competition: ${competitionPhase}`)}</span>}
     </header>
     {(error || connectionError) && <div className="fruit-scripts-error" role="alert">{error || connectionError}</div>}
     <Group id="fruit-scripts-main" className="fruit-scripts-main" orientation={isMobile ? "vertical" : "horizontal"}
