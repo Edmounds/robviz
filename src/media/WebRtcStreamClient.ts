@@ -4,6 +4,9 @@
  * and shared media streams for identical ROS image topics across multiple panels.
  */
 
+import { availableImageTopics } from "../core/imageTopics";
+import type { TopicInfo } from "../core/FoxgloveConnection";
+
 export interface WebRtcStreamStats {
   topic: string;
   targetFps: number;
@@ -445,6 +448,64 @@ class TopicPeer {
  */
 class WebRtcStreamManager {
   private peers = new Map<string, TopicPeer>();
+
+  /** Discover sources without opening video peers or subscribing via Foxglove. */
+  discover(wsUrl: string, onTopics: (topics: TopicInfo[]) => void): () => void {
+    let closed = false;
+    let ws: WebSocket | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let poll: ReturnType<typeof setInterval> | null = null;
+    const retry = () => {
+      if (poll !== null) clearInterval(poll);
+      poll = null;
+      const old = ws;
+      ws = null;
+      old?.close();
+      onTopics([]);
+      if (!closed && timer === null) timer = setTimeout(connect, 1000);
+    };
+    const connect = () => {
+      timer = null;
+      if (closed) return;
+      let socket: WebSocket;
+      try {
+        socket = new WebSocket(wsUrl);
+        ws = socket;
+      } catch {
+        retry();
+        return;
+      }
+      socket.onopen = () => {
+        if (ws !== socket || closed) return;
+        const query = () => {
+          if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: "getMeta" }));
+        };
+        query();
+        poll = setInterval(query, 3000);
+      };
+      socket.onmessage = (event) => {
+        if (ws !== socket || closed) return;
+        try {
+          const metadata = JSON.parse(event.data as string);
+          if (metadata?.type === "meta" && metadata.streams) {
+            onTopics(availableImageTopics(metadata));
+          }
+        } catch {
+          onTopics([]);
+        }
+      };
+      socket.onclose = socket.onerror = () => { if (ws === socket && !closed) retry(); };
+    };
+    connect();
+    return () => {
+      closed = true;
+      if (timer !== null) clearTimeout(timer);
+      if (poll !== null) clearInterval(poll);
+      const old = ws;
+      ws = null;
+      old?.close();
+    };
+  }
 
   /**
    * Helper to derive the gateway WebSocket URL from Foxglove bridge URL

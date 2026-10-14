@@ -17,7 +17,7 @@
 
 关键点：
 
-- **唯一的机器人侧依赖是 `foxglove_bridge`**（apt 可装，官方维护，多客户端）。
+- ROS 话题与服务使用 `foxglove_bridge`。图像面板另需提供 WebRTC 图像网关。
 
 ## 2. 目录结构（单包，非 monorepo）
 
@@ -190,13 +190,15 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 
 ### 图像管线
 
-- Worker 侧把 `sensor_msgs/Image`、`CompressedImage` 的 data 拷入池缓冲 Transferable 转移
-  （latest-wins，同点云）；主线程 ImagePanel 收到后**同步消费**（缓冲随即回收）。
-- CompressedImage → `createImageBitmap`（浏览器原生 JPEG/PNG 解码，GPU 加速）。
-- raw Image → TypedArray 转 RGBA：rgb8/bgr8/rgba8/bgra8/mono8 直转；32FC1/16UC1/mono16
-  为深度图，逐帧采样求量程后 turbo 上色（复用 `renderers/colormap.ts`）。
-- 悬停取值：面板保留最近一帧原始像素的拷贝，mousemove 按 canvas 缩放比例映射回像素坐标，
-  深度显示米数（16UC1 同显毫米原值）。VGA@5Hz 拷贝 + 上色 <3ms，不需要再进 Worker。
+- 图像面板只使用 WebRTC H.264，不经 Foxglove 传输 raw/JPEG 帧。
+- 活动面板通过视频网关 WebSocket 每 3 秒请求 `getMeta`。
+- 来源列表仅接受 `transport="webrtc"` 且 `available=true` 的探测结果，不使用消息类型广告推断可用性。
+- 探测不创建视频 peer。没有有效帧的来源不进入可选列表。
+- 已选来源停止发帧时保留选择，但遮住旧视频并显示不可用状态。
+- 网关断线后每秒恢复来源发现，页面退出后取消查询与恢复。
+- 检测框、类别和坐标由机器人端绘制进图像。浏览器不叠加机器人专属检测内容。
+- `<video>` 与已有缩放、平移容器一起变换，图像和标注不会因缩放错位。
+- 旧布局的传输标志仍可加载，图像面板统一使用 WebRTC，并保存更新后的标志。
 
 ### 曲线面板
 
@@ -301,3 +303,4 @@ ArrayBuffer(CDR) ─ @foxglove/rosmsg.parse(schema, {ros2:true})
 | D25 | 主工作区使用 Dockview 无重叠分割停靠，不实现桌面式浮窗 | 对齐 Foxglove 的高密度多视图工作流，同时避免遮挡和窗口层级管理 |
 | D26 | 每台机器独立 Worker/布局/场景，非活动机器保持连接但暂停业务订阅 | 保持快速切换与状态隔离，同时消除后台机器的传感器带宽、解码和主线程传输成本 |
 | D27 | 顶栏主页与功能插件化解耦，开关确认后保存并整页刷新重排 | 顶栏命名改为主页（内部 3D 板块保留“3D 视图”）；5 大功能模块插件化，插件声明承载为顶栏 pages 还是主页 panels；开关全局刷新确保彻底清理状态，主页板块自动重排并保留顶栏排序 |
+| D28 | 图像面板只用 WebRTC，来源列表使用网关有效帧探测结果 | 避免消息类型广告产生黑屏选项，同时移除重复 JPEG 编码与传输 |

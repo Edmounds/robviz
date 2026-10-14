@@ -1,140 +1,19 @@
-/**
- * 图像面板：CompressedImage（jpeg/png → createImageBitmap）与
- * raw Image（rgb8/bgr8/mono8/mono16/16UC1/32FC1，深度图 turbo 上色）。
- * 悬停显示像素坐标 + 值（深度显示米数），视觉调参用。
- */
+/** WebRTC image preview. Overlays are already part of the encoded video. */
 import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
 import type { TopicInfo } from "../core/FoxgloveConnection";
-import { preferredImageTopic, sortedImageTopics } from "../core/imageTopics";
 import { webRtcManager, type WebRtcStreamStats } from "../media/WebRtcStreamClient";
-import { turbo } from "../renderers/colormap";
-import type { MessagePayload } from "../worker/protocol";
 import { CollapsiblePanel } from "../app/CollapsiblePanel";
 import { useI18n } from "../app/i18n";
-
-const IMAGE_MAX_FREQUENCY = 10;
-
-interface HoverInfo {
-  x: number;
-  y: number;
-  text: string;
-}
-
-interface RawFrame {
-  width: number;
-  height: number;
-  encoding: string;
-  /** Worker 归一化后的紧凑小端像素（拷贝，供悬停取值） */
-  data: Uint8Array;
-}
-
-/** raw 编码 → RGBA。深度类编码返回 [rgba, min, max] 供 HUD */
-function rawToRgba(frame: RawFrame): { rgba: Uint8ClampedArray; range?: [number, number] } {
-  const { width, height, encoding, data } = frame;
-  const n = width * height;
-  const rgba = new Uint8ClampedArray(n * 4);
-
-  if (encoding === "rgb8" || encoding === "bgr8") {
-    const rOff = encoding === "rgb8" ? 0 : 2;
-    for (let i = 0; i < n; i++) {
-      rgba[i * 4] = data[i * 3 + rOff];
-      rgba[i * 4 + 1] = data[i * 3 + 1];
-      rgba[i * 4 + 2] = data[i * 3 + 2 - rOff];
-      rgba[i * 4 + 3] = 255;
-    }
-    return { rgba };
-  }
-  if (encoding === "rgba8" || encoding === "bgra8") {
-    const rOff = encoding === "rgba8" ? 0 : 2;
-    for (let i = 0; i < n; i++) {
-      rgba[i * 4] = data[i * 4 + rOff];
-      rgba[i * 4 + 1] = data[i * 4 + 1];
-      rgba[i * 4 + 2] = data[i * 4 + 2 - rOff];
-      rgba[i * 4 + 3] = 255;
-    }
-    return { rgba };
-  }
-  if (encoding === "mono8" || encoding === "8UC1") {
-    for (let i = 0; i < n; i++) {
-      const v = data[i];
-      rgba[i * 4] = v;
-      rgba[i * 4 + 1] = v;
-      rgba[i * 4 + 2] = v;
-      rgba[i * 4 + 3] = 255;
-    }
-    return { rgba };
-  }
-
-  // 深度类：16UC1（毫米）/ mono16 / 32FC1（米）→ turbo
-  let values: Float32Array | Uint16Array;
-  if (encoding === "32FC1") {
-    values = new Float32Array(data.buffer.slice(data.byteOffset, data.byteOffset + n * 4));
-  } else if (encoding === "16UC1" || encoding === "mono16") {
-    values = new Uint16Array(data.buffer.slice(data.byteOffset, data.byteOffset + n * 2));
-  } else {
-    // 未知编码：显示为灰噪
-    for (let i = 0; i < n; i++) rgba[i * 4 + 3] = 255;
-    return { rgba };
-  }
-  let min = Infinity;
-  let max = -Infinity;
-  for (let i = 0; i < n; i += 7) {
-    const v = values[i];
-    if (!Number.isFinite(v) || v <= 0) continue;
-    if (v < min) min = v;
-    if (v > max) max = v;
-  }
-  if (!(min < max)) {
-    min = 0;
-    max = 1;
-  }
-  const inv = 1 / (max - min);
-  for (let i = 0; i < n; i++) {
-    const v = values[i];
-    if (!Number.isFinite(v) || v <= 0) {
-      rgba[i * 4 + 3] = 255;
-      continue;
-    }
-    const [r, g, b] = turbo((v - min) * inv);
-    rgba[i * 4] = r * 255;
-    rgba[i * 4 + 1] = g * 255;
-    rgba[i * 4 + 2] = b * 255;
-    rgba[i * 4 + 3] = 255;
-  }
-  return { rgba, range: [min, max] };
-}
-
-function pixelText(frame: RawFrame, px: number, py: number): string {
-  const { width, encoding, data } = frame;
-  const i = py * width + px;
-  if (encoding === "32FC1") {
-    const v = new DataView(data.buffer, data.byteOffset).getFloat32(i * 4, true);
-    return `${v.toFixed(3)} m`;
-  }
-  if (encoding === "16UC1" || encoding === "mono16") {
-    const v = new DataView(data.buffer, data.byteOffset).getUint16(i * 2, true);
-    return `${v} (${(v / 1000).toFixed(3)} m)`;
-  }
-  if (encoding === "rgb8" || encoding === "bgr8") {
-    const rOff = encoding === "rgb8" ? 0 : 2;
-    return `RGB(${data[i * 3 + rOff]}, ${data[i * 3 + 1]}, ${data[i * 3 + 2 - rOff]})`;
-  }
-  if (encoding === "mono8" || encoding === "8UC1") return `${data[i]}`;
-  return "";
-}
 
 export function ImagePanel({
   embedded = false,
   active = true,
   bridge,
-  topics,
   initialTopic,
   fixedTopic,
-  initialPreferRaw = true,
-  initialUseWebRtc = true,
   mediaUrl: configuredMediaUrl,
   onTopicChange,
   onClose,
@@ -147,9 +26,9 @@ export function ImagePanel({
   initialTopic?: string;
   /** 固定预览话题；设置后不显示可切换话题选择器。 */
   fixedTopic?: string;
-  /** 配置恢复：保留 Raw 话题，不等于选择 Raw 传输 */
+  /** Legacy workspace field. Preview uses the gateway's raw source name. */
   initialPreferRaw?: boolean;
-  /** 配置恢复：选择 WebRTC 或 Raw 渲染/传输 */
+  /** Legacy workspace field. Preview now always uses WebRTC. */
   initialUseWebRtc?: boolean;
   mediaUrl?: string;
   /** 配置保存：话题或传输选择变化时上报 */
@@ -158,19 +37,14 @@ export function ImagePanel({
 }) {
   const { t } = useI18n();
   const panelId = useId();
-  const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const frameRef = useRef<RawFrame>(null);
-  const preferRawRef = useRef(initialPreferRaw);
-  const [topic, setTopic] = useState(fixedTopic ?? initialTopic ?? "");
+  const [topic, setTopic] = useState(fixedTopic ?? initialTopic?.replace(/\/compressed$/, "") ?? "");
+  const [imageTopics, setImageTopics] = useState<TopicInfo[]>([]);
   const [collapsed, setCollapsed] = useState(false);
-  const [hover, setHover] = useState<HoverInfo>();
-  const [meta, setMeta] = useState<string>("");
   const [targetFps, setTargetFps] = useState(10);
   const targetFpsRef = useRef(targetFps);
   targetFpsRef.current = targetFps;
-  const [useWebRtc, setUseWebRtc] = useState(initialUseWebRtc);
   const [webrtcStats, setWebRtcStats] = useState<WebRtcStreamStats | null>(null);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -283,43 +157,31 @@ export function ImagePanel({
     }
   }, []);
 
-  const isImageTopic = topics.some(
-    (cand) =>
-      cand.topic === topic &&
-      (cand.schemaName === "sensor_msgs/msg/Image" ||
-        cand.schemaName === "sensor_msgs/msg/CompressedImage"),
-  );
-  const isManaged = Boolean(webrtcStats?.transport);
-  const isJpegMode = webrtcStats?.transport === "jpeg";
-  const activeWebRtc = !isJpegMode && useWebRtc && (isImageTopic || isManaged);
-  const activeCompressedTopic = isJpegMode
-    ? (webrtcStats?.compressedTopic ?? `${topic}/compressed`)
-    : topic;
+  const sourceAvailable = imageTopics.some((item) => item.topic === topic);
   const mediaUrl = webRtcManager.deriveMediaUrl(
     bridge.url || "ws://localhost:8765",
     configuredMediaUrl,
   );
 
   useEffect(() => {
-    onTopicChange?.(topic, preferRawRef.current, useWebRtc);
+    onTopicChange?.(topic, true, true);
     // onTopicChange 是 App 侧的快照记录回调，身份变化不需重跑
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topic, useWebRtc]);
-
-  const imageTopics = sortedImageTopics(topics);
+  }, [topic]);
 
   useEffect(() => {
-    const preferred = fixedTopic ?? preferredImageTopic(
-      topics,
-      topic,
-      initialTopic,
-      preferRawRef.current,
-    );
-    if (preferred !== topic) setTopic(preferred);
-  }, [fixedTopic, initialTopic, topic, topics]);
+    setImageTopics([]);
+    if (!active || collapsed) return;
+    return webRtcManager.discover(mediaUrl, setImageTopics);
+  }, [active, collapsed, mediaUrl]);
+
+  useEffect(() => {
+    if (fixedTopic && fixedTopic !== topic) setTopic(fixedTopic);
+    else if (!topic && imageTopics.length === 1) setTopic(imageTopics[0].topic);
+  }, [fixedTopic, imageTopics, topic]);
 
   const shouldWatchGateway = Boolean(
-    active && !collapsed && topic && (isImageTopic || isManaged) && useWebRtc,
+    active && !collapsed && topic,
   );
 
   useEffect(() => {
@@ -351,10 +213,8 @@ export function ImagePanel({
   }, [mediaUrl, panelId, shouldWatchGateway, topic]);
 
   useEffect(() => {
-    if (activeWebRtc && videoRef.current && streamRef.current) {
-      videoRef.current.srcObject = streamRef.current;
-    }
-  }, [activeWebRtc]);
+    if (videoRef.current) videoRef.current.srcObject = streamRef.current;
+  }, [sourceAvailable]);
 
   useEffect(() => {
     if (shouldWatchGateway) {
@@ -362,82 +222,7 @@ export function ImagePanel({
     }
   }, [mediaUrl, panelId, shouldWatchGateway, targetFps, topic]);
 
-  useEffect(() => {
-    if (!active || activeWebRtc || !activeCompressedTopic || collapsed) return;
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d")!;
-    let currentTopic = activeCompressedTopic;
-    let activeSub = true;
-
-    const unsub = bridge.subscribe(activeCompressedTopic, (payload: MessagePayload) => {
-      if (!activeSub || currentTopic !== activeCompressedTopic) return;
-      if (payload.kind === "compressed_image") {
-        frameRef.current = null; // 压缩图不支持逐像素取值
-        void createImageBitmap(new Blob([payload.data as unknown as BlobPart])).then((bmp) => {
-          if (!activeSub || currentTopic !== activeCompressedTopic) {
-            bmp.close();
-            return;
-          }
-          canvas.width = bmp.width;
-          canvas.height = bmp.height;
-          ctx.drawImage(bmp, 0, 0);
-          bmp.close();
-          setMeta(`${payload.format} ${canvas.width}×${canvas.height}`);
-        });
-      } else if (payload.kind === "image") {
-        const frame: RawFrame = {
-          width: payload.width,
-          height: payload.height,
-          encoding: payload.encoding,
-          data: new Uint8Array(payload.data), // 拷贝（缓冲即将回收）
-        };
-        frameRef.current = frame;
-        const { rgba, range } = rawToRgba(frame);
-        canvas.width = frame.width;
-        canvas.height = frame.height;
-        ctx.putImageData(
-          new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, frame.width, frame.height),
-          0,
-          0,
-        );
-        setMeta(
-          `${frame.encoding} ${frame.width}×${frame.height}` +
-            (range ? ` · ${range[0].toFixed(2)}~${range[1].toFixed(2)}` : ""),
-        );
-      }
-    }, { maxFrequency: IMAGE_MAX_FREQUENCY });
-    return () => {
-      activeSub = false;
-      unsub();
-      frameRef.current = null;
-    };
-  }, [active, activeCompressedTopic, activeWebRtc, bridge, collapsed]);
-
-  const onMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-    const frame = frameRef.current;
-    const canvas = canvasRef.current;
-    const container = containerRef.current;
-    if (!frame || !canvas || !container) {
-      setHover(undefined);
-      return;
-    }
-    const rect = canvas.getBoundingClientRect();
-    const px = Math.floor(((e.clientX - rect.left) / rect.width) * frame.width);
-    const py = Math.floor(((e.clientY - rect.top) / rect.height) * frame.height);
-    if (px < 0 || py < 0 || px >= frame.width || py >= frame.height) {
-      setHover(undefined);
-      return;
-    }
-    const containerRect = container.getBoundingClientRect();
-    setHover({
-      x: e.clientX - containerRect.left,
-      y: e.clientY - containerRect.top,
-      text: `(${px}, ${py}) ${pixelText(frame, px, py)}`,
-    });
-  }, []);
-
-  const displayMeta = activeWebRtc && webrtcStats
+  const displayMeta = webrtcStats
     ? (webrtcStats.status === "streaming" || webrtcStats.status === "congested"
         ? `H.264 ${webrtcStats.width}×${webrtcStats.height} · ${webrtcStats.actualFps} FPS (${targetFps}) · ${webrtcStats.bitrateKbps} kbps · loss ${(webrtcStats.packetLoss * 100).toFixed(1)}% · RTT ${(webrtcStats.rtt * 1000).toFixed(0)} ms`
         : webrtcStats.status === "connecting"
@@ -445,7 +230,7 @@ export function ImagePanel({
         : webrtcStats.status === "error"
         ? webrtcStats.statusText || t("webrtcUnavailable")
         : "")
-    : meta;
+    : "";
 
   const header = (
     <>
@@ -453,13 +238,15 @@ export function ImagePanel({
           <span className="panel-meta" title={fixedTopic}>{fixedTopic}</span>
         ) : (
           <select
-            value={topic}
+            aria-label={t("chooseImageTopic")}
+            value={sourceAvailable ? topic : ""}
             onChange={(e) => {
-              preferRawRef.current = !e.target.value.endsWith("/compressed");
               setTopic(e.target.value);
             }}
           >
-            <option value="">{t("chooseImageTopic")}</option>
+            <option value="" disabled>
+              {topic && !sourceAvailable ? `${topic} · ${t("webrtcUnavailable")}` : t("chooseImageTopic")}
+            </option>
             {imageTopics.map((t) => (
               <option key={t.topic} value={t.topic}>
                 {t.topic}
@@ -467,7 +254,7 @@ export function ImagePanel({
             ))}
           </select>
         )}
-        {isImageTopic && !isManaged && (
+        {topic && (
           <>
             <select
               value={targetFps}
@@ -475,7 +262,7 @@ export function ImagePanel({
               onChange={(e) => {
                 const fps = Number(e.target.value);
                 setTargetFps(fps);
-                if (active && activeWebRtc && !collapsed) {
+                if (active && !collapsed) {
                   webRtcManager.setFps(topic, mediaUrl, panelId, fps);
                 }
               }}
@@ -487,32 +274,14 @@ export function ImagePanel({
               <option value={20}>20 FPS</option>
               <option value={30}>30 FPS</option>
             </select>
-            <button
-              type="button"
-              className={`panel-btn ${activeWebRtc ? "active" : ""}`}
-              style={{
-                fontSize: "var(--fs-meta)",
-                padding: "2px 6px",
-                marginLeft: 4,
-                background: activeWebRtc ? "#0284c7" : "#334155",
-                color: "#fff",
-                border: "none",
-                borderRadius: 3,
-                cursor: "pointer",
-              }}
-              title="切换 WebRTC / Raw 渲染"
-              onClick={() => setUseWebRtc(!useWebRtc)}
-            >
-              {activeWebRtc ? "WebRTC" : "Raw"}
-            </button>
           </>
         )}
-        {isManaged && (
+        {topic && (
           <span className="panel-meta" style={{ color: "#38bdf8", fontWeight: 600 }}>
-            {isJpegMode ? "JPEG" : "WebRTC"}
+            WebRTC
           </span>
         )}
-        {activeWebRtc && webrtcStats?.status === "error" && (
+        {webrtcStats?.status === "error" && (
           <button
             type="button"
             className="panel-btn"
@@ -591,7 +360,6 @@ export function ImagePanel({
             cursor: isDraggingRef.current ? "grabbing" : "grab",
           }}
         >
-          {activeWebRtc ? (
             <video
               ref={videoRef}
               autoPlay
@@ -608,25 +376,10 @@ export function ImagePanel({
                 pointerEvents: "none",
               }}
             />
-          ) : (
-            <canvas
-              ref={canvasRef}
-              style={{
-                maxWidth: "100%",
-                maxHeight: "100%",
-                width: "auto",
-                height: "auto",
-                objectFit: "contain",
-                display: "block",
-              }}
-              onMouseMove={onMove}
-              onMouseLeave={() => setHover(undefined)}
-            />
-          )}
         </div>
-        {hover && !activeWebRtc && (
-          <div className="pixel-tip" style={{ left: hover.x + 12, top: hover.y + 12 }}>
-            {hover.text}
+        {topic && (!sourceAvailable || webrtcStats?.status === "error") && (
+          <div role="status" style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", background: "#0f172a", pointerEvents: "none" }}>
+            {webrtcStats?.statusText || t("webrtcUnavailable")}
           </div>
         )}
       </div>

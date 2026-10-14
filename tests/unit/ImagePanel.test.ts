@@ -1,91 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { availableImageTopics } from "../../src/core/imageTopics";
 
-import {
-  preferredImageTopic,
-  sortedImageTopics,
-} from "../../src/core/imageTopics";
-import type { TopicInfo } from "../../src/core/FoxgloveConnection";
-
-const RAW = "sensor_msgs/msg/Image";
-const COMPRESSED = "sensor_msgs/msg/CompressedImage";
-
-function topic(topic: string, schemaName: string): TopicInfo {
-  return { topic, schemaName };
-}
-
-describe("image topic preference", () => {
-  it("sorts a compressed transport before its raw topic", () => {
-    const topics = [
-      topic("/camera/image_raw", RAW),
-      topic("/odom", "nav_msgs/msg/Odometry"),
-      topic("/camera/image_raw/compressed", COMPRESSED),
-    ];
-
-    expect(sortedImageTopics(topics).map((item) => item.topic)).toEqual([
-      "/camera/image_raw/compressed",
-      "/camera/image_raw",
-    ]);
+describe("probed WebRTC image sources", () => {
+  it("lists only verified playable raw sources, not idle publishers or JPEG", () => {
+    const topics = availableImageTopics({ streams: {
+      "/camera/raw": { available: true, transport: "webrtc" },
+      "/camera/idle": { available: false, transport: "webrtc" },
+      "/camera/unprobed": { transport: "webrtc" },
+      "/camera/compressed": { available: true, transport: "jpeg" },
+      "/camera/wrong": { available: "true", transport: "webrtc" },
+      "not a topic": { available: true, transport: "webrtc" },
+    } });
+    expect(topics).toEqual([{ topic: "/camera/raw", schemaName: "sensor_msgs/msg/Image" }]);
   });
 
-  it("upgrades a restored raw topic when its compressed transport appears", () => {
-    const topics = [
-      topic("/camera/image_raw", RAW),
-      topic("/camera/image_raw/compressed", COMPRESSED),
-    ];
-
-    expect(preferredImageTopic(topics, "/camera/image_raw", "/camera/image_raw", false)).toBe(
-      "/camera/image_raw/compressed",
-    );
-  });
-
-  it("keeps a raw topic when no matching compressed transport exists", () => {
-    const topics = [topic("/camera/image_raw", RAW)];
-
-    expect(preferredImageTopic(topics, "/camera/image_raw", "/camera/image_raw", false)).toBe(
-      "/camera/image_raw",
-    );
-  });
-
-  it("respects a persisted manual raw selection", () => {
-    const topics = [
-      topic("/camera/image_raw", RAW),
-      topic("/camera/image_raw/compressed", COMPRESSED),
-    ];
-
-    expect(preferredImageTopic(topics, "/camera/image_raw", "/camera/image_raw", true)).toBe(
-      "/camera/image_raw",
-    );
-  });
-
-  it("automatically selects compressed for one logical camera", () => {
-    const topics = [
-      topic("/camera/image_raw", RAW),
-      topic("/camera/image_raw/compressed", COMPRESSED),
-    ];
-
-    expect(preferredImageTopic(topics, "", undefined, false)).toBe(
-      "/camera/image_raw/compressed",
-    );
-  });
-
-  it("does not choose arbitrarily when multiple cameras are available", () => {
-    const topics = [
-      topic("/front/image_raw", RAW),
-      topic("/front/image_raw/compressed", COMPRESSED),
-      topic("/rear/image_raw", RAW),
-      topic("/rear/image_raw/compressed", COMPRESSED),
-    ];
-
-    expect(preferredImageTopic(topics, "", undefined, false)).toBe("");
-  });
-
-  it("does not auto-select when a second camera only has a raw topic", () => {
-    const topics = [
-      topic("/front/image_raw", RAW),
-      topic("/front/image_raw/compressed", COMPRESSED),
-      topic("/rear/image_raw", RAW),
-    ];
-
-    expect(preferredImageTopic(topics, "", undefined, false)).toBe("");
+  it.each([null, [], {}, { streams: [] }, { streams: null }])("rejects malformed metadata: %j", (value) => {
+    expect(availableImageTopics(value)).toEqual([]);
   });
 });

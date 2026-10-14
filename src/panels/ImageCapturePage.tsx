@@ -200,7 +200,7 @@ export function ImageCapturePage({
 
   const rawTopic = captureInfo?.topic || "/camera/color/image_raw";
   const captureTopics = Array.from(
-    new Set([rawTopic, ...(captureInfo?.availableTopics ?? [])]),
+    new Set(captureInfo?.availableTopics ?? []),
   );
   const canCapture =
     !isSaving && !isSelectingTopic && gwConnected && Boolean(captureInfo?.hasFrame);
@@ -226,6 +226,9 @@ export function ImageCapturePage({
             disabled={!gwConnected || isSelectingTopic}
             onChange={(event) => void selectCaptureTopic(event.target.value)}
           >
+            {!captureTopics.includes(rawTopic) && (
+              <option value={rawTopic} disabled>{rawTopic} · {t("webrtcUnavailable")}</option>
+            )}
             {captureTopics.map((topic) => (
               <option key={topic} value={topic}>
                 {topic}

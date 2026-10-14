@@ -47,7 +47,6 @@ function ImageStreamSettingsForm({
   onChange: (patch: Partial<ImageStreamSettings>) => void;
 }) {
   const isEn = locale === "en";
-  const isWebRtc = value.transport === "webrtc";
 
   return (
     <section className="settings-section image-settings-stream">
@@ -55,22 +54,7 @@ function ImageStreamSettingsForm({
 
       <div className="settings-row">
         <span>{isEn ? "Transport Mode" : "传输模式"}</span>
-        <div className="segmented-control">
-          <button
-            type="button"
-            className={isWebRtc ? "active" : ""}
-            onClick={() => onChange({ transport: "webrtc" })}
-          >
-            WebRTC (H.264)
-          </button>
-          <button
-            type="button"
-            className={!isWebRtc ? "active" : ""}
-            onClick={() => onChange({ transport: "jpeg" })}
-          >
-            JPEG
-          </button>
-        </div>
+        <strong>WebRTC (H.264)</strong>
       </div>
 
       <label className="settings-row settings-slider">
@@ -97,7 +81,6 @@ function ImageStreamSettingsForm({
         <output>FPS</output>
       </label>
 
-      {isWebRtc ? (
         <label className="settings-row settings-slider">
           <span>{isEn ? "Target Bitrate" : "目标码率"}</span>
           <NumberInput
@@ -109,47 +92,6 @@ function ImageStreamSettingsForm({
           />
           <output>Mbps</output>
         </label>
-      ) : (
-        <>
-          <label className="settings-row settings-toggle">
-            <span>
-              <strong>{isEn ? "Automatic JPEG quality" : "自动 JPEG 质量"}</strong>
-              <small>{isEn ? "Reduce quality before dropping frames" : "在最低质量前优先降画质以维持帧率"}</small>
-            </span>
-            <input
-              type="checkbox"
-              checked={value.auto_quality}
-              onChange={(event) => onChange({ auto_quality: event.target.checked })}
-            />
-          </label>
-          <label className="settings-row settings-slider">
-            <span>{isEn ? "JPEG Target Quality" : "JPEG 目标质量"}</span>
-            <input
-              type="range"
-              min={30}
-              max={95}
-              step={1}
-              value={value.quality}
-              onChange={(event) => onChange({ quality: Number(event.target.value) })}
-            />
-            <output>{value.quality}</output>
-          </label>
-          {value.auto_quality && (
-            <label className="settings-row settings-slider">
-              <span>{isEn ? "JPEG Minimum Quality" : "JPEG 最低质量"}</span>
-              <input
-                type="range"
-                min={30}
-                max={value.quality}
-                step={1}
-                value={value.min_quality}
-                onChange={(event) => onChange({ min_quality: Number(event.target.value) })}
-              />
-              <output>{value.min_quality}</output>
-            </label>
-          )}
-        </>
-      )}
     </section>
   );
 }
@@ -242,7 +184,7 @@ function ImageTransportSettings({
 
   return (
     <div className="settings-image-transport" ref={fields}>
-      <p className="settings-hint">{isEn ? "These settings control the bounded compressed previews. Changes require a successful ROS reload." : "这些设置控制有界的压缩预览。配置只有在 ROS 重载成功后才算生效。"}</p>
+      <p className="settings-hint">{isEn ? "These settings control WebRTC previews. Changes require a successful ROS reload." : "这些设置控制 WebRTC 预览。配置只有在 ROS 重载成功后才算生效。"}</p>
       {settings ? (
         <>
           <ImageStreamSettingsForm name="rgb" value={settings.rgb} locale={locale} onChange={(patch) => setSettings((current) => current && updateStream(current, "rgb", patch))} />

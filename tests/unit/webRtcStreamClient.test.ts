@@ -82,6 +82,30 @@ afterEach(() => {
 });
 
 describe("WebRtcStreamClient", () => {
+  it("discovers probed sources without negotiating video, and releases its polling", async () => {
+    vi.useFakeTimers();
+    const topics = vi.fn();
+    const stop = webRtcManager.discover(wsUrl, topics);
+    cleanups.push(stop);
+    await Promise.resolve();
+    const socket = MockWebSocket.instances[0];
+    expect(socket.messages).toEqual([{ type: "getMeta" }]);
+    await socket.onmessage?.({ data: JSON.stringify({ type: "meta", streams: {
+      "/camera/raw": { transport: "webrtc", available: true },
+      "/camera/idle": { transport: "webrtc", available: false },
+    } }) });
+    expect(topics).toHaveBeenLastCalledWith([{ topic: "/camera/raw", schemaName: "sensor_msgs/msg/Image" }]);
+    expect(MockPeer.instances).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(socket.messages).toHaveLength(2);
+    socket.close();
+    expect(topics).toHaveBeenLastCalledWith([]);
+    stop();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("derives media WebSocket URL from Foxglove URL", () => {
     expect(webRtcManager.deriveMediaUrl("ws://192.168.147.144:8765")).toBe("ws://192.168.147.144:8787/ws");
     expect(webRtcManager.deriveMediaUrl("wss://robot.example.com:8765")).toBe("wss://robot.example.com:8787/ws");
