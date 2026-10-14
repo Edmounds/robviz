@@ -34,6 +34,7 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
   const terminal = useRef<Terminal | null>(null);
   const fit = useRef<FitAddon | null>(null);
   const cursor = useRef({ script_id: "", run_id: "", cursor: 0 });
+  const tabsInitialized = useRef(false);
   const action = useRef<AbortController | null>(null);
   const identity = useRef(0);
   const initial = useRef({ theme: ctx.theme, fontScale });
@@ -79,11 +80,15 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
     setValues(stored.success ? stored.data.values : {});
     setLayout(stored.success && stored.data.layout.controls && stored.data.layout.logs ? stored.data.layout : DEFAULT_LAYOUT);
     setRuns({}); setScripts([]); setBusy(false); setAvailable(false); setError(""); setConnectionError("");
+    setStopping({});
     setActiveTab(null); setOpenTabs([]);
+    tabsInitialized.current = false;
     cursor.current = { script_id: "", run_id: "", cursor: 0 };
     terminal.current?.reset();
     identity.current++;
     return cancelAction;
+    // Reset only when the runtime session changes, not when persisted plugin state updates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ctx.bridge, base, cancelAction]);
 
   const switchTab = useCallback((tabId: string) => {
@@ -96,59 +101,47 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
     if (!ctx.active) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
-    let loaded = false;
     const poll = async () => {
       try {
-        if (!loaded) {
-          const reply = scriptsSchema.parse(await runtimeRequest("scripts", base, undefined, "GET", controller.signal));
-          if (controller.signal.aborted) return;
-          const sorted = reply.scripts.sort((a, b) => ORDER.indexOf(a.id) - ORDER.indexOf(b.id));
-          setScripts(sorted);
-          setRuns(reply.runs ?? {});
-          setOperation(reply.operation);
-          const activeRuns = Object.keys(reply.runs ?? {});
+        const status = scriptsSchema.parse(await runtimeRequest("scripts", base, undefined, "GET", controller.signal));
+        if (controller.signal.aborted) return;
+        setScripts(status.scripts.sort((a, b) => ORDER.indexOf(a.id) - ORDER.indexOf(b.id)));
+        setRuns(status.runs);
+        setOperation(status.operation);
+        setAvailable(true);
+        setConnectionError("");
+        if (!tabsInitialized.current) {
+          tabsInitialized.current = true;
+          const activeRuns = Object.keys(status.runs);
           if (activeRuns.length > 0) {
             setOpenTabs(activeRuns);
-            if (reply.current?.id) {
-              switchTab(reply.current.id);
-            } else {
-              switchTab(activeRuns[0]);
-            }
+            switchTab(status.current?.id ?? activeRuns[0]);
           }
-          loaded = true;
+        } else {
+          setOpenTabs((prev) => {
+            const added = Object.keys(status.runs).filter((id) => status.runs[id].state === "RUNNING" && !prev.includes(id));
+            return added.length ? [...prev, ...added] : prev;
+          });
         }
 
-        if (cursor.current.script_id) {
+        const requested = cursor.current;
+        if (requested.script_id) {
           const query = new URLSearchParams({
-            script_id: cursor.current.script_id,
-            cursor: String(cursor.current.cursor),
-            run_id: cursor.current.run_id,
+            script_id: requested.script_id,
+            cursor: String(requested.cursor),
+            run_id: requested.run_id,
           });
           const reply = logSchema.parse(await runtimeRequest(`scripts/log?${query}`, base, undefined, "GET", controller.signal));
-          if (controller.signal.aborted) return;
+          // Switching tabs replaces the cursor, including A -> B -> A switches.
+          if (controller.signal.aborted || cursor.current !== requested) return;
           setOperation(reply.operation);
-          setAvailable(true);
-          setConnectionError("");
-          if (reply.current) {
-            setRuns((prev) => ({ ...prev, [reply.current!.id]: reply.current! }));
-            if (stopping[reply.current.id] && reply.current.state === "EXITED") {
-              setStopping((prev) => ({ ...prev, [reply.current!.id]: false }));
-            }
-          }
           if (reply.reset) terminal.current?.reset();
           if (reply.data) terminal.current?.write(reply.data);
           cursor.current = {
-            script_id: cursor.current.script_id,
+            script_id: requested.script_id,
             run_id: reply.run_id,
             cursor: reply.cursor,
           };
-        } else {
-          const reply = scriptsSchema.parse(await runtimeRequest("scripts", base, undefined, "GET", controller.signal));
-          if (controller.signal.aborted) return;
-          setRuns(reply.runs ?? {});
-          setOperation(reply.operation);
-          setAvailable(true);
-          setConnectionError("");
         }
       } catch (reason) {
         if (!controller.signal.aborted) { setAvailable(false); setConnectionError(String(reason)); }
@@ -158,7 +151,7 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
     };
     void poll();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [base, ctx.active, switchTab, stopping]);
+  }, [base, ctx.bridge, ctx.active, switchTab]);
 
   const persist = (nextValues: Record<string, Values>, nextLayout = layout) => {
     ctx.onPluginStateChange(ID, { values: nextValues, layout: nextLayout });
@@ -170,9 +163,7 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
   };
 
   const selectScriptCard = (scriptId: string) => {
-    if (!openTabs.includes(scriptId)) {
-      setOpenTabs((prev) => [...prev, scriptId]);
-    }
+    setOpenTabs((prev) => prev.includes(scriptId) ? prev : [...prev, scriptId]);
     switchTab(scriptId);
   };
 
@@ -228,7 +219,7 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
     setError("");
     try {
       const path = `scripts/${encodeURIComponent(script.id)}/stop`;
-      const reply = actionSchema.parse(await runtimeRequest(path, base, {}, "POST", controller.signal, 10_000));
+      const reply = actionSchema.parse(await runtimeRequest(path, base, {}, "POST", controller.signal, 12_000));
       if (identity.current === generation && reply.run) {
         setRuns((prev) => ({ ...prev, [script.id]: reply.run! }));
       }
@@ -251,10 +242,7 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
     try {
       const reply = actionSchema.parse(await runtimeRequest("scripts/kill", base, {}, "POST", controller.signal, 35_000));
       if (identity.current === generation) {
-        if (!openTabs.includes("kill")) {
-          setOpenTabs((prev) => [...prev, "kill"]);
-        }
-        switchTab("kill");
+        selectScriptCard("kill");
         if (reply.current) {
           setRuns((prev) => ({ ...prev, kill: reply.current! }));
         }
