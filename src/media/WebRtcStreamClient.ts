@@ -121,8 +121,10 @@ class TopicPeer {
     }
   }
 
-  private connect() {
-    this.updateStatus("connecting", "Connecting to video gateway...");
+  private connect(silent = false) {
+    if (!silent) {
+      this.updateStatus("connecting", "Connecting to video gateway...");
+    }
     let ws: WebSocket;
     try {
       ws = new WebSocket(this.wsUrl);
@@ -374,6 +376,9 @@ class TopicPeer {
   }
 
   private updateStatus(status: WebRtcStreamStats["status"], text?: string) {
+    if (this.currentStats.status === status && this.currentStats.statusText === text) {
+      return;
+    }
     this.currentStats = { ...this.currentStats, status, statusText: text };
     this.notifyStats();
   }
@@ -417,7 +422,7 @@ class TopicPeer {
     this.updateStatus("connecting", `${message}. Waiting for video gateway...`);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      if (this.hasViewers) this.connect();
+      if (this.hasViewers) this.connect(true);
     }, 1000);
   }
 
@@ -511,15 +516,31 @@ class WebRtcStreamManager {
    * Helper to derive the gateway WebSocket URL from Foxglove bridge URL
    */
   deriveMediaUrl(foxgloveUrl: string, explicitMediaUrl?: string): string {
+    const pageHost = typeof window !== "undefined" && window.location
+      ? window.location.hostname
+      : "";
+    const localHosts = new Set(["localhost", "127.0.0.1", "::1"]);
+
     if (explicitMediaUrl && explicitMediaUrl.trim()) {
-      return explicitMediaUrl.trim();
+      const raw = explicitMediaUrl.trim();
+      try {
+        const parsed = new URL(raw.includes("://") ? raw : `ws://${raw}`);
+        const proto = parsed.protocol === "https:" || parsed.protocol === "wss:" ? "wss:" : "ws:";
+        const host = localHosts.has(parsed.hostname) && pageHost && !localHosts.has(pageHost)
+          ? pageHost
+          : parsed.hostname;
+        const port = parsed.port || "8787";
+        let pathname = parsed.pathname;
+        if (!pathname || pathname === "/") {
+          pathname = "/ws";
+        }
+        return `${proto}//${host}:${port}${pathname}`;
+      } catch {
+        return raw;
+      }
     }
     try {
       const parsed = new URL(foxgloveUrl);
-      const pageHost = typeof window !== "undefined" && window.location
-        ? window.location.hostname
-        : "";
-      const localHosts = new Set(["localhost", "127.0.0.1", "::1"]);
       const host = localHosts.has(parsed.hostname) && pageHost && !localHosts.has(pageHost)
         ? pageHost
         : parsed.hostname;
@@ -527,9 +548,6 @@ class WebRtcStreamManager {
       const port = 8787;
       return `${proto}//${host}:${port}/ws`;
     } catch {
-      const pageHost = typeof window !== "undefined" && window.location
-        ? window.location.hostname
-        : "localhost";
       return `ws://${pageHost || "localhost"}:8787/ws`;
     }
   }

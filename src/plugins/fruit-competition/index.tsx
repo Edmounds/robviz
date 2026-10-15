@@ -13,7 +13,7 @@ const plugin: RobvizPlugin = {
   pages: [{ id: "main", title: (ctx) => ctx.locale === "en" ? "Competition" : "正式比赛", component: Page }],
   services: [
     { id: "runtime", label: "机器人运行管理", defaultPort: 8001, protocol: "http", description: "比赛启动、状态与日志" },
-    { id: "video", label: "相机视频", defaultPort: 8787, protocol: "http", description: "相机图像桥" },
+    { id: "video", label: "相机视频", defaultPort: 8787, protocol: "ws", description: "相机图像桥" },
   ],
 };
 

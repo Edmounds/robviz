@@ -116,6 +116,12 @@ describe("WebRtcStreamClient", () => {
     expect(webRtcManager.deriveMediaUrl("ws://localhost:8765", "ws://10.0.0.1:9999/ws")).toBe(
       "ws://10.0.0.1:9999/ws",
     );
+    expect(webRtcManager.deriveMediaUrl("ws://localhost:8765", "http://192.168.8.143:8787")).toBe(
+      "ws://192.168.8.143:8787/ws",
+    );
+    expect(webRtcManager.deriveMediaUrl("ws://localhost:8765", "ws://192.168.8.143:8787")).toBe(
+      "ws://192.168.8.143:8787/ws",
+    );
   });
 
   it("shares one signaling connection and applies the maximum active viewer FPS", async () => {

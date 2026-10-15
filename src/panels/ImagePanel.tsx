@@ -378,8 +378,8 @@ export function ImagePanel({
             />
         </div>
         {topic && (!sourceAvailable || webrtcStats?.status === "error") && (
-          <div role="status" style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", background: "#0f172a", pointerEvents: "none" }}>
-            {webrtcStats?.statusText || t("webrtcUnavailable")}
+          <div role="status" style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", background: "#0f172a", color: "#94a3b8", pointerEvents: "none" }}>
+            {webrtcStats?.statusText || "等待视频画面..."}
           </div>
         )}
       </div>
