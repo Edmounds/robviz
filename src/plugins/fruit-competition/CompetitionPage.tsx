@@ -1,9 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
+import { Terminal } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import "@xterm/xterm/css/xterm.css";
 
 import type { PluginPageProps } from "../types";
 import { ImagePanel } from "../../panels/ImagePanel";
 import { getCompetitionStatus, type CompetitionStatus, runtimeRequest } from "./api";
+import { logSchema } from "../fruit-scripts/api";
 import "./fruit-competition.css";
 
 const ID = "fruit-competition";
@@ -41,16 +45,25 @@ interface CompetitionLayout {
 }
 
 const DEFAULT_LAYOUT: CompetitionLayout = {
-  main: { left: 42, right: 58 },
-  left: { controls: 38, execStats: 62 },
-  right: { camera: 68, health: 32 },
+  main: { left: 40, right: 60 },
+  left: { controls: 45, health: 55 },
+  right: { camera: 58, logs: 42 },
 };
 
 function layoutValue(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= 100 ? value : fallback;
 }
 
-function mapPanelLayout(value: Record<string, number>, keys: string[], fallback: Record<string, number>): Record<string, number> {
+function mapPanelLayout(
+  value: Record<string, number> | undefined,
+  keys: string[],
+  fallback: Record<string, number>
+): Record<string, number> {
+  if (!value) return fallback;
+  const hasAllKeys = keys.every(
+    (key) => typeof value[key] === "number" && Number.isFinite(value[key]) && value[key] > 0
+  );
+  if (!hasAllKeys) return fallback;
   return Object.fromEntries(keys.map((key) => [key, layoutValue(value[key], fallback[key])]));
 }
 
@@ -62,7 +75,7 @@ interface StoredCompetitionState {
   layout?: Partial<CompetitionLayout>;
 }
 
-export default function CompetitionPage({ ctx, isMobile }: PluginPageProps) {
+export default function CompetitionPage({ ctx, isMobile, fontScale }: PluginPageProps) {
   const base = ctx.getServiceUrl("runtime");
   const persist = ctx.onPluginStateChange;
   const stored = ctx.pluginStates[ID] as StoredCompetitionState | undefined;
@@ -76,13 +89,21 @@ export default function CompetitionPage({ ctx, isMobile }: PluginPageProps) {
 
   const [layout, setLayout] = useState<CompetitionLayout>(() => ({
     main: stored?.layout?.main ? mapPanelLayout(stored.layout.main, ["left", "right"], DEFAULT_LAYOUT.main) : DEFAULT_LAYOUT.main,
-    left: stored?.layout?.left ? mapPanelLayout(stored.layout.left, ["controls", "execStats"], DEFAULT_LAYOUT.left) : DEFAULT_LAYOUT.left,
-    right: stored?.layout?.right ? mapPanelLayout(stored.layout.right, ["camera", "health"], DEFAULT_LAYOUT.right) : DEFAULT_LAYOUT.right,
+    left: stored?.layout?.left ? mapPanelLayout(stored.layout.left, ["controls", "health"], DEFAULT_LAYOUT.left) : DEFAULT_LAYOUT.left,
+    right: stored?.layout?.right ? mapPanelLayout(stored.layout.right, ["camera", "logs"], DEFAULT_LAYOUT.right) : DEFAULT_LAYOUT.right,
   }));
 
   const [status, setStatus] = useState<CompetitionStatus>({ phase: "STOPPED" });
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+
+  const logElement = useRef<HTMLDivElement>(null);
+  const terminal = useRef<Terminal | null>(null);
+  const fit = useRef<FitAddon | null>(null);
+  const cursor = useRef({ script_id: "", run_id: "", cursor: 0 });
+  const initial = useRef({ theme: ctx.theme, fontScale });
+
+  const targetScript = flow === "acb" ? "mission_acb" : "mission";
 
   useEffect(() => {
     persist(ID, { camera, flow, openLoop, debug, layout });
@@ -96,6 +117,57 @@ export default function CompetitionPage({ ctx, isMobile }: PluginPageProps) {
     });
   }, [camera, debug, flow, openLoop, persist]);
 
+  // Terminal lifecycle
+  useEffect(() => {
+    const term = new Terminal({
+      disableStdin: true,
+      convertEol: true,
+      scrollback: 5000,
+      cursorBlink: false,
+      fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace',
+      fontSize: Math.max(9, Math.round(12 * initial.current.fontScale)),
+      theme:
+        initial.current.theme === "dark"
+          ? { background: "#000000", foreground: "#f5f5f5" }
+          : { background: "#ffffff", foreground: "#0a0a0a" },
+    });
+    const addon = new FitAddon();
+    term.loadAddon(addon);
+    if (logElement.current) term.open(logElement.current);
+    terminal.current = term;
+    fit.current = addon;
+    const observer = new ResizeObserver(() => {
+      if (logElement.current && logElement.current.clientWidth > 0 && logElement.current.clientHeight > 0) {
+        addon.fit();
+      }
+    });
+    if (logElement.current) observer.observe(logElement.current);
+    return () => {
+      observer.disconnect();
+      term.dispose();
+      terminal.current = null;
+      fit.current = null;
+    };
+  }, []);
+
+  // Sync theme & font scale
+  useEffect(() => {
+    if (!terminal.current) return;
+    terminal.current.options.theme =
+      ctx.theme === "dark"
+        ? { background: "#000000", foreground: "#f5f5f5" }
+        : { background: "#ffffff", foreground: "#0a0a0a" };
+    terminal.current.options.fontSize = Math.max(9, Math.round(12 * fontScale));
+    if (ctx.active) fit.current?.fit();
+  }, [ctx.theme, ctx.active, fontScale]);
+
+  // Reset cursor & terminal when bound script target changes
+  useEffect(() => {
+    cursor.current = { script_id: targetScript, run_id: "", cursor: 0 };
+    terminal.current?.reset();
+  }, [targetScript]);
+
+  // Poll competition status & script logs
   useEffect(() => {
     if (!ctx.active) return;
     const controller = new AbortController();
@@ -113,8 +185,33 @@ export default function CompetitionPage({ ctx, isMobile }: PluginPageProps) {
         setError("");
       } catch (reason) {
         if (!controller.signal.aborted) setError(String(reason));
+      }
+
+      try {
+        const requested = cursor.current;
+        if (requested.script_id) {
+          const query = new URLSearchParams({
+            script_id: requested.script_id,
+            cursor: String(requested.cursor),
+            run_id: requested.run_id,
+          });
+          const reply = logSchema.parse(
+            await runtimeRequest(`scripts/log?${query}`, base, undefined, "GET", controller.signal)
+          );
+          if (!controller.signal.aborted && cursor.current === requested) {
+            if (reply.reset) terminal.current?.reset();
+            if (reply.data) terminal.current?.write(reply.data);
+            cursor.current = {
+              script_id: requested.script_id,
+              run_id: reply.run_id,
+              cursor: reply.cursor,
+            };
+          }
+        }
+      } catch {
+        // Ignore log fetch error silently during polling
       } finally {
-        if (!controller.signal.aborted) timer = setTimeout(poll, 1000);
+        if (!controller.signal.aborted) timer = setTimeout(poll, 600);
       }
     };
     void poll();
@@ -137,38 +234,17 @@ export default function CompetitionPage({ ctx, isMobile }: PluginPageProps) {
     }
   };
 
+  const handleKill = async () => {
+    terminal.current?.write("\r\n\x1b[33m[Kill] 发起进程清理...\x1b[0m\r\n");
+    await call("scripts/kill", {}, 35_000);
+  };
+
   const running = ["PREPARING", "PREPARED", "LOCALIZING", "RUNNING"].includes(status.phase);
   const acb = flow === "acb";
   const params = useMemo(
     () => (acb ? { phase: "prepare", debug } : { phase: "prepare", flow, open_loop: openLoop, debug }),
     [acb, debug, flow, openLoop]
   );
-
-  const statistics = (status.execution?.statistics ?? {}) as Record<string, unknown>;
-  const totals = useMemo(() => {
-    const list: Array<{ area: string; type: string; completed?: number; failed?: number; skipped?: number }> = [];
-    if (!statistics || typeof statistics !== "object") return list;
-    for (const [area, types] of Object.entries(statistics)) {
-      if (!types || typeof types !== "object") continue;
-      for (const [type, counts] of Object.entries(types as Record<string, unknown>)) {
-        if (!counts || typeof counts !== "object") continue;
-        const c = counts as { completed?: number; failed?: number; skipped?: number };
-        list.push({ area, type, completed: c.completed, failed: c.failed, skipped: c.skipped });
-      }
-    }
-    return list;
-  }, [statistics]);
-
-  const totalCompleted = totals.reduce((sum, item) => sum + (item.completed ?? 0), 0);
-  const totalFailed = totals.reduce((sum, item) => sum + (item.failed ?? 0), 0);
-  const totalSkipped = totals.reduce((sum, item) => sum + (item.skipped ?? 0), 0);
-
-  const execution = status.execution ?? {};
-  const events = useMemo(() => {
-    const raw = execution.events;
-    if (!Array.isArray(raw)) return [];
-    return raw as Array<Record<string, unknown>>;
-  }, [execution.events]);
 
   return (
     <div className="fruit-competition">
@@ -186,7 +262,7 @@ export default function CompetitionPage({ ctx, isMobile }: PluginPageProps) {
           <button
             className="competition-kill"
             disabled={!ctx.active || busy}
-            onClick={() => void call("scripts/kill", {}, 35_000)}
+            onClick={() => void handleKill()}
           >
             Kill
           </button>
@@ -209,7 +285,7 @@ export default function CompetitionPage({ ctx, isMobile }: PluginPageProps) {
             setLayoutValue("main", mapPanelLayout(value, ["left", "right"], layout.main));
           }}
         >
-          {/* 左侧控制台：启动参数 + 执行状态与统计 */}
+          {/* 左侧控制台：启动参数 + 模块状态 */}
           <Panel id="left" minSize={25}>
             <Group
               id="fruit-competition-left"
@@ -220,11 +296,11 @@ export default function CompetitionPage({ ctx, isMobile }: PluginPageProps) {
               resizeTargetMinimumSize={{ fine: 8, coarse: 20 }}
               onLayoutChanged={(value, meta) => {
                 if (!meta.isUserInteraction) return;
-                setLayoutValue("left", mapPanelLayout(value, ["controls", "execStats"], layout.left));
+                setLayoutValue("left", mapPanelLayout(value, ["controls", "health"], layout.left));
               }}
             >
               {/* 启动参数 */}
-              <Panel id="controls" minSize={22}>
+              <Panel id="controls" minSize={25}>
                 <section className="competition-card competition-controls">
                   <div className="competition-card-header">
                     <strong>启动参数</strong>
@@ -293,100 +369,40 @@ export default function CompetitionPage({ ctx, isMobile }: PluginPageProps) {
 
               <Separator className="fruit-competition-separator horizontal" />
 
-              {/* 当前执行状态 + 收获统计 */}
-              <Panel id="execStats" minSize={30}>
-                <section className="competition-card competition-exec-stats">
+              {/* 模块状态 */}
+              <Panel id="health" minSize={25}>
+                <section className="competition-card competition-health-card">
                   <div className="competition-card-header">
-                    <strong>执行状态与统计</strong>
-                    <span className="competition-badge highlight">
-                      {String(execution.step ?? "等待就绪")}
-                    </span>
+                    <strong>模块状态</strong>
+                    <span className="competition-badge muted">仅监测，不阻塞流程</span>
                   </div>
-                  <div className="competition-exec-body">
-                    {/* 当前执行动作 */}
-                    <div className="competition-current-banner">
-                      <div className="current-item">
-                        <span className="label">当前区域</span>
-                        <span className="value">{String(execution.area ?? "-")}</span>
+                  <div className="competition-health-body">
+                    <div className="competition-health-groups">
+                      {GROUPS.map(([group, label]) => (
+                        <div className="competition-health-group" key={group}>
+                          <div className="health-group-title">{label}</div>
+                          <div className="health-modules-list">
+                            {(status.modules?.[group] ?? []).length === 0 ? (
+                              <span className="health-empty">未启动或离线</span>
+                            ) : (
+                              (status.modules?.[group] ?? []).map((module) => (
+                                <div className="competition-module-item" key={module.id} title={module.detail}>
+                                  <span className={`health-dot health-${module.state.toLowerCase()}`} />
+                                  <span className="module-label">{module.label}</span>
+                                  <span className="module-detail">{module.detail}</span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    {status.home && (
+                      <div className={`competition-home-banner ${status.home.success ? "ok" : "bad"}`}>
+                        <span className="home-title">Home 复位：</span>
+                        <span>{status.home.success ? "成功就绪" : `异常 (${status.home.reason})`}</span>
                       </div>
-                      <div className="current-divider" />
-                      <div className="current-item">
-                        <span className="label">当前目标</span>
-                        <span className="value">{String(execution.target ?? "-")}</span>
-                      </div>
-                    </div>
-
-                    {/* 近期动作记录 */}
-                    <div className="competition-sub-header">
-                      <span>近期动作记录</span>
-                    </div>
-                    <div className="competition-event-list">
-                      {events.length === 0 ? (
-                        <div className="empty-events-hint">暂无执行事件</div>
-                      ) : (
-                        events
-                          .slice(-10)
-                          .reverse()
-                          .map((event, index) => {
-                            const outcome = String(event.outcome ?? "");
-                            const isOk = outcome === "OK" || outcome === "COMPLETED";
-                            const isFail = outcome === "FAILED" || outcome === "ERROR";
-                            const outcomeClass = isOk ? "outcome-ok" : isFail ? "outcome-fail" : "outcome-skip";
-                            return (
-                              <div className="competition-event-row" key={`${String(event.at)}-${index}`}>
-                                <span className={`event-badge ${outcomeClass}`}>{outcome || "-"}</span>
-                                <span className="event-target">
-                                  {String(event.area ?? "")} {String(event.target ?? "")}
-                                </span>
-                                {Boolean(event.reason) && <span className="event-reason">{String(event.reason)}</span>}
-                              </div>
-                            );
-                          })
-                      )}
-                    </div>
-
-                    {/* 收获统计数据 */}
-                    <div className="competition-sub-header">
-                      <span>收获统计</span>
-                      <div className="stat-summary-pills">
-                        <span className="stat-pill ok">{totalCompleted} 完成</span>
-                        {totalFailed > 0 && <span className="stat-pill fail">{totalFailed} 失败</span>}
-                        {totalSkipped > 0 && <span className="stat-pill skip">{totalSkipped} 跳过</span>}
-                      </div>
-                    </div>
-
-                    <div className="competition-table-wrap">
-                      <table className="competition-stat-table">
-                        <thead>
-                          <tr>
-                            <th>区域</th>
-                            <th>类别</th>
-                            <th>完成</th>
-                            <th>失败</th>
-                            <th>跳过</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {totals.length === 0 ? (
-                            <tr>
-                              <td colSpan={5} className="table-empty">
-                                暂无工序统计
-                              </td>
-                            </tr>
-                          ) : (
-                            totals.map((item) => (
-                              <tr key={`${item.area}-${item.type}`}>
-                                <td>{item.area}</td>
-                                <td>{item.type === "unknown" ? "未知" : item.type}</td>
-                                <td className="num-ok">{item.completed ?? 0}</td>
-                                <td className={item.failed ? "num-fail" : ""}>{item.failed ?? 0}</td>
-                                <td className={item.skipped ? "num-skip" : ""}>{item.skipped ?? 0}</td>
-                              </tr>
-                            ))
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
+                    )}
                   </div>
                 </section>
               </Panel>
@@ -395,7 +411,7 @@ export default function CompetitionPage({ ctx, isMobile }: PluginPageProps) {
 
           <Separator className="fruit-competition-separator vertical" />
 
-          {/* 右侧大屏：摄像头监测 + 模块状态 */}
+          {/* 右侧大屏：摄像头监测 + 比赛日志 */}
           <Panel id="right" minSize={30}>
             <Group
               id="fruit-competition-right"
@@ -406,7 +422,7 @@ export default function CompetitionPage({ ctx, isMobile }: PluginPageProps) {
               resizeTargetMinimumSize={{ fine: 8, coarse: 20 }}
               onLayoutChanged={(value, meta) => {
                 if (!meta.isUserInteraction) return;
-                setLayoutValue("right", mapPanelLayout(value, ["camera", "health"], layout.right));
+                setLayoutValue("right", mapPanelLayout(value, ["camera", "logs"], layout.right));
               }}
             >
               {/* 摄像头监测 */}
@@ -445,41 +461,19 @@ export default function CompetitionPage({ ctx, isMobile }: PluginPageProps) {
 
               <Separator className="fruit-competition-separator horizontal" />
 
-              {/* 模块状态 */}
-              <Panel id="health" minSize={18}>
-                <section className="competition-card competition-health-card">
+              {/* 比赛日志 */}
+              <Panel id="logs" minSize={20}>
+                <section className="competition-card competition-log-card">
                   <div className="competition-card-header">
-                    <strong>模块状态</strong>
-                    <span className="competition-badge muted">仅监测，不阻塞流程</span>
+                    <strong>比赛日志</strong>
+                    <button
+                      className="competition-log-clear-btn"
+                      onClick={() => terminal.current?.clear()}
+                    >
+                      清屏
+                    </button>
                   </div>
-                  <div className="competition-health-body">
-                    <div className="competition-health-groups">
-                      {GROUPS.map(([group, label]) => (
-                        <div className="competition-health-group" key={group}>
-                          <div className="health-group-title">{label}</div>
-                          <div className="health-modules-list">
-                            {(status.modules?.[group] ?? []).length === 0 ? (
-                              <span className="health-empty">未启动或离线</span>
-                            ) : (
-                              (status.modules?.[group] ?? []).map((module) => (
-                                <div className="competition-module-item" key={module.id} title={module.detail}>
-                                  <span className={`health-dot health-${module.state.toLowerCase()}`} />
-                                  <span className="module-label">{module.label}</span>
-                                  <span className="module-detail">{module.detail}</span>
-                                </div>
-                              ))
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    {status.home && (
-                      <div className={`competition-home-banner ${status.home.success ? "ok" : "bad"}`}>
-                        <span className="home-title">Home 复位：</span>
-                        <span>{status.home.success ? "成功就绪" : `异常 (${status.home.reason})`}</span>
-                      </div>
-                    )}
-                  </div>
+                  <div className="competition-terminal-wrap" ref={logElement} />
                 </section>
               </Panel>
             </Group>
