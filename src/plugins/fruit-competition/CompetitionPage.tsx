@@ -101,6 +101,7 @@ export default function CompetitionPage({ ctx, isMobile, fontScale }: PluginPage
   const terminal = useRef<Terminal | null>(null);
   const fit = useRef<FitAddon | null>(null);
   const cursor = useRef({ script_id: "", run_id: "", cursor: 0 });
+  const hasStarted = useRef(false);
   const initial = useRef({ theme: ctx.theme, fontScale });
 
   const targetScript = flow === "acb" ? "mission_acb" : "mission";
@@ -136,6 +137,7 @@ export default function CompetitionPage({ ctx, isMobile, fontScale }: PluginPage
     if (logElement.current) term.open(logElement.current);
     terminal.current = term;
     fit.current = addon;
+    term.write("\x1b[90m[就绪] 等待任务启动...\x1b[0m\r\n");
     const observer = new ResizeObserver(() => {
       if (logElement.current && logElement.current.clientWidth > 0 && logElement.current.clientHeight > 0) {
         addon.fit();
@@ -163,8 +165,10 @@ export default function CompetitionPage({ ctx, isMobile, fontScale }: PluginPage
 
   // Reset cursor & terminal when bound script target changes
   useEffect(() => {
+    hasStarted.current = false;
     cursor.current = { script_id: targetScript, run_id: "", cursor: 0 };
     terminal.current?.reset();
+    terminal.current?.write("\x1b[90m[就绪] 等待任务启动...\x1b[0m\r\n");
   }, [targetScript]);
 
   // Poll competition status & script logs
@@ -177,7 +181,11 @@ export default function CompetitionPage({ ctx, isMobile, fontScale }: PluginPage
         const next = await getCompetitionStatus(base, controller.signal);
         if (controller.signal.aborted) return;
         setStatus(next);
-        if (["PREPARING", "PREPARED", "LOCALIZING", "RUNNING"].includes(next.phase)) {
+        const isRunning = ["PREPARING", "PREPARED", "LOCALIZING", "RUNNING"].includes(next.phase);
+        if (isRunning) {
+          hasStarted.current = true;
+        }
+        if (isRunning) {
           if (typeof next.parameters?.flow === "string") setFlow(next.parameters.flow);
           if (typeof next.parameters?.open_loop === "string") setOpenLoop(next.parameters.open_loop);
           if (typeof next.parameters?.debug === "boolean") setDebug(next.parameters.debug);
@@ -185,6 +193,11 @@ export default function CompetitionPage({ ctx, isMobile, fontScale }: PluginPage
         setError("");
       } catch (reason) {
         if (!controller.signal.aborted) setError(String(reason));
+      }
+
+      if (!hasStarted.current) {
+        if (!controller.signal.aborted) timer = setTimeout(poll, 600);
+        return;
       }
 
       try {
@@ -235,6 +248,9 @@ export default function CompetitionPage({ ctx, isMobile, fontScale }: PluginPage
   };
 
   const handleKill = async () => {
+    hasStarted.current = false;
+    cursor.current = { script_id: targetScript, run_id: "", cursor: 0 };
+    terminal.current?.reset();
     terminal.current?.write("\r\n\x1b[33m[Kill] 发起进程清理...\x1b[0m\r\n");
     await call("scripts/kill", {}, 35_000);
   };
@@ -349,9 +365,12 @@ export default function CompetitionPage({ ctx, isMobile, fontScale }: PluginPage
                       <button
                         className="btn-action btn-prepare"
                         disabled={!ctx.active || running || busy}
-                        onClick={() =>
-                          void call(`scripts/${acb ? "mission_acb" : "mission"}/start`, { parameters: params })
-                        }
+                        onClick={() => {
+                          hasStarted.current = true;
+                          cursor.current = { script_id: targetScript, run_id: "", cursor: 0 };
+                          terminal.current?.reset();
+                          void call(`scripts/${acb ? "mission_acb" : "mission"}/start`, { parameters: params });
+                        }}
                       >
                         启动其他部分
                       </button>
