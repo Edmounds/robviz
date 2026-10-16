@@ -159,10 +159,11 @@ Waypoints Maker 订阅 recorder 的状态和提示话题，并通过
 `/fruit/waypoint_maker/command` 发送严格 JSON 命令。它只允许活动且在线的会话写入，正式文件与调试文件由 recorder 的文件 ID allowlist 管理。
 丢弃草稿确认使用布尔值 `confirm_discard: true`。
 加载失败保留 recorder 草稿和 Undo。
-Maker 的“文件”下拉框支持 ABC、ACB 和调试航点。
+Maker 的“文件”下拉框支持 ABC、ACB、ACBD 和调试航点。
 选择 `ACB / odom_waypoints_acb.yaml` 时，recorder 同时加载 `template_acb.yaml` 的名称、类型和自动名称顺序。
+选择 `ACBD / odom_waypoints_acbd.yaml` 时，recorder 同时加载 `template_acbd.yaml` 的名称、类型和自动名称顺序。
 正式文件的计数显示已录制点数和模板总点数，缺失点不生成坐标。
-`template.yaml` 和 `template_acb.yaml` 在独立“航点编辑”页面维护，不作为 Maker 的坐标文件录制。
+`template.yaml`、`template_acb.yaml` 和 `template_acbd.yaml` 在独立“航点编辑”页面维护，不作为 Maker 的坐标文件录制。
 切换前确认录点和导航空闲。未保存草稿需要确认丢弃，加载失败保留原文件。
 更新前端和 recorder 后，保存并重启旧 recorder，再刷新网页。
 取消终态后的连续实测停稳窗口未完成时，下一段保持 blocked。

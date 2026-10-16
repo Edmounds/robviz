@@ -451,6 +451,7 @@ function MakerSection({ ctx }: PluginSectionProps) {
         >
           <option value="odom">ABC / odom_waypoints.yaml</option>
           <option value="odom_acb">ACB / odom_waypoints_acb.yaml</option>
+          <option value="odom_acbd">ACBD / odom_waypoints_acbd.yaml</option>
           <option value="debug">debug / debug_waypoints.yaml</option>
         </select>
       </div>
