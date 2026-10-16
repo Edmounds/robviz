@@ -337,7 +337,7 @@ export function WaypointsEditorPage({
       const draft: BackgroundDraft = {
         centerX: 0.0,
         centerY: 0.0,
-        metersPerPixel: 0.01,
+        metersPerPixel: 1.0,
         rotationDeg: 0.0,
         opacity: 0.5,
         visible: true,
@@ -447,7 +447,7 @@ export function WaypointsEditorPage({
             ...prev,
             centerX: 0.0,
             centerY: 0.0,
-            metersPerPixel: 0.01,
+            metersPerPixel: 1.0,
             rotationDeg: 0.0,
             opacity: 0.5,
             visible: true,
@@ -1741,34 +1741,32 @@ export function WaypointsEditorPage({
 
                   {/* 缩放 (m/px) */}
                   <div className="bg-row">
-                    <span title={locale === "en" ? "Meters per pixel" : "每像素米数"}>
-                      {locale === "en" ? "Scale" : "缩放"}
+                    <span title={locale === "en" ? "Scale: meters per pixel (m/px)" : "缩放单位: 米/像素 (m/px)"}>
+                      {locale === "en" ? "Scale (m/px)" : "缩放 (m/px)"}
                     </span>
                     <NumberInput
                       value={bgDraft.metersPerPixel}
                       onValueChange={(val) =>
-                        updateBgScaleOrRot(val && val > 0 ? val : 0.01, bgDraft.rotationDeg)
+                        updateBgScaleOrRot(val && val > 0 ? val : 1.0, bgDraft.rotationDeg)
                       }
-                      step={0.001}
-                      min={0.0001}
                     />
                     <div className="bg-nudge-group">
                       {[
-                        { label: "-5%", factor: -0.05 },
+                        { label: "-0.1", delta: -0.1 },
                         { label: "-1%", factor: -0.01 },
                         { label: "+1%", factor: 0.01 },
-                        { label: "+5%", factor: 0.05 },
+                        { label: "+0.1", delta: 0.1 },
                       ].map((item) => (
                         <button
                           key={item.label}
                           type="button"
                           className="bg-nudge-btn"
-                          onClick={() =>
-                            updateBgScaleOrRot(
-                              Math.max(0.0001, bgDraft.metersPerPixel * (1 + item.factor)),
-                              bgDraft.rotationDeg,
-                            )
-                          }
+                          onClick={() => {
+                            const next = item.delta !== undefined
+                              ? Math.max(0.0001, Math.round((bgDraft.metersPerPixel + item.delta) * 10000) / 10000)
+                              : Math.max(0.0001, bgDraft.metersPerPixel * (1 + (item.factor ?? 0)));
+                            updateBgScaleOrRot(next, bgDraft.rotationDeg);
+                          }}
                         >
                           {item.label}
                         </button>
@@ -1784,7 +1782,6 @@ export function WaypointsEditorPage({
                       onValueChange={(val) =>
                         updateBgScaleOrRot(bgDraft.metersPerPixel, val ?? 0)
                       }
-                      step={0.1}
                     />
                     <div className="bg-nudge-group">
                       {[-5, -1, -0.1, 0.1, 1, 5].map((delta) => (
