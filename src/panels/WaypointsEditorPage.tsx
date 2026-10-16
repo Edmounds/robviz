@@ -2,7 +2,10 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
+  Crosshair,
   FileText,
+  Grid,
+  Image as ImageIcon,
   Layers,
   List,
   ListOrdered,
@@ -10,10 +13,12 @@ import {
   Maximize2,
   Plus,
   RefreshCcw,
+  RotateCcw,
   Save,
   Sliders,
   Trash2,
   Undo2,
+  Upload,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -22,22 +27,30 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../app/i18n";
 import { NumberInput, TextInput, validateInputs } from "../app/EditableInput";
 import type {
+  BackgroundConfig,
   WaypointDocument,
   WaypointFileInfo,
   WaypointPoint,
 } from "../core/waypointApi";
 import {
+  deleteBackground,
+  fetchBackground,
   fetchWaypointDocument,
   fetchWaypointFiles,
+  saveBackgroundConfig,
   saveWaypointDocument,
+  uploadBackgroundImage,
   WaypointApiError,
 } from "../core/waypointApi";
 import {
   canvasToWorld,
+  centerFromPivotInvariant,
   fitViewToBounds,
+  imagePixelToWorld,
   panView,
   placeWaypointLabels,
   worldToCanvas,
+  worldToImagePixel,
   zoomViewAtAnchor,
   type View2DTransform,
 } from "../core/view2d";
@@ -45,6 +58,20 @@ import {
 interface CanvasSize {
   width: number;
   height: number;
+}
+
+interface BackgroundDraft {
+  centerX: number;
+  centerY: number;
+  metersPerPixel: number;
+  rotationDeg: number;
+  opacity: number;
+  visible: boolean;
+  pivotU: number;
+  pivotV: number;
+  width: number;
+  height: number;
+  imageFile: string;
 }
 
 function clonePoints(points: WaypointPoint[]): WaypointPoint[] {
@@ -119,11 +146,24 @@ export function WaypointsEditorPage({
   });
   const [isNarrow, setIsNarrow] = useState(false);
 
+  // 背景底图与网格状态
+  const [bgImage, setBgImage] = useState<HTMLImageElement | null>(null);
+  const [bgDraft, setBgDraft] = useState<BackgroundDraft | null>(null);
+  const [bgBaseline, setBgBaseline] = useState<string>("");
+  const [bgNewFile, setBgNewFile] = useState<File | null>(null);
+  const [isPickingPivot, setIsPickingPivot] = useState(false);
+  const [bgSaving, setBgSaving] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const [gridMode, setGridMode] = useState<string>("auto");
+  const [customGridStep, setCustomGridStep] = useState<number>(1.0);
+
   viewRef.current = viewTransform;
 
   const selectedFile = files.find((file) => file.id === selectedFileId);
   const isTemplate = selectedFile?.mode === "template" || waypointDocument?.id === "template";
   const dirty = JSON.stringify(draftPoints) !== baselineRef.current;
+  const bgDirty = Boolean(bgNewFile || (bgDraft && JSON.stringify(bgDraft) !== bgBaseline));
 
   // 响应式检测
   useEffect(() => {
@@ -229,6 +269,196 @@ export function WaypointsEditorPage({
     void loadDocument(selectedFileId);
   }, [files, loadDocument, selectedFileId]);
 
+  const loadBg = useCallback(async (fileId: string) => {
+    try {
+      const res = await fetchBackground(fileId);
+      if (res.has_image && res.config && res.image_url) {
+        const img = new Image();
+        img.src = res.image_url;
+        await new Promise<void>((resolve, reject) => {
+          img.onload = () => resolve();
+          img.onerror = () => reject(new Error("Failed to load background image"));
+        });
+        const draft: BackgroundDraft = {
+          centerX: res.config.center_x,
+          centerY: res.config.center_y,
+          metersPerPixel: res.config.meters_per_pixel,
+          rotationDeg: res.config.rotation_deg,
+          opacity: res.config.opacity,
+          visible: res.config.visible,
+          pivotU: res.config.pivot_u,
+          pivotV: res.config.pivot_v,
+          width: res.config.width || img.naturalWidth,
+          height: res.config.height || img.naturalHeight,
+          imageFile: res.config.image_file,
+        };
+        setBgImage(img);
+        setBgDraft(draft);
+        setBgBaseline(JSON.stringify(draft));
+        setBgNewFile(null);
+      } else {
+        setBgImage(null);
+        setBgDraft(null);
+        setBgBaseline("");
+        setBgNewFile(null);
+      }
+    } catch {
+      setBgImage(null);
+      setBgDraft(null);
+      setBgBaseline("");
+      setBgNewFile(null);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (selectedFile?.formal) {
+      void loadBg(selectedFileId);
+    } else {
+      setBgImage(null);
+      setBgDraft(null);
+      setBgBaseline("");
+      setBgNewFile(null);
+    }
+  }, [loadBg, selectedFile?.formal, selectedFileId]);
+
+  const handleImageUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (file.size > 20 * 1024 * 1024) {
+      setError(locale === "en" ? "Image size exceeds 20 MiB limit" : "图片大小超过 20 MiB 限制");
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.src = url;
+    img.onload = () => {
+      setBgImage(img);
+      setBgNewFile(file);
+      const draft: BackgroundDraft = {
+        centerX: 0.0,
+        centerY: 0.0,
+        metersPerPixel: 0.01,
+        rotationDeg: 0.0,
+        opacity: 0.5,
+        visible: true,
+        pivotU: img.naturalWidth / 2,
+        pivotV: img.naturalHeight / 2,
+        width: img.naturalWidth,
+        height: img.naturalHeight,
+        imageFile: file.name,
+      };
+      setBgDraft(draft);
+      setNotice(locale === "en" ? `Loaded image: ${file.name}` : `已加载图片: ${file.name}`);
+    };
+    event.target.value = "";
+  }, [locale]);
+
+  const updateBgCenter = useCallback((cx: number, cy: number) => {
+    setBgDraft((prev) => (prev ? { ...prev, centerX: cx, centerY: cy } : prev));
+  }, []);
+
+  const updateBgScaleOrRot = useCallback((newScale: number, newRot: number) => {
+    setBgDraft((prev) => {
+      if (!prev) return prev;
+      const pw = imagePixelToWorld(prev, prev.width, prev.height, prev.pivotU, prev.pivotV);
+      const nextCenter = centerFromPivotInvariant(
+        pw,
+        { u: prev.pivotU, v: prev.pivotV },
+        prev.width,
+        prev.height,
+        newScale,
+        newRot,
+      );
+      return {
+        ...prev,
+        centerX: nextCenter.centerX,
+        centerY: nextCenter.centerY,
+        metersPerPixel: newScale,
+        rotationDeg: newRot,
+      };
+    });
+  }, []);
+
+  const handleSaveBackground = useCallback(async () => {
+    if (!bgDraft || !selectedFileId || bgSaving) return;
+    setBgSaving(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      let imageFileName = bgDraft.imageFile;
+      if (bgNewFile) {
+        const uploadRes = await uploadBackgroundImage(selectedFileId, bgNewFile);
+        imageFileName = uploadRes.image_file;
+      }
+      const configToSave: BackgroundConfig = {
+        center_x: bgDraft.centerX,
+        center_y: bgDraft.centerY,
+        meters_per_pixel: bgDraft.metersPerPixel,
+        rotation_deg: bgDraft.rotationDeg,
+        opacity: bgDraft.opacity,
+        visible: bgDraft.visible,
+        pivot_u: bgDraft.pivotU,
+        pivot_v: bgDraft.pivotV,
+        width: bgDraft.width,
+        height: bgDraft.height,
+        image_file: imageFileName,
+      };
+      await saveBackgroundConfig(selectedFileId, configToSave);
+      const updatedDraft = { ...bgDraft, imageFile: imageFileName };
+      setBgDraft(updatedDraft);
+      setBgBaseline(JSON.stringify(updatedDraft));
+      setBgNewFile(null);
+      setNotice(locale === "en" ? "Background image and transform saved" : "背景图与变换已保存");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBgSaving(false);
+    }
+  }, [bgDraft, bgNewFile, bgSaving, locale, selectedFileId]);
+
+  const handleDeleteBackground = useCallback(async () => {
+    if (!selectedFileId) return;
+    if (
+      !window.confirm(
+        locale === "en"
+          ? "Delete background image for this preset?"
+          : "确定删除当前预设的背景图？",
+      )
+    ) {
+      return;
+    }
+    try {
+      await deleteBackground(selectedFileId);
+      setBgImage(null);
+      setBgDraft(null);
+      setBgBaseline("");
+      setBgNewFile(null);
+      setNotice(locale === "en" ? "Background deleted" : "已删除背景图");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [locale, selectedFileId]);
+
+  const handleResetBackground = useCallback(() => {
+    if (!bgDraft || !bgImage) return;
+    setBgDraft((prev) =>
+      prev
+        ? {
+            ...prev,
+            centerX: 0.0,
+            centerY: 0.0,
+            metersPerPixel: 0.01,
+            rotationDeg: 0.0,
+            opacity: 0.5,
+            visible: true,
+            pivotU: bgImage.naturalWidth / 2,
+            pivotV: bgImage.naturalHeight / 2,
+          }
+        : prev,
+    );
+    setNotice(locale === "en" ? "Reset background transform" : "已恢复默认背景变换");
+  }, [bgDraft, bgImage, locale]);
+
   useEffect(() => {
     if (isTemplate) return;
     const element = canvasWrapRef.current;
@@ -286,13 +516,55 @@ export function WaypointsEditorPage({
 
     const view = viewTransform;
 
-    // 动态网格线
-    const stepCandidates = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20];
-    let gridStep = 1;
-    for (const cand of stepCandidates) {
+    // 1. 绘制背景底图（位于网格下方，航点下方）
+    if (bgImage && bgDraft && bgDraft.visible) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, bgDraft.opacity));
+      const [cx, cy] = worldToCanvas(view, bgDraft.centerX, bgDraft.centerY);
+      ctx.translate(cx, cy);
+      ctx.rotate(-(bgDraft.rotationDeg * Math.PI) / 180);
+      const cScale = bgDraft.metersPerPixel * view.scale;
+      ctx.scale(cScale, cScale);
+      ctx.drawImage(bgImage, -bgDraft.width / 2, -bgDraft.height / 2, bgDraft.width, bgDraft.height);
+      ctx.restore();
+
+      // 绘制旋转与缩放中心指示器
+      if (bgDraft.pivotU !== undefined && bgDraft.pivotV !== undefined) {
+        const pw = imagePixelToWorld(bgDraft, bgDraft.width, bgDraft.height, bgDraft.pivotU, bgDraft.pivotV);
+        const [ppx, ppy] = worldToCanvas(view, pw.x, pw.y);
+        ctx.save();
+        ctx.strokeStyle = isLight ? "#d97706" : "#f59e0b";
+        ctx.fillStyle = isLight ? "rgba(217, 119, 6, 0.25)" : "rgba(245, 158, 11, 0.25)";
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(ppx, ppy, 6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(ppx - 10, ppy);
+        ctx.lineTo(ppx + 10, ppy);
+        ctx.moveTo(ppx, ppy - 10);
+        ctx.lineTo(ppx, ppy + 10);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    // 2. 动态或自定义实际距离网格线
+    let autoStep = 1;
+    for (const cand of [0.1, 0.2, 0.5, 1, 2, 5, 10, 20]) {
       if (cand * view.scale >= 40) {
-        gridStep = cand;
+        autoStep = cand;
         break;
+      }
+    }
+    let gridStep = autoStep;
+    if (gridMode !== "auto") {
+      const parsed = parseFloat(gridMode);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        gridStep = parsed;
+      } else if (gridMode === "custom" && Number.isFinite(customGridStep) && customGridStep > 0) {
+        gridStep = customGridStep;
       }
     }
 
@@ -321,15 +593,58 @@ export function WaypointsEditorPage({
     }
     ctx.stroke();
 
-    // 轴提示文字
+    // 绘制 X=0 与 Y=0 原点坐标轴
+    const [originPx, originPy] = worldToCanvas(view, 0, 0);
+    ctx.strokeStyle = isLight ? "rgba(0, 0, 0, 0.35)" : "rgba(255, 255, 255, 0.25)";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (originPx >= 0 && originPx <= canvasSize.width) {
+      ctx.moveTo(Math.round(originPx) + 0.5, 0);
+      ctx.lineTo(Math.round(originPx) + 0.5, canvasSize.height);
+    }
+    if (originPy >= 0 && originPy <= canvasSize.height) {
+      ctx.moveTo(0, Math.round(originPy) + 0.5);
+      ctx.lineTo(canvasSize.width, Math.round(originPy) + 0.5);
+    }
+    ctx.stroke();
+
+    // 轴与实际距离数值标注
     const axisFontSize = Math.max(9, Math.round(11 * fontScale));
     ctx.font = `${axisFontSize}px ui-monospace, monospace`;
     ctx.fillStyle = textFaint;
-    ctx.fillText(`odom x (grid ${gridStep}m)`, 10, canvasSize.height - 10);
+
+    const formatDist = (val: number) => {
+      if (Math.abs(val) < 1e-6) return "0m";
+      const decimals = gridStep < 0.1 ? 2 : gridStep < 1 ? 1 : gridStep % 1 === 0 ? 0 : 1;
+      return `${val > 0 ? "+" : ""}${val.toFixed(decimals)}m`;
+    };
+
+    for (let x = startX; x <= endX; x += gridStep) {
+      const [px] = worldToCanvas(view, x, 0);
+      if (px >= 40 && px <= canvasSize.width - 40) {
+        ctx.fillText(formatDist(x), px + 2, canvasSize.height - 4);
+      }
+    }
+    for (let y = startY; y <= endY; y += gridStep) {
+      const [, py] = worldToCanvas(view, 0, y);
+      if (py >= 20 && py <= canvasSize.height - 20) {
+        ctx.fillText(formatDist(y), 4, py - 3);
+      }
+    }
+
+    ctx.fillText(
+      `odom x (grid ${gridStep.toFixed(gridStep < 0.1 ? 2 : gridStep % 1 === 0 ? 0 : 1)}m)`,
+      10,
+      canvasSize.height - 18,
+    );
     ctx.save();
-    ctx.translate(12, 20);
+    ctx.translate(14, 20);
     ctx.rotate(-Math.PI / 2);
-    ctx.fillText(`odom y (grid ${gridStep}m)`, 0, 0);
+    ctx.fillText(
+      `odom y (grid ${gridStep.toFixed(gridStep < 0.1 ? 2 : gridStep % 1 === 0 ? 0 : 1)}m)`,
+      0,
+      0,
+    );
     ctx.restore();
 
     // 航点位置换算与标签测量
@@ -425,7 +740,19 @@ export function WaypointsEditorPage({
         ctx.fillText(label.name, label.textX, label.textY);
       }
     }
-  }, [canvasSize, draftPoints, fontScale, isTemplate, selectedName, viewTransform]);
+  }, [
+    bgDraft,
+    bgImage,
+    canvasSize,
+    customGridStep,
+    draftPoints,
+    fontScale,
+    gridMode,
+    isPickingPivot,
+    isTemplate,
+    selectedName,
+    viewTransform,
+  ]);
 
   const pushUndo = useCallback(() => {
     undoStackRef.current = [...undoStackRef.current.slice(-99), clonePoints(draftPoints)];
@@ -606,6 +933,22 @@ export function WaypointsEditorPage({
       const clientX = event.clientX - rect.left;
       const clientY = event.clientY - rect.top;
 
+      // 处于选中心模式时，点击底图设置旋转缩放中心
+      if (isPickingPivot && bgDraft && bgImage) {
+        const world = canvasToWorld(view, clientX, clientY);
+        const pixel = worldToImagePixel(bgDraft, bgDraft.width, bgDraft.height, world.x, world.y);
+        const clampedU = Math.max(0, Math.min(bgDraft.width, pixel.u));
+        const clampedV = Math.max(0, Math.min(bgDraft.height, pixel.v));
+        setBgDraft((prev) => (prev ? { ...prev, pivotU: clampedU, pivotV: clampedV } : prev));
+        setIsPickingPivot(false);
+        setNotice(
+          locale === "en"
+            ? `Set pivot to pixel (${Math.round(clampedU)}, ${Math.round(clampedV)})`
+            : `已设置旋转缩放中心为像素 (${Math.round(clampedU)}, ${Math.round(clampedV)})`,
+        );
+        return;
+      }
+
       // 优先检测是否点中某个航点进行坐标拖拽
       const hit = draftPoints.find((point) => {
         const [px, py] = worldToCanvas(view, point.x, point.y);
@@ -626,7 +969,7 @@ export function WaypointsEditorPage({
 
       event.currentTarget.setPointerCapture(event.pointerId);
     },
-    [draftPoints, pushUndo],
+    [bgDraft, bgImage, draftPoints, isPickingPivot, locale, pushUndo],
   );
 
   const onPointerMove = useCallback(
@@ -779,6 +1122,16 @@ export function WaypointsEditorPage({
             ) {
               return;
             }
+            if (
+              bgDirty &&
+              !window.confirm(
+                locale === "en"
+                  ? "Discard unsaved background image edits?"
+                  : "放弃未保存的背景图修改？",
+              )
+            ) {
+              return;
+            }
             setSelectedFileId(next);
           }}
           aria-label={locale === "en" ? "Waypoint file" : "航点文件"}
@@ -835,6 +1188,40 @@ export function WaypointsEditorPage({
         )}
 
         <span className="spacer" />
+
+        {/* 网格实际距离设置 */}
+        {!isTemplate && (
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+            <Grid style={{ width: 14, height: 14, color: "var(--text-muted)" }} />
+            <select
+              value={gridMode}
+              onChange={(e) => setGridMode(e.target.value)}
+              title={locale === "en" ? "Metric grid distance" : "网格实际距离"}
+              aria-label={locale === "en" ? "Grid distance" : "网格距离"}
+              style={{ minHeight: "var(--ctl-min-h)", maxWidth: 125 }}
+            >
+              <option value="auto">{locale === "en" ? "Grid: Auto" : "网格: 自动"}</option>
+              <option value="0.1">0.1 m</option>
+              <option value="0.2">0.2 m</option>
+              <option value="0.5">0.5 m</option>
+              <option value="1">1.0 m</option>
+              <option value="2">2.0 m</option>
+              <option value="5">5.0 m</option>
+              <option value="custom">{locale === "en" ? "Custom..." : "自定义..."}</option>
+            </select>
+            {gridMode === "custom" && (
+              <NumberInput
+                value={customGridStep}
+                onValueChange={(val) => setCustomGridStep(val && val > 0 ? val : 1.0)}
+                min={0.01}
+                max={100}
+                step={0.1}
+                style={{ width: 55, minHeight: "var(--ctl-min-h)" }}
+                title={locale === "en" ? "Custom grid distance (meters)" : "自定义网格距离 (米)"}
+              />
+            )}
+          </div>
+        )}
 
         {/* 画布缩放按钮 */}
         <div className="waypoints-zoom-controls">
@@ -1096,6 +1483,7 @@ export function WaypointsEditorPage({
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerUp}
+            style={{ cursor: isPickingPivot ? "crosshair" : "default" }}
             aria-label={locale === "en" ? "Waypoint map" : "航点地图"}
           />
 
@@ -1222,6 +1610,263 @@ export function WaypointsEditorPage({
               </div>
             );
           })()}
+
+          {/* 背景底图管理（仅在 formal 正式航点预设下可用） */}
+          {waypointDocument?.formal && (
+            <div className="bg-inspector-section">
+              <input
+                type="file"
+                ref={fileInputRef}
+                hidden
+                accept="image/png,image/jpeg,image/webp"
+                onChange={handleImageUpload}
+              />
+              <div className="bg-title-row">
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                  <ImageIcon style={{ width: 14, height: 14 }} />
+                  {locale === "en" ? "Background map" : "背景底图"}
+                </span>
+                <div className="bg-title-actions">
+                  {bgDraft ? (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        title={locale === "en" ? "Replace image" : "替换图片"}
+                      >
+                        {locale === "en" ? "Replace" : "替换"}
+                      </button>
+                      <button
+                        type="button"
+                        className="delete"
+                        onClick={() => void handleDeleteBackground()}
+                        title={locale === "en" ? "Delete background" : "删除背景"}
+                      >
+                        <Trash2 style={{ width: 12, height: 12 }} />
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                    >
+                      <Upload style={{ width: 12, height: 12 }} />
+                      {locale === "en" ? "Upload" : "上传"}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {bgDraft && (
+                <>
+                  <label className="bg-row">
+                    <span>{locale === "en" ? "Visible" : "显示"}</span>
+                    <input
+                      type="checkbox"
+                      checked={bgDraft.visible}
+                      onChange={(e) =>
+                        setBgDraft((prev) => (prev ? { ...prev, visible: e.target.checked } : prev))
+                      }
+                    />
+                  </label>
+
+                  {/* 旋转缩放中心设置按钮 */}
+                  <button
+                    type="button"
+                    className={`bg-pivot-btn ${isPickingPivot ? "active" : ""}`}
+                    onClick={() => setIsPickingPivot(!isPickingPivot)}
+                    title={
+                      locale === "en"
+                        ? "Click to pick rotation & scaling pivot on the image"
+                        : "点击后在底图上选点作为旋转与缩放中心"
+                    }
+                  >
+                    <Crosshair />
+                    {isPickingPivot
+                      ? locale === "en"
+                        ? "Click image for pivot..."
+                        : "请在底图上点击选点..."
+                      : locale === "en"
+                        ? "Set transform pivot"
+                        : "设置旋转缩放中心"}
+                  </button>
+
+                  <div style={{ fontSize: "11px", color: "var(--text-faint)", fontFamily: "var(--mono)" }}>
+                    {locale === "en" ? "Pivot pixel" : "中心像素"}: U {Math.round(bgDraft.pivotU)}, V{" "}
+                    {Math.round(bgDraft.pivotV)}
+                  </div>
+
+                  {/* 中心 X (m) */}
+                  <div className="bg-row">
+                    <span>X (m)</span>
+                    <NumberInput
+                      value={bgDraft.centerX}
+                      onValueChange={(val) => updateBgCenter(val ?? 0, bgDraft.centerY)}
+                    />
+                    <div className="bg-nudge-group">
+                      {[-0.1, -0.01, 0.01, 0.1].map((delta) => (
+                        <button
+                          key={delta}
+                          type="button"
+                          className="bg-nudge-btn"
+                          onClick={() => updateBgCenter(bgDraft.centerX + delta, bgDraft.centerY)}
+                        >
+                          {delta > 0 ? `+${delta}` : delta}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 中心 Y (m) */}
+                  <div className="bg-row">
+                    <span>Y (m)</span>
+                    <NumberInput
+                      value={bgDraft.centerY}
+                      onValueChange={(val) => updateBgCenter(bgDraft.centerX, val ?? 0)}
+                    />
+                    <div className="bg-nudge-group">
+                      {[-0.1, -0.01, 0.01, 0.1].map((delta) => (
+                        <button
+                          key={delta}
+                          type="button"
+                          className="bg-nudge-btn"
+                          onClick={() => updateBgCenter(bgDraft.centerX, bgDraft.centerY + delta)}
+                        >
+                          {delta > 0 ? `+${delta}` : delta}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 缩放 (m/px) */}
+                  <div className="bg-row">
+                    <span title={locale === "en" ? "Meters per pixel" : "每像素米数"}>
+                      {locale === "en" ? "Scale" : "缩放"}
+                    </span>
+                    <NumberInput
+                      value={bgDraft.metersPerPixel}
+                      onValueChange={(val) =>
+                        updateBgScaleOrRot(val && val > 0 ? val : 0.01, bgDraft.rotationDeg)
+                      }
+                      step={0.001}
+                      min={0.0001}
+                    />
+                    <div className="bg-nudge-group">
+                      {[
+                        { label: "-5%", factor: -0.05 },
+                        { label: "-1%", factor: -0.01 },
+                        { label: "+1%", factor: 0.01 },
+                        { label: "+5%", factor: 0.05 },
+                      ].map((item) => (
+                        <button
+                          key={item.label}
+                          type="button"
+                          className="bg-nudge-btn"
+                          onClick={() =>
+                            updateBgScaleOrRot(
+                              Math.max(0.0001, bgDraft.metersPerPixel * (1 + item.factor)),
+                              bgDraft.rotationDeg,
+                            )
+                          }
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 旋转角度 (deg) */}
+                  <div className="bg-row">
+                    <span>{locale === "en" ? "Rot (°)" : "旋转 (°)"}</span>
+                    <NumberInput
+                      value={bgDraft.rotationDeg}
+                      onValueChange={(val) =>
+                        updateBgScaleOrRot(bgDraft.metersPerPixel, val ?? 0)
+                      }
+                      step={0.1}
+                    />
+                    <div className="bg-nudge-group">
+                      {[-5, -1, -0.1, 0.1, 1, 5].map((delta) => (
+                        <button
+                          key={delta}
+                          type="button"
+                          className="bg-nudge-btn"
+                          onClick={() =>
+                            updateBgScaleOrRot(
+                              bgDraft.metersPerPixel,
+                              Math.round((bgDraft.rotationDeg + delta) * 10) / 10,
+                            )
+                          }
+                        >
+                          {delta > 0 ? `+${delta}` : delta}°
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 透明度 */}
+                  <div className="bg-row">
+                    <span>{locale === "en" ? "Opacity" : "透明度"}</span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={bgDraft.opacity}
+                      onChange={(e) =>
+                        setBgDraft((prev) =>
+                          prev ? { ...prev, opacity: parseFloat(e.target.value) } : prev,
+                        )
+                      }
+                    />
+                  </div>
+
+                  {/* 底图尺寸提示 */}
+                  <div style={{ fontSize: "11px", color: "var(--text-faint)", fontFamily: "var(--mono)" }}>
+                    {(bgDraft.width * bgDraft.metersPerPixel).toFixed(2)}m ×{" "}
+                    {(bgDraft.height * bgDraft.metersPerPixel).toFixed(2)}m (
+                    {bgDraft.width}×{bgDraft.height}px)
+                  </div>
+
+                  {/* 操作与保存按钮 */}
+                  <div className="bg-action-bar">
+                    <button
+                      type="button"
+                      onClick={() => void handleSaveBackground()}
+                      disabled={!bgDirty || bgSaving}
+                    >
+                      <Save />
+                      {bgSaving
+                        ? locale === "en"
+                          ? "Saving..."
+                          : "保存中..."
+                        : locale === "en"
+                          ? "Save map"
+                          : "保存底图"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleResetBackground}
+                      title={locale === "en" ? "Reset" : "恢复默认"}
+                    >
+                      <RotateCcw />
+                      {locale === "en" ? "Reset" : "恢复默认"}
+                    </button>
+                  </div>
+                  <div className={`bg-status-text ${bgDirty ? "dirty" : ""}`}>
+                    {bgDirty
+                      ? locale === "en"
+                        ? "Unsaved background edits"
+                        : "背景底图未保存"
+                      : locale === "en"
+                        ? "Background saved"
+                        : "背景底图已保存"}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </aside>
       </div>
       )}

@@ -2,11 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import {
   canvasToWorld,
+  centerFromPivotInvariant,
   fitViewToBounds,
+  imagePixelToWorld,
   panView,
   placeWaypointLabels,
   rectsIntersect,
   worldToCanvas,
+  worldToImagePixel,
   zoomViewAtAnchor,
   type View2DTransform,
 } from "../../src/core/view2d";
@@ -126,5 +129,71 @@ describe("2D View transform utilities", () => {
       expect(p.rect.y).toBeGreaterThanOrEqual(4);
       expect(p.rect.y + p.rect.height).toBeLessThanOrEqual(600 - 4);
     }
+  });
+
+  describe("Background image coordinate transforms", () => {
+    const imgConfig = {
+      centerX: 1.0,
+      centerY: 2.0,
+      metersPerPixel: 0.02,
+      rotationDeg: 0,
+    };
+    const W = 1000;
+    const H = 600;
+
+    it("maps image center to world center", () => {
+      const world = imagePixelToWorld(imgConfig, W, H, W / 2, H / 2);
+      expect(world.x).toBeCloseTo(1.0, 5);
+      expect(world.y).toBeCloseTo(2.0, 5);
+
+      const pixel = worldToImagePixel(imgConfig, W, H, 1.0, 2.0);
+      expect(pixel.u).toBeCloseTo(W / 2, 5);
+      expect(pixel.v).toBeCloseTo(H / 2, 5);
+    });
+
+    it("round-trips imagePixelToWorld and worldToImagePixel with rotation", () => {
+      const rotatedConfig = { ...imgConfig, rotationDeg: 37.5, metersPerPixel: 0.015 };
+      const testU = 750;
+      const testV = 200;
+
+      const world = imagePixelToWorld(rotatedConfig, W, H, testU, testV);
+      const pixel = worldToImagePixel(rotatedConfig, W, H, world.x, world.y);
+
+      expect(pixel.u).toBeCloseTo(testU, 5);
+      expect(pixel.v).toBeCloseTo(testV, 5);
+    });
+
+    it("preserves pivot world position when scale and rotation change", () => {
+      const initialConfig = { ...imgConfig, rotationDeg: 10, metersPerPixel: 0.02 };
+      const pivotPixel = { u: 700, v: 450 };
+
+      // Current world position of this pivot point
+      const pivotWorld = imagePixelToWorld(initialConfig, W, H, pivotPixel.u, pivotPixel.v);
+
+      // Now change scale and rotation drastically
+      const newScale = 0.035;
+      const newRot = 65.0;
+
+      const newCenter = centerFromPivotInvariant(
+        pivotWorld,
+        pivotPixel,
+        W,
+        H,
+        newScale,
+        newRot,
+      );
+
+      const transformedConfig = {
+        centerX: newCenter.centerX,
+        centerY: newCenter.centerY,
+        metersPerPixel: newScale,
+        rotationDeg: newRot,
+      };
+
+      // The pivot point MUST evaluate to the exact same world position!
+      const afterWorld = imagePixelToWorld(transformedConfig, W, H, pivotPixel.u, pivotPixel.v);
+      expect(afterWorld.x).toBeCloseTo(pivotWorld.x, 5);
+      expect(afterWorld.y).toBeCloseTo(pivotWorld.y, 5);
+    });
   });
 });

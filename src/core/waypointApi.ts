@@ -133,3 +133,70 @@ export function saveImageSettingsDefaults(
     body: JSON.stringify(settings),
   });
 }
+
+export interface BackgroundConfig {
+  center_x: number;
+  center_y: number;
+  meters_per_pixel: number;
+  rotation_deg: number;
+  opacity: number;
+  visible: boolean;
+  pivot_u: number;
+  pivot_v: number;
+  width: number;
+  height: number;
+  image_file: string;
+}
+
+export interface BackgroundResponse {
+  has_image: boolean;
+  image_url?: string;
+  config?: BackgroundConfig;
+}
+
+export function fetchBackground(fileId: string): Promise<BackgroundResponse> {
+  return requestJson<BackgroundResponse>(`/api/background?id=${encodeURIComponent(fileId)}`);
+}
+
+export async function uploadBackgroundImage(
+  fileId: string,
+  data: Blob,
+): Promise<{ uploaded: boolean; image_file: string; size: number }> {
+  const response = await fetch(`/api/background/image?id=${encodeURIComponent(fileId)}`, {
+    method: "POST",
+    headers: { "Content-Type": data.type || "application/octet-stream" },
+    body: data,
+  });
+  if (!response.ok) {
+    const errorText = await response.text();
+    let message = `HTTP ${response.status}`;
+    try {
+      const parsed = JSON.parse(errorText);
+      if (parsed && typeof parsed.error === "string") message = parsed.error;
+    } catch {
+      if (errorText) message = errorText;
+    }
+    throw new WaypointApiError(response.status, message);
+  }
+  return response.json();
+}
+
+export function saveBackgroundConfig(
+  fileId: string,
+  config: BackgroundConfig,
+): Promise<{ saved: boolean; config: BackgroundConfig }> {
+  return requestJson<{ saved: boolean; config: BackgroundConfig }>(
+    `/api/background/config?id=${encodeURIComponent(fileId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    },
+  );
+}
+
+export function deleteBackground(fileId: string): Promise<{ deleted: boolean }> {
+  return requestJson<{ deleted: boolean }>(`/api/background?id=${encodeURIComponent(fileId)}`, {
+    method: "DELETE",
+  });
+}

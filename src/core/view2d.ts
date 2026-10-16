@@ -127,6 +127,83 @@ export function rectsIntersect(a: Rect, b: Rect, padding = 3): boolean {
 }
 
 /**
+ * 图像像素坐标转世界坐标 (odom)
+ * 图像中心位于 (imageWidth / 2, imageHeight / 2)。
+ * 角度 rotationDeg 在 odom 坐标系下逆时针（CCW）为正。
+ */
+export function imagePixelToWorld(
+  config: { centerX: number; centerY: number; metersPerPixel: number; rotationDeg: number },
+  imageWidth: number,
+  imageHeight: number,
+  u: number,
+  v: number,
+): { x: number; y: number } {
+  const du = u - imageWidth / 2;
+  const dv = v - imageHeight / 2;
+  const rad = (config.rotationDeg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const s = config.metersPerPixel;
+  const dx = s * (cos * du + sin * dv);
+  const dy = s * (sin * du - cos * dv);
+  return {
+    x: config.centerX + dx,
+    y: config.centerY + dy,
+  };
+}
+
+/**
+ * 世界坐标 (odom) 转图像像素坐标 (u, v)
+ */
+export function worldToImagePixel(
+  config: { centerX: number; centerY: number; metersPerPixel: number; rotationDeg: number },
+  imageWidth: number,
+  imageHeight: number,
+  wx: number,
+  wy: number,
+): { u: number; v: number } {
+  const s = config.metersPerPixel;
+  if (s <= 1e-9) return { u: imageWidth / 2, v: imageHeight / 2 };
+  const rad = (config.rotationDeg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const dx = wx - config.centerX;
+  const dy = wy - config.centerY;
+  const du = (cos * dx + sin * dy) / s;
+  const dv = (sin * dx - cos * dy) / s;
+  return {
+    u: imageWidth / 2 + du,
+    v: imageHeight / 2 + dv,
+  };
+}
+
+/**
+ * 计算新的图像中心 (centerX, centerY)，保持 pivot (pivotU, pivotV)
+ * 在新缩放和新旋转角下，其世界坐标 (pivotWorldX, pivotWorldY) 保持不变。
+ */
+export function centerFromPivotInvariant(
+  pivotWorld: { x: number; y: number },
+  pivotPixel: { u: number; v: number },
+  imageWidth: number,
+  imageHeight: number,
+  newMetersPerPixel: number,
+  newRotationDeg: number,
+): { centerX: number; centerY: number } {
+  const du = pivotPixel.u - imageWidth / 2;
+  const dv = pivotPixel.v - imageHeight / 2;
+  const rad = (newRotationDeg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const s = newMetersPerPixel;
+  const dx = s * (cos * du + sin * dv);
+  const dy = s * (sin * du - cos * dv);
+  return {
+    centerX: pivotWorld.x - dx,
+    centerY: pivotWorld.y - dy,
+  };
+}
+
+/**
  * 确定性标签避让算法：
  * 为每个航点计算最佳标签位置，依次尝试右上、右下、左上、左下及引线外扩位置，
  * 避免标签之间互相覆盖；在极密区域提供拥挤降级。

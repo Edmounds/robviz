@@ -3349,6 +3349,173 @@ button:disabled {
   color: var(--text-muted);
 }
 
+/* ---- Background map controls ---- */
+.bg-inspector-section {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.bg-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: var(--fs-meta);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.bg-title-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.bg-title-actions button {
+  min-height: 22px;
+  padding: 1px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-ctl);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.bg-title-actions button:hover {
+  border-color: var(--foreground);
+  color: var(--foreground);
+}
+
+.bg-title-actions button.delete:hover {
+  border-color: var(--status-warn);
+  color: var(--status-warn);
+}
+
+.bg-row {
+  display: grid;
+  grid-template-columns: minmax(54px, 0.8fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+}
+
+.bg-row input[type="range"] {
+  width: 100%;
+}
+
+.bg-nudge-group {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 2px;
+  grid-column: 2;
+}
+
+.bg-nudge-btn {
+  flex: 1;
+  min-height: 20px;
+  padding: 1px 2px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-ctl);
+  background: var(--surface-soft);
+  color: var(--text-muted);
+  font: 10px / 1.4 var(--mono);
+  text-align: center;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.bg-nudge-btn:hover {
+  border-color: var(--foreground-soft);
+  color: var(--foreground);
+}
+
+.bg-pivot-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 28px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-ctl);
+  background: var(--surface-soft);
+  color: var(--foreground);
+  font: var(--fs-meta) var(--sans);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.bg-pivot-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+.bg-pivot-btn:hover {
+  border-color: var(--foreground);
+}
+
+.bg-pivot-btn.active {
+  background: color-mix(in srgb, var(--status-warn) 20%, transparent);
+  border-color: var(--status-warn);
+  color: var(--status-warn);
+  font-weight: 600;
+}
+
+.bg-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.bg-action-bar button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 3px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-ctl);
+  background: transparent;
+  color: var(--foreground-soft);
+  font: var(--fs-meta) var(--sans);
+  cursor: pointer;
+}
+
+.bg-action-bar button svg {
+  width: 13px;
+  height: 13px;
+}
+
+.bg-action-bar button:hover:not(:disabled) {
+  border-color: var(--foreground);
+  color: var(--foreground);
+}
+
+.bg-action-bar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.bg-status-text {
+  font: 11px var(--mono);
+  color: var(--text-faint);
+}
+
+.bg-status-text.dirty {
+  color: var(--status-warn);
+}
+
+
 /* ---- Image transport settings ---- */
 .settings-image-transport {
   max-width: 760px;
