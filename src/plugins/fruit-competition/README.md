@@ -1,8 +1,9 @@
 # 正式比赛插件
 
-流程下拉框提供 ABC 和 ACB，并保留单区调试选择。
+流程下拉框提供 ABC、ACB 和 ACBD，并保留单区调试选择。
 ABC 调用 `mission` 任务。ACB 调用 `mission_acb` 任务，对应 `start_fruit_mission_acb.sh`。
-ACB 固定 A 去程开环、A 回程及 C 闭环，因此禁用开环选择。
+ACBD 调用 `mission_acbd` 任务，对应 `start_fruit_mission_acbd.sh`。
+ACB 与 ACBD 采用固定闭环或分段模式，因此禁用开环选择。
 
 1. 选择流程和调试参数。
 2. 点击「启动其他部分」启动准备阶段。
@@ -16,5 +17,5 @@ ACB 固定 A 去程开环、A 回程及 C 闭环，因此禁用开环选择。
 Kill 只清理进程，不是硬件急停，也不证明硬件停稳。
 
 页面使用现有相机面板和运行服务，不发送浏览器 shell 命令。
-ABC 和 ACB 共用机器人比赛会话锁，不能同时拥有硬件。
+ABC、ACB 和 ACBD 共用机器人比赛会话锁，不能同时拥有硬件。
 详细 API 和安全边界见 fruit_ws 的 `docs/ROBVIZ_RUNTIME_CONTROL.md`。

@@ -13,7 +13,7 @@ export const competitionSchema = z.object({
   run_id: z.string().optional(), pid: z.number().int().optional(),
   phase: z.string(), attempt: z.number().int().optional(),
   parameters: z.object({
-    flow: z.enum(["full", "ac", "acb", "a", "b", "c"]),
+    flow: z.enum(["full", "ac", "acb", "acbd", "a", "b", "c"]),
     open_loop: z.enum(["A", "C", "AC", "none"]),
     debug: z.boolean(),
   }).optional(),

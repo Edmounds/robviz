@@ -11,7 +11,7 @@ import { getCompetitionStatus } from "../fruit-competition/api";
 import "./fruit-scripts.css";
 
 const ID = "fruit-scripts";
-const ORDER = ["mission", "mission_acb", "teleop", "waypoint_recording", "camera_arm_target", "perception", "voice_test", "qr_test"];
+const ORDER = ["mission", "mission_acb", "mission_acbd", "teleop", "waypoint_recording", "camera_arm_target", "perception", "voice_test", "qr_test"];
 const DEFAULT_LAYOUT = { controls: 38, logs: 62 };
 
 export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPageProps) {
@@ -131,7 +131,11 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
           if (controller.signal.aborted) return;
           setCompetitionPhase(competition.phase ?? "");
           if (["PREPARING", "PREPARED", "LOCALIZING", "RUNNING"].includes(competition.phase ?? "") && competition.parameters) {
-            const scriptId = competition.parameters.flow === "acb" ? "mission_acb" : "mission";
+            const scriptId = competition.parameters.flow === "acbd"
+              ? "mission_acbd"
+              : competition.parameters.flow === "acb"
+                ? "mission_acb"
+                : "mission";
             setValues((previous) => ({ ...previous, [scriptId]: {
               ...previous[scriptId], ...competition.parameters,
             }}));
@@ -212,8 +216,12 @@ export default function ScriptControlPage({ ctx, isMobile, fontScale }: PluginPa
           selected[name] = value;
         }
       }
-      const localize = (script.id === "mission" || script.id === "mission_acb") && selected.phase === "localize";
-      const flow = script.id === "mission_acb" ? "acb" : selected.flow ?? script.parameters.flow?.default ?? "full";
+      const localize = (script.id === "mission" || script.id === "mission_acb" || script.id === "mission_acbd") && selected.phase === "localize";
+      const flow = script.id === "mission_acbd"
+        ? "acbd"
+        : script.id === "mission_acb"
+          ? "acb"
+          : selected.flow ?? script.parameters.flow?.default ?? "full";
       const path = localize ? `competition/localize/${encodeURIComponent(String(flow))}` : `scripts/${encodeURIComponent(script.id)}/start`;
       if (localize) {
         await runtimeRequest(path, base, {}, "POST", controller.signal, 5_000);

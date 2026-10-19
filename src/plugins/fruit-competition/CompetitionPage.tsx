@@ -82,7 +82,7 @@ export default function CompetitionPage({ ctx, isMobile, fontScale }: PluginPage
 
   const [camera, setCamera] = useState(stored?.camera ?? DEFAULT_CAMERA);
   const [flow, setFlow] = useState(
-    stored?.flow && ["full", "ac", "acb", "a", "b", "c"].includes(stored.flow) ? stored.flow : "full"
+    stored?.flow && ["full", "ac", "acb", "acbd", "a", "b", "c"].includes(stored.flow) ? stored.flow : "full"
   );
   const [openLoop, setOpenLoop] = useState(stored?.openLoop ?? "A");
   const [debug, setDebug] = useState(stored?.debug ?? false);
@@ -104,7 +104,7 @@ export default function CompetitionPage({ ctx, isMobile, fontScale }: PluginPage
   const hasStarted = useRef(false);
   const initial = useRef({ theme: ctx.theme, fontScale });
 
-  const targetScript = flow === "acb" ? "mission_acb" : "mission";
+  const targetScript = flow === "acbd" ? "mission_acbd" : flow === "acb" ? "mission_acb" : "mission";
 
   useEffect(() => {
     persist(ID, { camera, flow, openLoop, debug, layout });
@@ -256,10 +256,10 @@ export default function CompetitionPage({ ctx, isMobile, fontScale }: PluginPage
   };
 
   const running = ["PREPARING", "PREPARED", "LOCALIZING", "RUNNING"].includes(status.phase);
-  const acb = flow === "acb";
+  const fixedClosed = flow === "acb" || flow === "acbd";
   const params = useMemo(
-    () => (acb ? { phase: "prepare", debug } : { phase: "prepare", flow, open_loop: openLoop, debug }),
-    [acb, debug, flow, openLoop]
+    () => (fixedClosed ? { phase: "prepare", debug } : { phase: "prepare", flow, open_loop: openLoop, debug }),
+    [debug, fixedClosed, flow, openLoop]
   );
 
   return (
@@ -328,6 +328,7 @@ export default function CompetitionPage({ ctx, isMobile, fontScale }: PluginPage
                       <select value={flow} disabled={running || busy} onChange={(e) => setFlow(e.target.value)}>
                         <option value="full">ABC</option>
                         <option value="acb">ACB</option>
+                        <option value="acbd">ACBD</option>
                         {["ac", "a", "b", "c"].map((item) => (
                           <option key={item} value={item}>
                             {item}
@@ -338,8 +339,8 @@ export default function CompetitionPage({ ctx, isMobile, fontScale }: PluginPage
                     <div className="competition-form-row">
                       <label>开环</label>
                       <select
-                        value={acb ? "none" : openLoop}
-                        disabled={acb || running || busy}
+                        value={fixedClosed ? "none" : openLoop}
+                        disabled={fixedClosed || running || busy}
                         onChange={(e) => setOpenLoop(e.target.value)}
                       >
                         {["A", "C", "AC", "none"].map((item) => (
@@ -360,7 +361,8 @@ export default function CompetitionPage({ ctx, isMobile, fontScale }: PluginPage
                         <span>debug 记录</span>
                       </label>
                     </div>
-                    {acb && <div className="competition-flow-note">ACB 固定：A 去程开环，A 回程及 C 闭环。</div>}
+                    {flow === "acb" && <div className="competition-flow-note">ACB 固定：A 去程开环，A 回程及 C 闭环。</div>}
+                    {flow === "acbd" && <div className="competition-flow-note">ACBD 固定：全闭环采摘，B8完成后进入D区。</div>}
                     <div className="competition-btn-group">
                       <button
                         className="btn-action btn-prepare"
@@ -369,7 +371,7 @@ export default function CompetitionPage({ ctx, isMobile, fontScale }: PluginPage
                           hasStarted.current = true;
                           cursor.current = { script_id: targetScript, run_id: "", cursor: 0 };
                           terminal.current?.reset();
-                          void call(`scripts/${acb ? "mission_acb" : "mission"}/start`, { parameters: params });
+                          void call(`scripts/${targetScript}/start`, { parameters: params });
                         }}
                       >
                         启动其他部分

@@ -8,12 +8,12 @@
 顶部 Kill 不需要确认，它清理所有进程但不代表硬件急停。
 它也会清理机械臂插件或终端启动的机器人任务。
 
-八个脚本来自机器人上的 `runtime_tasks.yaml`。
-`start_fruit_mission_acb.sh` 提供独立 ACB 卡片，支持 `phase` 和 `debug`。
-ACB 固定 A 去程开环、A 回程及 C 闭环，不提供开环开关。
-ABC、ACB 共用比赛会话锁，不能同时拥有硬件。
+九个脚本来自机器人上的 `runtime_tasks.yaml`。
+`start_fruit_mission_acb.sh` 提供独立 ACB 卡片，`start_fruit_mission_acbd.sh` 提供独立 ACBD 卡片，均支持 `phase` 和 `debug`。
+ACB 与 ACBD 采用固定模式，不提供开环开关。
+ABC、ACB、ACBD 共用比赛会话锁，不能同时拥有硬件。
 `localize` 只请求已准备会话启动定位，不改变准备参数或路线。
-定位入口校验卡片的流程。ACB 卡片不能启动已准备的 ABC 会话，反向同样拒绝。
+定位入口校验卡片的流程。ACB 或 ACBD 卡片不能启动已准备的其他会话，反向同样拒绝。
 正式比赛页保持两个按钮：先准备其他组件，再启动 Point-LIO 和后续 Mission。
 `test_voice.sh` 和 `test_qr.sh` 无参数控件。
 启动请求只传任务 ID 和白名单参数，不传 shell 命令。

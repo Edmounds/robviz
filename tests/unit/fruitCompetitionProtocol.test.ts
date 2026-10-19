@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { competitionSchema } from "../../src/plugins/fruit-competition/api";
 
 describe("competition status protocol", () => {
-  it.each(["full", "acb"])("accepts the prepared %s route", (flow) => {
+  it.each(["full", "acb", "acbd"])("accepts the prepared %s route", (flow) => {
     const reply = competitionSchema.parse({
       phase: "PREPARED", parameters: { flow, open_loop: "none", debug: true },
     });
