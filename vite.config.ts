@@ -55,6 +55,9 @@ export function terminalGatewayPlugin(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
+  test: {
+    exclude: ["**/node_modules/**", "**/.worktrees/**", "dist/**"],
+  },
   resolve: {
     alias: { "@robviz/core": new URL("./src/sdk/index.ts", import.meta.url).pathname },
   },

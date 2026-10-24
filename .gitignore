@@ -35,4 +35,5 @@ __pycache__/
 
 # Planning & backup scratchpad
 .planning/
+.pi/
 
