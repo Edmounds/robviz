@@ -13,6 +13,17 @@ import {
 } from "../../src/core/appConfig";
 
 describe("appConfig", () => {
+  it("migrates legacy URDF state once and retains opaque layouts and unknown plugin state", () => {
+    const session = { ...createDefaultSession("robot", "Robot"), urdfInspectorPercent: 42,
+      dockLayout: { grid: { retained: true } }, pluginState: { missing: { retained: true } } };
+    const config = { version: 3, activeSessionId: "robot", theme: "dark",
+      settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] }, sessions: [session] };
+    const parsed = parseAppConfig(JSON.stringify(config));
+    expect(parsed.sessions[0].pluginState).toEqual({ missing: { retained: true }, "urdf-editor": { inspectorPercent: 42 } });
+    expect(parsed.sessions[0].dockLayout).toEqual(session.dockLayout);
+    expect(parsed.sessions[0]).not.toHaveProperty("urdfInspectorPercent");
+    expect(parseAppConfig(serializeAppConfig(parsed))).toEqual(parsed);
+  });
   it("saves the serialized workspace to browser storage", () => {
     const session = createDefaultSession("robot-a", "Robot A");
     expect(session.panels.map((panel) => panel.kind)).toEqual(["3d", "topics", "tf-tree"]);
@@ -43,7 +54,7 @@ describe("appConfig", () => {
       scene: { groundVisible: false, tfAxesLineWidth: 3 },
       panels: [
         ...createDefaultSession("robot-b", "Robot B").panels,
-        { id: "image-1", kind: "image", state: { topic: "/camera/image_raw" } },
+        { id: "image-1", kind: "image:image", state: { topic: "/camera/image_raw" } },
       ],
       dockLayout: { grid: { root: { type: "branch" } } },
     };
@@ -78,7 +89,7 @@ describe("appConfig", () => {
 
   it("retains mediaUrl and explicit Raw mode in storage/file round trips", () => {
     const session = { ...createDefaultSession("robot", "Robot"), mediaUrl: "wss://video.example/ws",
-      panels: [{ id: "depth", kind: "image", state: { topic: "/camera/depth", preferRaw: true, useWebRtc: false } }] };
+      panels: [{ id: "depth", kind: "image:image", state: { topic: "/camera/depth", preferRaw: true, useWebRtc: false } }] };
     const config: AppConfig = { version: 3, activeSessionId: session.id, theme: "dark",
       settings: { language: "zh-CN", fontScale: 1, disabledPluginIds: [] }, sessions: [session] };
     const storage = new Map<string, string>();
@@ -105,6 +116,32 @@ describe("appConfig", () => {
     expect(migrated.sessions[0].autoAddPluginSections).toBe(false);
     expect(migrated.settings.disabledPluginIds).toEqual(["teleop"]);
     expect(parseAppConfig(serializeAppConfig(migrated))).toEqual(migrated);
+  });
+
+  it("migrates legacy image panels into plugin panel kind", () => {
+    const old = {
+      ...createDefaultSession("robot", "Robot"),
+      panels: [{ id: "cam", kind: "image", state: { topic: "/camera/color" } }],
+      dockLayout: {
+        grid: { root: { type: "branch" } },
+        panels: { cam: { id: "cam", params: { panelId: "cam", kind: "image" } } },
+      },
+    };
+    const config = {
+      version: 3 as const,
+      activeSessionId: old.id,
+      theme: "dark" as const,
+      settings: { language: "zh-CN" as const, fontScale: 1, disabledPluginIds: [] },
+      sessions: [old],
+    };
+    const migrated = parseAppConfig(JSON.stringify(config));
+    expect(migrated.sessions[0].panels).toEqual([
+      { id: "cam", kind: "image:image", state: { topic: "/camera/color" } },
+    ]);
+    expect(migrated.sessions[0].dockLayout).toEqual({
+      grid: { root: { type: "branch" } },
+      panels: { cam: { id: "cam", params: { panelId: "cam", kind: "image:image" } } },
+    });
   });
 
   it("does not add teleop to workspaces where it was closed", () => {
@@ -245,7 +282,7 @@ describe("appConfig", () => {
   it("round-trips modeTabOrder and validates valid/invalid mode strings", () => {
     const session = createDefaultSession("robot-a", "Robot A");
     session.mode = "map";
-    session.urdfInspectorPercent = 42;
+    session.pluginState["urdf-editor"] = { inspectorPercent: 42 };
 
     const config: AppConfig = {
       version: 3,
@@ -263,7 +300,7 @@ describe("appConfig", () => {
     const parsed = parseAppConfig(serializeAppConfig(config));
     expect(parsed.settings.modeTabOrder).toEqual(["map", "3d", "urdf", "waypoints", "custom-plugin:custom-page"]);
     expect(parsed.sessions[0].mode).toBe("map");
-    expect(parsed.sessions[0].urdfInspectorPercent).toBe(42);
+    expect(parsed.sessions[0].pluginState["urdf-editor"]).toEqual({ inspectorPercent: 42 });
 
     // Also accepts namespaced plugin mode
     const customModeSession = { ...session, mode: "custom-plugin:custom-page" };

@@ -3,6 +3,7 @@ import { useEffect, useId, useState } from "react";
 import type { ReactNode } from "react";
 
 import { useI18n } from "./i18n";
+import { Button, Toolbar } from "../ui/components";
 
 export function CollapsiblePanel({
   title,
@@ -33,7 +34,7 @@ export function CollapsiblePanel({
   if (embedded) {
     return (
       <div className="panel dock-panel-content">
-        <div className="panel-header">{header}</div>
+        <Toolbar className="panel-header">{header}</Toolbar>
         <div className="panel-content">{children}</div>
       </div>
     );
@@ -41,10 +42,10 @@ export function CollapsiblePanel({
 
   return (
     <div className={`panel ${collapsed ? "is-collapsed" : ""}`}>
-      <div className="panel-header">
+      <Toolbar className="panel-header">
         {collapsed ? <span className="panel-title">{title}</span> : header}
         <span className="spacer" />
-        <button
+        <Button
           className="panel-collapse"
           type="button"
           aria-controls={contentId}
@@ -54,8 +55,8 @@ export function CollapsiblePanel({
           onClick={() => setCollapsed((current) => !current)}
         >
           {collapsed ? <Plus /> : <Minus />}
-        </button>
-        <button
+        </Button>
+        <Button
           className="panel-close"
           type="button"
           onClick={onClose}
@@ -63,8 +64,8 @@ export function CollapsiblePanel({
           aria-label={t("closePanel")}
         >
           <X />
-        </button>
-      </div>
+        </Button>
+      </Toolbar>
       <div id={contentId} className="panel-content" hidden={collapsed}>
         {children}
       </div>

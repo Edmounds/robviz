@@ -1,5 +1,7 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+import { runtimeInputs, sharedRuntimePlugin } from "./scripts/shared-runtime.ts";
+import { pluginFilesPlugin } from "./scripts/plugin-files.ts";
 
 import { startTerminalGateway, type TerminalGatewayHandle } from "./terminal/server.ts";
 
@@ -53,12 +55,21 @@ export function terminalGatewayPlugin(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), terminalGatewayPlugin()],
+  resolve: {
+    alias: { "@robviz/core": new URL("./src/sdk/index.ts", import.meta.url).pathname },
+  },
+  plugins: [react(), process.env.ROBVIZ_START_TERMINAL === "1" && terminalGatewayPlugin(), sharedRuntimePlugin(), pluginFilesPlugin()],
+  build: {
+    rolldownOptions: {
+      input: { app: "index.html", ...(process.env.ROBVIZ_RUNTIME_CHECK === "1" ? { "runtime-check": "runtime.html" } : {}), ...runtimeInputs },
+      preserveEntrySignatures: "strict",
+    },
+  },
   server: {
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8000",
-        changeOrigin: true,
+        changeOrigin: false,
       },
     },
   },
@@ -66,7 +77,7 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8000",
-        changeOrigin: true,
+        changeOrigin: false,
       },
     },
   },

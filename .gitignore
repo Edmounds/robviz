@@ -27,3 +27,12 @@ dist-ssr
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Local plugin installations and generated SDK declarations
+/plugins/
+/sdk/types/
+/sdk/*.tgz
+
+# Planning & backup scratchpad
+.planning/
+

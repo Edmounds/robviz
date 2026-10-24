@@ -1,5 +1,5 @@
 /**
- * 插件注册表：构建期自动发现 src/plugins/<dir>/index.tsx 的 default 导出。
+ * 插件注册表：启动时加入已安装的 ESM 插件，不扫描 Core 内部源码插件。
  * 收集逻辑抽成纯函数（collectPlugins）便于单测。
  */
 import type { ComponentType } from "react";
@@ -40,9 +40,17 @@ export function collectPlugins(modules: Record<string, unknown>): RobvizPlugin[]
   return out;
 }
 
-export const plugins: RobvizPlugin[] = collectPlugins(
-  import.meta.glob("./*/index.tsx", { eager: true }),
-);
+export const plugins: RobvizPlugin[] = [];
+
+export function registerInstalledPlugins(installed: RobvizPlugin[]): void {
+  for (const plugin of installed) {
+    if (plugins.some((current) => current.id === plugin.id)) {
+      console.warn(`[plugins] 重复插件 id "${plugin.id}"，未替换已有定义`);
+      continue;
+    }
+    plugins.push(plugin);
+  }
+}
 
 export type PluginPanelDef =
   | {
@@ -109,22 +117,18 @@ export function resolvePlugins(
   }
 
   const activePlugins = allPlugins.filter((plugin) => !disabled.has(plugin.id));
-  const seenPanelKinds = new Set<string>();
-  const panels: PluginPanelDef[] = [];
+  const seenPanelKinds = new Set<string>(["3d"]);
+  const panels: PluginPanelDef[] = [{
+    kind: "3d",
+    title: (ctx) => ctx.locale === "en" ? "3D View" : "3D 视图",
+    pluginId: "@core",
+    builtinKind: "3d",
+  }];
   for (const plugin of activePlugins) {
     for (const panel of plugin.panels ?? []) {
       if (panel.builtinKind === "3d") {
-        if (seenPanelKinds.has("3d")) {
-          console.warn(`[plugins] 重复内置 3D 面板绑定（${plugin.id}），已跳过`);
-          continue;
-        }
-        seenPanelKinds.add("3d");
-        panels.push({
-          kind: "3d",
-          title: panel.title,
-          pluginId: plugin.id,
-          builtinKind: "3d",
-        });
+        console.warn(`[plugins] 3D 是宿主面板，忽略插件绑定（${plugin.id}）`);
+        continue;
       } else {
         const kind = `${plugin.id}:${panel.kind}`;
         if (seenPanelKinds.has(kind)) {
@@ -205,11 +209,3 @@ export function resolvePlugins(
 
   return { activePlugins, panels, sections, displays, viewportTools, pages, services: allServices };
 }
-
-const resolved = resolvePlugins(plugins, []);
-export const pluginPanels = resolved.panels;
-export const pluginSections = resolved.sections;
-export const pluginDisplays = resolved.displays;
-export const pluginViewportTools = resolved.viewportTools;
-export const pluginPages = resolved.pages;
-export const pluginServices = resolved.services;

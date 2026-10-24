@@ -1,6 +1,7 @@
 /** WebRTC image preview. Overlays are already part of the encoded video. */
 import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { Button, Select, Toolbar } from "@robviz/core";
 
 import type { WorkerBridge } from "../bridge/WorkerBridge";
 import type { TopicInfo } from "../core/FoxgloveConnection";
@@ -159,7 +160,7 @@ export function ImagePanel({
 
   const sourceAvailable = imageTopics.some((item) => item.topic === topic);
   const mediaUrl = webRtcManager.deriveMediaUrl(
-    bridge.url || "ws://localhost:8765",
+    bridge?.url || "ws://localhost:8765",
     configuredMediaUrl,
   );
 
@@ -237,7 +238,7 @@ export function ImagePanel({
         {fixedTopic ? (
           <span className="panel-meta" title={fixedTopic}>{fixedTopic}</span>
         ) : (
-          <select
+          <Select
             aria-label={t("chooseImageTopic")}
             value={sourceAvailable ? topic : ""}
             onChange={(e) => {
@@ -252,11 +253,11 @@ export function ImagePanel({
                 {t.topic}
               </option>
             ))}
-          </select>
+          </Select>
         )}
         {topic && (
           <>
-            <select
+            <Select
               value={targetFps}
               title={t("targetFps")}
               onChange={(e) => {
@@ -273,36 +274,26 @@ export function ImagePanel({
               <option value={15}>15 FPS</option>
               <option value={20}>20 FPS</option>
               <option value={30}>30 FPS</option>
-            </select>
+            </Select>
           </>
         )}
         {topic && (
-          <span className="panel-meta" style={{ color: "#38bdf8", fontWeight: 600 }}>
+          <span className="panel-meta">
             WebRTC
           </span>
         )}
         {webrtcStats?.status === "error" && (
-          <button
+          <Button
             type="button"
-            className="panel-btn"
-            style={{
-              fontSize: "var(--fs-meta)",
-              padding: "2px 6px",
-              marginLeft: 4,
-              background: "#ef4444",
-              color: "#fff",
-              border: "none",
-              borderRadius: 3,
-              cursor: "pointer",
-            }}
+            variant="danger"
             title="重新连接 WebRTC 流"
             onClick={() => webRtcManager.reconnect(topic, mediaUrl)}
           >
             重连
-          </button>
+          </Button>
         )}
         <div className="panel-actions" style={{ display: "inline-flex", gap: 3, marginLeft: 4 }}>
-          <button
+          <Button
             type="button"
             className="panel-btn icon-action"
             title="放大"
@@ -310,8 +301,8 @@ export function ImagePanel({
             onClick={handleZoomIn}
           >
             <ZoomIn />
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             className="panel-btn icon-action"
             title="缩小"
@@ -319,8 +310,8 @@ export function ImagePanel({
             onClick={handleZoomOut}
           >
             <ZoomOut />
-          </button>
-          <button
+          </Button>
+          <Button
             type="button"
             className="panel-btn icon-action"
             title="自适应"
@@ -328,7 +319,7 @@ export function ImagePanel({
             onClick={handleResetFit}
           >
             <Maximize2 />
-          </button>
+          </Button>
         </div>
         <span className="panel-meta">{displayMeta}</span>
     </>
@@ -378,7 +369,7 @@ export function ImagePanel({
             />
         </div>
         {topic && (!sourceAvailable || webrtcStats?.status === "error") && (
-          <div role="status" style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", background: "#0f172a", color: "#94a3b8", pointerEvents: "none" }}>
+          <div role="status" style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", background: "var(--canvas)", color: "var(--text-muted)", pointerEvents: "none" }}>
             {webrtcStats?.statusText || "等待视频画面..."}
           </div>
         )}
@@ -388,7 +379,7 @@ export function ImagePanel({
   if (embedded) {
     return (
       <div className="panel dock-panel-content">
-        <div className="panel-header">{header}</div>
+        <Toolbar className="panel-header">{header}</Toolbar>
         <div className="panel-content">{content}</div>
       </div>
     );

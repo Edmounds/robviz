@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
 # flake8: noqa: E501
 import asyncio
+import ipaddress
 import json
 import logging
 import math
+from pathlib import Path
 import re
 import threading
+import time
+from urllib.parse import urlparse
 from typing import Dict, Set
 
 # Step 1: Initialize ROS 2 BEFORE GStreamer to prevent FastDDS / libcrypto symbol conflicts
 import rclpy
 from rclpy.node import Node
+from std_srvs.srv import Trigger
+from robviz_web_server.image_settings import load_image_settings
+from .video_frames import save_raw_png, validate_and_extract_color
 
 # Step 2: GStreamer imports (Gst.init called in main after rclpy.init)
 import gi
@@ -29,6 +36,19 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(na
 logger = logging.getLogger('RobvizVideoGateway')
 
 
+def is_lan_or_loopback(host_str: str) -> bool:
+    if not host_str:
+        return False
+    host_only = host_str.split(':')[0].strip().strip('[]')
+    if host_only in ('localhost', '127.0.0.1', '::1') or host_only.endswith('.local'):
+        return True
+    try:
+        ip = ipaddress.ip_address(host_only)
+        return ip.is_private or ip.is_loopback or ip.is_link_local
+    except ValueError:
+        return False
+
+
 class GatewayNode(Node):
     def __init__(self):
         super().__init__('robviz_video_gateway')
@@ -39,6 +59,12 @@ class GatewayNode(Node):
         self.declare_parameter('start_bitrate_kbps', 1000)
         self.declare_parameter('max_bitrate_kbps', 1000)
         self.declare_parameter('prefer_hardware', True)
+        self.declare_parameter('settings_file', '')
+        self.declare_parameter('capture_topic', '')
+        self.declare_parameter('capture_output_dir', './data/captures')
+        self.declare_parameter('allow_remote_capture', False)
+        self.declare_parameter('allowed_hosts', ['localhost:8787', '127.0.0.1:8787'])
+        self.declare_parameter('allowed_origins', ['http://localhost:5173', 'http://127.0.0.1:5173'])
 
         self.host = self.get_parameter('host').get_parameter_value().string_value
         self.port = self.get_parameter('port').get_parameter_value().integer_value
@@ -60,6 +86,39 @@ class GatewayNode(Node):
             ),
             'encoder_type': 'vaapi',  # default, resolved in main()
         }
+        self.settings = None
+        self.server = None
+        self.reload_service = self.create_service(Trigger, '/robviz/reload_image_settings', self.reload_settings)
+
+    def reload_settings(self, _request, response):
+        try:
+            filename = str(self.get_parameter('settings_file').value)
+            if not filename or not self.server:
+                raise ValueError('Configure settings_file to the HTTP service image-settings.json')
+            settings = load_image_settings(Path(filename).expanduser().absolute())
+            if 'session' not in settings:
+                raise ValueError('Runtime settings require a session')
+            async def apply():
+                for streamer in self.server.streamers.values():
+                    values = settings['rgb']
+                    # Pixel encoding, not the topic name, selects depth settings.
+                    frame, _ = streamer.get_latest_raw_frame()
+                    if frame is not None and frame.encoding == '16UC1':
+                        values = settings['depth']
+                    streamer.config['max_fps'] = values['max_fps']
+                    streamer.max_bitrate_kbps = int(values['target_bitrate_mbps'] * 1000)
+                    streamer.current_bitrate_kbps = streamer.max_bitrate_kbps
+                    streamer.recalculate_fps()
+                    if streamer.encoder:
+                        streamer.encoder.set_property('bitrate', streamer.current_bitrate_kbps)
+                self.settings = settings
+            asyncio.run_coroutine_threadsafe(apply(), self.server.loop).result(timeout=5)
+            response.success = True
+            response.message = json.dumps({'version': settings['version'], 'session': settings['session']})
+        except Exception as exc:
+            response.success = False
+            response.message = str(exc)
+        return response
 
 
 class GatewayServer:
@@ -67,6 +126,9 @@ class GatewayServer:
         self.ros_node = ros_node
         self.loop = loop
         self.streamers: Dict[str, TopicStreamer] = {}
+        self.ros_node.server = self
+        self.capture_saving = False
+        self.active_websockets = set()
 
         # GLib mainloop for GStreamer WebRTC events
         self.glib_loop = GLib.MainLoop()
@@ -80,14 +142,91 @@ class GatewayServer:
     def get_or_create_streamer(self, topic: str) -> TopicStreamer:
         if topic not in self.streamers:
             streamer = TopicStreamer(topic, self.ros_node, self.loop, self.ros_node.config)
+            if self.ros_node.settings:
+                values = self.ros_node.settings['rgb']
+                streamer.config = {**streamer.config, 'max_fps': values['max_fps']}
+                streamer.max_bitrate_kbps = int(values['target_bitrate_mbps'] * 1000)
+                streamer.current_bitrate_kbps = streamer.max_bitrate_kbps
 
             def remove_empty_streamer():
-                if not streamer.viewers:
+                if not streamer.viewers and not streamer.capture_viewers:
                     self.streamers.pop(topic, None)
 
             streamer.on_empty = remove_empty_streamer
             self.streamers[topic] = streamer
         return self.streamers[topic]
+
+    def metadata(self):
+        streams = {name: {'transport': 'webrtc', 'available': self.ros_node.count_publishers(name) > 0}
+                   for name, types in self.ros_node.get_topic_names_and_types()
+                   if 'sensor_msgs/msg/Image' in types and self.valid_topic(name)}
+        return {'type': 'meta', 'streams': streams, 'protocolVersion': 1}
+
+    def check_origin(self, request):
+        allowed_hosts = self.ros_node.get_parameter('allowed_hosts').value
+        if '*' not in allowed_hosts and request.host not in allowed_hosts and not is_lan_or_loopback(request.host):
+            return False
+        origin = request.headers.get('Origin')
+        if not origin:
+            return True  # Non-browser diagnostics. Capture still requires an Origin.
+        parsed = urlparse(origin)
+        if parsed.scheme not in ('http', 'https') or origin != f'{parsed.scheme}://{parsed.netloc}':
+            return False
+        return (parsed.netloc == request.host or is_lan_or_loopback(parsed.netloc) or
+                origin in self.ros_node.get_parameter('allowed_origins').value)
+
+    async def capture_command(self, data, ws_id, request, selected):
+        kind, req_id = data.get('type'), data.get('requestId')
+        result_type = {'getCaptureInfo': 'captureInfo', 'setCaptureTopic': 'captureTopicResult', 'captureFrame': 'captureResult'}[kind]
+        result = {'type': result_type, 'requestId': req_id if isinstance(req_id, str) else '', 'success': False}
+        try:
+            if not isinstance(req_id, str) or not 1 <= len(req_id) <= 128:
+                raise ValueError('Invalid requestId')
+            available = list(self.metadata()['streams'])
+            topic = data.get('topic') if kind == 'setCaptureTopic' else (
+                selected.topic if selected else str(self.ros_node.get_parameter('capture_topic').value) or next(iter(available), ''))
+            if not self.valid_topic(topic) or topic not in available:
+                raise ValueError('Capture topic is not an available Image source')
+            channel = self.get_or_create_streamer(topic)
+            channel.add_capture_client(ws_id)
+            if selected is not None and selected is not channel:
+                selected.remove_capture_client(ws_id)
+            selected = channel
+            if kind == 'setCaptureTopic':
+                return {**result, 'success': True, 'topic': topic}, selected
+            frame, received = selected.get_latest_raw_frame()
+            fresh = frame is not None and time.monotonic() - received <= 1
+            if fresh:
+                try:
+                    validate_and_extract_color(frame)
+                except ValueError:
+                    fresh = False
+            output = str(Path(self.ros_node.get_parameter('capture_output_dir').value).expanduser().absolute())
+            if kind == 'getCaptureInfo':
+                names = sorted(Path(output).glob('*.png'), key=lambda p: p.stat().st_mtime) if Path(output).is_dir() else []
+                return {**result, 'topic': topic, 'availableTopics': available, 'outputDir': output,
+                        'hasFrame': fresh, 'totalCount': len(names), 'lastFileName': names[-1].name if names else None,
+                        'width': int(frame.width) if fresh else 0, 'height': int(frame.height) if fresh else 0}, selected
+            if not request.headers.get('Origin') or not self.check_origin(request):
+                raise PermissionError('Capture write requires an allowed Origin')
+            if not is_lan_or_loopback(request.remote or '') and not self.ros_node.get_parameter('allow_remote_capture').value:
+                raise PermissionError('Remote capture writes are disabled. Use an SSH tunnel.')
+            if not fresh:
+                raise ValueError('No fresh supported color frame')
+            if self.capture_saving:
+                raise ValueError('A capture task is already in progress')
+            self.capture_saving = True
+            async def save():
+                try:
+                    return await asyncio.to_thread(save_raw_png, frame, output)
+                finally:
+                    self.capture_saving = False
+            task = self.loop.create_task(save())
+            saved = await asyncio.shield(task)
+            return {**result, **saved, 'success': True}, selected
+        except Exception as exc:
+            logger.warning('Capture request failed: %s', exc)
+            return {**result, 'error': str(exc)}, selected
 
     @staticmethod
     def valid_topic(topic):
@@ -106,7 +245,7 @@ class GatewayServer:
             fps = float(value)
         except (TypeError, ValueError):
             return default
-        return max(1.0, min(30.0, fps)) if math.isfinite(fps) else default
+        return max(1.0, min(60.0, fps)) if math.isfinite(fps) else default
 
     async def handle_index(self, request):
         html = """<!DOCTYPE html>
@@ -294,10 +433,14 @@ class GatewayServer:
         return web.Response(text=html, content_type='text/html')
 
     async def handle_ws(self, request):
+        if not self.check_origin(request):
+            return web.Response(status=403, text='Forbidden Host or Origin')
         ws = web.WebSocketResponse(heartbeat=15, max_msg_size=64 * 1024)
         await ws.prepare(request)
         ws_id = str(id(ws))
         watched_topics: Set[str] = set()
+        capture = None
+        self.active_websockets.add(ws)
         logger.info(f"Client connected: {ws_id}")
 
         async def send_json_cb(payload):
@@ -316,6 +459,19 @@ class GatewayServer:
                     mtype = data.get('type')
                     topic = data.get('topic')
                     if not isinstance(mtype, str):
+                        continue
+
+                    if mtype == 'getMeta':
+                        await ws.send_json(self.metadata())
+                        continue
+                    if mtype in ('getCaptureInfo', 'setCaptureTopic', 'captureFrame'):
+                        result, capture = await self.capture_command(data, ws_id, request, capture)
+                        await ws.send_json(result)
+                        continue
+                    if mtype == 'unwatchCapture':
+                        if capture:
+                            capture.remove_capture_client(ws_id)
+                            capture = None
                         continue
 
                     if mtype == 'watch':
@@ -368,6 +524,9 @@ class GatewayServer:
                         elif isinstance(data, dict) and topic in self.streamers:
                             self.streamers[topic].handle_telemetry(ws_id, data)
         finally:
+            self.active_websockets.discard(ws)
+            if capture:
+                capture.remove_capture_client(ws_id)
             logger.info(f"Client disconnected: {ws_id}")
             for t in list(watched_topics):
                 if t in self.streamers:
@@ -406,7 +565,12 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        loop.run_until_complete(asyncio.gather(*(ws.close() for ws in list(server.active_websockets))))
         loop.run_until_complete(app_runner.cleanup())
+        for streamer in list(server.streamers.values()):
+            streamer.capture_viewers.clear()
+            streamer.stop_streaming()
+            streamer.release_subscription()
         ros_node.destroy_node()
         rclpy.shutdown()
 

@@ -1,0 +1,69 @@
+/* Shared UI follows the existing 3D home page. Colors come from host tokens. */
+.rv-ui {
+  min-width: 0;
+  min-height: 0;
+  color: var(--foreground);
+  font: var(--fs-body) var(--sans);
+}
+
+:where(.rv-page) { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--canvas); }
+.rv-panel-body { padding: var(--panel-gap); overflow: auto; }
+.rv-panel-body > .rv-field + .rv-field { margin-top: var(--panel-gap); }
+.rv-toolbar, .rv-actions { display: flex; align-items: center; flex-wrap: wrap; gap: var(--panel-gap); }
+.rv-toolbar { flex: none; padding: 4px 8px; border-bottom: 1px solid var(--border-soft); }
+.rv-actions { margin-block: var(--panel-gap); }
+
+.rv-button, .rv-select, .rv-input, .rv-textarea {
+  min-width: 0;
+  min-height: var(--ctl-min-h);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-ctl);
+  background: transparent;
+  color: var(--foreground-soft);
+  font: var(--fs-ui) var(--sans);
+  padding: 3px 8px;
+  transition: color 180ms ease, border-color 180ms ease, background-color 180ms ease;
+}
+.rv-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; }
+.rv-button:hover:not(:disabled) { color: var(--foreground); border-color: var(--foreground); }
+.rv-button-primary, .rv-button.is-selected, .rv-button[aria-pressed="true"] {
+  background: var(--foreground); border-color: var(--foreground); color: var(--canvas);
+}
+.rv-button-danger { color: var(--status-error); border-color: var(--status-error); }
+.rv-button-danger:hover:not(:disabled) { color: var(--canvas); background: var(--status-error); border-color: var(--status-error); }
+.rv-button:disabled { opacity: 0.4; cursor: default; }
+.rv-button svg { width: 14px; height: 14px; flex: none; }
+.rv-icon-button { min-width: var(--ctl-min-h); padding: 3px; }
+.rv-select { color: var(--foreground); background: var(--canvas); }
+.rv-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: var(--fs-ui); }
+.rv-field-label, .rv-muted { color: var(--text-muted); }
+.rv-field input, .rv-field select, .rv-field textarea { width: 100%; }
+.rv-field input[type="checkbox"], .rv-field input[type="range"], .rv-field input[type="color"] { width: auto; }
+.rv-checkbox { display: inline-flex; align-items: center; gap: 6px; min-height: var(--ctl-min-h); font-size: var(--fs-ui); }
+.rv-checkbox input { margin: 0; accent-color: var(--foreground); }
+.rv-checkbox:has(input:disabled) { opacity: 0.4; }
+.rv-button:focus-visible, .rv-select:focus-visible, .rv-input:focus-visible, .rv-textarea:focus-visible, .rv-checkbox input:focus-visible {
+  outline: 2px solid var(--focus-ring); outline-offset: 3px;
+}
+
+.rv-section { display: flex; flex-direction: column; height: 100%; overflow: hidden; background: var(--canvas); }
+.rv-section-header { display: flex; align-items: center; flex-wrap: wrap; gap: var(--panel-gap); padding: 4px 8px; border-bottom: 1px solid var(--border-soft); }
+.rv-section-header h2 { flex: 1; margin: 0; color: var(--foreground); font-size: var(--fs-body); font-weight: 500; }
+.rv-section-body { flex: 1; min-height: 0; overflow: auto; padding: var(--panel-gap); }
+.rv-status { display: inline-flex; align-items: center; padding: 1px 6px; border: 1px solid var(--border-soft); border-radius: var(--radius-ctl); font-size: var(--fs-meta); }
+.rv-tone-neutral { color: var(--text-muted); }
+.rv-tone-warning { color: var(--status-warn); }
+.rv-tone-error { color: var(--status-error); }
+.rv-notice { flex: none; padding: 6px 8px; border-left: 2px solid currentColor; font-size: var(--fs-ui); overflow-wrap: anywhere; }
+.rv-empty { margin: 0; padding: var(--panel-gap); color: var(--text-muted); font-size: var(--fs-body); }
+.rv-split-handle { flex: none; position: relative; background: var(--border-soft); }
+.rv-split-handle[aria-orientation="vertical"] { width: 1px; cursor: col-resize; }
+.rv-split-handle[aria-orientation="horizontal"] { height: 1px; cursor: row-resize; }
+.rv-split-handle:hover, .rv-split-handle:focus-visible, .rv-split-handle[data-separator="active"] { background: var(--foreground); }
+.rv-split-handle:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.rv-log-terminal { height: 100%; min-height: 0; min-width: 0; padding: var(--panel-gap); overflow: hidden; background: var(--canvas); }
+.rv-log-terminal .xterm { height: 100%; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rv-button, .rv-select, .rv-input, .rv-textarea { transition: none; }
+}

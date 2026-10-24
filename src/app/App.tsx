@@ -1,6 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Grid3X3, Moon, PanelTopOpen, Pencil, Plus, Settings, SquareTerminal, Sun, X } from "lucide-react";
+import { Grid3X3, Moon, PanelTopOpen, Pencil, Plus, Settings, Sun, X } from "lucide-react";
 import * as THREE from "three";
 
 import { WorkerBridge } from "../bridge/WorkerBridge";
@@ -21,7 +21,6 @@ import type { LayoutConfig, PointCloudSettings } from "../core/layoutConfig";
 import { connectionTargetLabel } from "../core/connectionTarget";
 import {
   DEFAULT_POINT_CLOUD_SETTINGS,
-  DEFAULT_WORKSPACE_LAYOUT,
 } from "../core/layoutConfig";
 import { TfBuffer } from "../core/TfBuffer";
 import type { TFMessage } from "../core/types";
@@ -33,7 +32,6 @@ import {
   type WorkspacePanel,
 } from "../core/workspacePanels";
 import { resolveServiceUrl } from "../core/appConfig";
-import { ImagePanel } from "../panels/ImagePanel";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { PointCloudSettingsPanel } from "../panels/PointCloudSettingsPanel";
 import { TfTreeSection } from "../panels/TfTreeSection";
@@ -61,11 +59,6 @@ import type { SerializedDockview } from "dockview-react";
 const DEFAULT_URL = "ws://localhost:8765";
 const PCD_KEY = "__pcd__";
 const THEME_KEY = "robviz.theme";
-const TERMINAL_HEIGHT_KEY = "robviz.terminal.height";
-const TerminalPanel = lazy(() => import("../panels/TerminalPanel"));
-const PlotPanel = lazy(() =>
-  import("../panels/PlotPanel").then((module) => ({ default: module.PlotPanel })),
-);
 
 const BUILTIN_DISPLAY_FACTORIES: Record<string, () => Display> = {
   "sensor_msgs/msg/LaserScan": () => new LaserScanRenderer(),
@@ -280,9 +273,6 @@ function RobotSessionApp({
   const [initializedPluginSectionIds, setInitializedPluginSectionIds] = useState<Set<string>>(
     () => new Set(session.initializedPluginSectionIds ?? []),
   );
-  const [workspace, setWorkspace] = useState<LayoutConfig["workspace"]>(
-    { ...DEFAULT_WORKSPACE_LAYOUT, urdfInspectorPercent: session.urdfInspectorPercent },
-  );
   const [url, setUrl] = useState(session.url);
   const [activeBridgeUrl, setActiveBridgeUrl] = useState(session.url);
   const [connState, setConnState] = useState<ConnectionState>("closed");
@@ -321,14 +311,7 @@ function RobotSessionApp({
   const [dockLayout, setDockLayout] = useState<SerializedDockview | undefined>(
     session.dockLayout as SerializedDockview | undefined,
   );
-  const [terminalMounted, setTerminalMounted] = useState(false);
-  const [terminalVisible, setTerminalVisible] = useState(false);
-  const [terminalHeight, setTerminalHeight] = useState(() => {
-    const stored = Number(localStorage.getItem(TERMINAL_HEIGHT_KEY));
-    const maximum = Math.max(160, Math.floor(window.innerHeight * 0.6));
-    const preferred = Number.isFinite(stored) && stored >= 160 ? stored : 280;
-    return Math.min(maximum, preferred);
-  });
+  const [toolOutlet, setToolOutlet] = useState<HTMLDivElement | null>(null);
   const sceneMountStateRef = useRef({
     active,
     fixedFrame,
@@ -445,7 +428,13 @@ function RobotSessionApp({
     const mountState = sceneMountStateRef.current;
     const displaySubscriptions = displaySubsRef.current;
 
-    const scene = new SceneManager(sceneCanvas, tf);
+    let scene: SceneManager;
+    try {
+      scene = new SceneManager(sceneCanvas, tf);
+    } catch (error) {
+      console.warn("[3d] 无法创建 3D 渲染上下文:", error);
+      return;
+    }
     sceneRef.current = scene;
     scene.onStats = setSceneStats;
     scene.onDisplayError = (topic, message) => setLastError(`${topic} ${message}`);
@@ -541,10 +530,6 @@ function RobotSessionApp({
   useEffect(() => {
     sceneRef.current?.setActive(active);
     bridgeRef.current?.setStreamingActive(active);
-    if (!active) {
-      setTerminalVisible(false);
-      setTerminalMounted(false);
-    }
   }, [active, ready, sceneGeneration]);
 
   const toggleTheme = useCallback(() => {
@@ -595,26 +580,6 @@ function RobotSessionApp({
     setActiveBridgeUrl(url);
     bridgeRef.current?.connect(url);
   }, [url]);
-
-  const toggleTerminal = useCallback(() => {
-    setTerminalMounted(true);
-    setTerminalVisible((current) => !current);
-  }, []);
-
-  useEffect(() => {
-    if (!active) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!event.ctrlKey || event.metaKey || event.altKey || event.code !== "Backquote") return;
-      event.preventDefault();
-      toggleTerminal();
-    };
-    window.addEventListener("keydown", onKeyDown, { capture: true });
-    return () => window.removeEventListener("keydown", onKeyDown, { capture: true });
-  }, [active, toggleTerminal]);
-
-  useEffect(() => {
-    localStorage.setItem(TERMINAL_HEIGHT_KEY, String(terminalHeight));
-  }, [terminalHeight]);
 
   const toggleTopic = useCallback((topic: string, schemaName: string) => {
     setDesired((prev) => {
@@ -704,7 +669,6 @@ function RobotSessionApp({
       groundVisible: settings.groundVisible,
       tfAxesLineWidth: settings.tfAxesLineWidth,
     },
-    urdfInspectorPercent: workspace.urdfInspectorPercent,
     pcdVoxel,
     followFrame,
     activeTopics: [...desired].map(([topic, entry]) => ({
@@ -718,7 +682,7 @@ function RobotSessionApp({
     panels: panels.map((panel) => ({ ...panel })),
     dockLayout,
     camera: sceneRef.current?.getCameraState() ?? savedCameraRef.current,
-  }), [desired, dockLayout, fixedFrame, followFrame, initializedPluginSectionIds, mode, panels, pcdVoxel, pluginStates, session.autoAddPluginSections, session.id, session.mediaUrl, session.name, session.networkOverrides, settings.groundVisible, settings.tfAxesLineWidth, url, workspace.urdfInspectorPercent]);
+  }), [desired, dockLayout, fixedFrame, followFrame, initializedPluginSectionIds, mode, panels, pcdVoxel, pluginStates, session.autoAddPluginSections, session.id, session.mediaUrl, session.name, session.networkOverrides, settings.groundVisible, settings.tfAxesLineWidth, url]);
 
   const buildSessionConfigRef = useRef(buildSessionConfig);
   buildSessionConfigRef.current = buildSessionConfig;
@@ -1071,7 +1035,6 @@ function RobotSessionApp({
   }, [buildSessionConfig, onTogglePlugin, settings.disabledPluginIds, settings.language]);
 
   const resetWorkspaceLayout = useCallback(() => {
-    setWorkspace({ ...DEFAULT_WORKSPACE_LAYOUT });
     setDockLayout(undefined);
   }, []);
 
@@ -1079,37 +1042,8 @@ function RobotSessionApp({
     .filter((t) => !TF_TOPICS.has(t.topic))
     .sort((a, b) => a.topic.localeCompare(b.topic));
 
-  const allPluginPanelKinds = useMemo(
-    () =>
-      new Set(
-        plugins.flatMap((plugin) =>
-          (plugin.panels ?? []).map((panel) =>
-            panel.builtinKind === "3d" ? "3d" : `${plugin.id}:${panel.kind}`,
-          ),
-        ),
-      ),
-    [],
-  );
-  const activePluginPanelKinds = useMemo(
-    () => new Set(resolvedPlugins.panels.map((panel) => panel.kind)),
-    [resolvedPlugins.panels],
-  );
-  const visiblePanels = panels.filter((panel) => {
-    if (panel.kind === "3d") {
-      return activePluginPanelKinds.has("3d");
-    }
-    if (panel.kind.startsWith("plugin-section:")) {
-      return resolvedPlugins.sections.some((section) => `plugin-section:${section.id}` === panel.kind);
-    }
-    return (
-      panel.kind === "image" ||
-      panel.kind === "plot" ||
-      panel.kind === "topics" ||
-      panel.kind === "tf-tree" ||
-      !allPluginPanelKinds.has(panel.kind) ||
-      activePluginPanelKinds.has(panel.kind)
-    );
-  });
+  // Keep unavailable plugin panels as placeholders, preserving Dockview geometry and state.
+  const visiblePanels = panels;
   const hasThreeDPanel = visiblePanels.some((panel) => panel.kind === "3d");
 
   const getServiceUrl = useCallback((serviceId: string) => {
@@ -1137,8 +1071,9 @@ function RobotSessionApp({
       pluginStates,
       onPluginStateChange: updatePluginState,
       getServiceUrl,
+      mediaUrl: session.mediaUrl,
     };
-  }, [active, connState, fixedFrame, getServiceUrl, pluginStates, ready, settings.language, theme, topics, updatePluginState]);
+  }, [active, connState, fixedFrame, getServiceUrl, pluginStates, ready, session.mediaUrl, settings.language, theme, topics, updatePluginState]);
 
   pluginCtxRef.current = pluginCtx ?? null;
   viewportToolsRef.current = resolvedPlugins.viewportTools;
@@ -1326,46 +1261,9 @@ function RobotSessionApp({
         </div>
       );
     }
-    if (panel.kind === "image" && ready) {
-      const imageState = storedPanel.state as
-        | { topic?: string; preferRaw?: boolean; useWebRtc?: boolean }
-        | undefined;
-      return (
-        <ImagePanel
-          embedded
-          active={active}
-          bridge={bridgeRef.current!}
-          topics={topics}
-          initialTopic={imageState?.topic}
-          initialPreferRaw={imageState?.preferRaw ?? true}
-          initialUseWebRtc={imageState?.useWebRtc !== false}
-          mediaUrl={session.mediaUrl}
-          onTopicChange={(topic, preferRaw, useWebRtc) =>
-            updatePanelState(panel.id, { topic, preferRaw, useWebRtc })
-          }
-          onClose={() => removePanel(panel.id)}
-        />
-      );
-    }
-    if (panel.kind === "plot" && ready) {
-      return (
-        <Suspense fallback={null}>
-          <PlotPanel
-            embedded
-            bridge={bridgeRef.current!}
-            topics={topics}
-            theme={theme}
-            fontScale={effectiveFontScale}
-            initialSeries={(storedPanel.state as { series?: Array<{ topic: string; field: string }> } | undefined)?.series}
-            onSeriesChange={(series) => updatePanelState(panel.id, { series })}
-            onClose={() => removePanel(panel.id)}
-          />
-        </Suspense>
-      );
-    }
     if (panel.kind.startsWith("plugin-section:") && pluginCtx) {
       const section = resolvedPlugins.sections.find((candidate) => `plugin-section:${candidate.id}` === panel.kind);
-      return section ? <div className="workspace-panel utility-panel"><section.component ctx={pluginCtx} /></div> : null;
+      if (section) return <div className="workspace-panel utility-panel"><section.component ctx={pluginCtx} /></div>;
     }
     const pluginPanel = resolvedPlugins.panels.find((candidate) => candidate.kind === panel.kind);
     if (pluginPanel && pluginPanel.component && pluginCtx) {
@@ -1385,7 +1283,7 @@ function RobotSessionApp({
       );
     }
     return <div className="workspace-panel"><p className="empty-hint">{t("unknownPanel", { kind: panel.kind })}</p></div>;
-  }, [active, attachSceneCanvas, cancelNav, closePcd, connState, dataTopics, desired, displayFactories, effectiveFontScale, followFrame, frames, lastError, navPreview, navTool, onNavDown, onNavMove, onNavUp, onSelectDown, onSelectMove, onSelectUp, onViewportDoubleClick, panels, pcd, pcdBusy, pcdExport, pcdTool, pcdUndo, pluginCtx, ready, removePanel, resolvedPlugins.panels, resolvedPlugins.sections, resolvedPlugins.viewportTools, sceneStats, selectRect, session.mediaUrl, settings.groundVisible, streamStats, t, tfTree, theme, toggleTopic, topics, updatePanelState, updatePointCloudSettings]);
+  }, [active, attachSceneCanvas, cancelNav, closePcd, connState, dataTopics, desired, displayFactories, followFrame, frames, lastError, navPreview, navTool, onNavDown, onNavMove, onNavUp, onSelectDown, onSelectMove, onSelectUp, onViewportDoubleClick, panels, pcd, pcdBusy, pcdExport, pcdTool, pcdUndo, pluginCtx, removePanel, resolvedPlugins.panels, resolvedPlugins.sections, resolvedPlugins.viewportTools, sceneStats, selectRect, settings.groundVisible, streamStats, t, tfTree, toggleTopic, updatePanelState, updatePointCloudSettings]);
 
   const fallbackCtx = useMemo<PluginContext>(
     () => ({
@@ -1400,8 +1298,9 @@ function RobotSessionApp({
       pluginStates,
       onPluginStateChange: updatePluginState,
       getServiceUrl,
+      mediaUrl: session.mediaUrl,
     }),
-    [active, connState, fixedFrame, getServiceUrl, pluginStates, settings.language, theme, topics, updatePluginState],
+    [active, connState, fixedFrame, getServiceUrl, pluginStates, session.mediaUrl, settings.language, theme, topics, updatePluginState],
   );
 
   const availablePageIds = useMemo(
@@ -1529,15 +1428,12 @@ function RobotSessionApp({
           />
         </div>
         <div className="topbar-actions-group">
-          <button
-            className={`icon-btn ${terminalVisible ? "active" : ""}`}
-            onClick={toggleTerminal}
-            title={t("terminal")}
-            aria-label={t("terminal")}
-            aria-pressed={terminalVisible}
-          >
-            <SquareTerminal />
-          </button>
+          {resolvedPlugins.activePlugins.flatMap((plugin) => (plugin.toolbarTools ?? []).map((tool) => (
+            <ErrorBoundary key={`${plugin.id}:${tool.id}`} name={`${plugin.id}:${tool.id}`}>
+              <tool.component ctx={pluginCtx ?? fallbackCtx} bridgeUrl={activeBridgeUrl}
+                mediaUrl={session.mediaUrl} fontScale={effectiveFontScale} isMobile={isMobile} outlet={toolOutlet} />
+            </ErrorBoundary>
+          )))}
           <button
             className="icon-btn"
             onClick={toggleTheme}
@@ -1661,8 +1557,6 @@ function RobotSessionApp({
               {[
                 ["topics", t("topics")],
                 ["tf-tree", t("tfTree")],
-                ["image", t("imagePanel")],
-                ["plot", t("plotPanel")],
               ].map(([kind, label]) => (
                 <button
                   key={kind}
@@ -1791,34 +1685,11 @@ function RobotSessionApp({
             onThemeChange={onThemeChange}
             onPluginToggle={togglePlugin}
             onResetLayout={resetWorkspaceLayout}
-            bridge={bridgeRef.current!}
-            connectionState={connState}
+            ctx={pluginCtx ?? fallbackCtx}
           />
         )}
       </main>
-      {terminalMounted && (
-        <Suspense
-          fallback={
-            <div
-              className={`terminal-drawer terminal-loading ${terminalVisible ? "visible" : "hidden"}`}
-              style={terminalVisible ? { height: terminalHeight } : undefined}
-            >
-              {t("terminalConnecting")}
-            </div>
-          }
-        >
-          <TerminalPanel
-            bridgeUrl={activeBridgeUrl}
-            gatewayUrl={getServiceUrl("terminal")}
-            theme={theme}
-            visible={terminalVisible}
-            fontScale={effectiveFontScale}
-            height={terminalHeight}
-            onHeightChange={setTerminalHeight}
-            onHide={() => setTerminalVisible(false)}
-          />
-        </Suspense>
-      )}
+      <div ref={setToolOutlet} />
     </div>
     </I18nProvider>
   );
@@ -1947,7 +1818,6 @@ export default function App() {
         return {
           ...baseSession,
           mode: targetMode,
-          dockLayout: undefined,
         };
       });
 

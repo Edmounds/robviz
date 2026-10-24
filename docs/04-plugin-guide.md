@@ -1,18 +1,29 @@
 # RobViz 插件开发指南
 
+## 共享 UI 与独立 SDK（必读）
+
+现有 3D 主页是插件的统一视觉基准。
+从 `@robviz/core` 引用共享控件、布局、媒体和反馈组件，不复制基础组件或另写一套控件样式。
+可用组件、用法及无硬件预览见 [07-shared-ui.md](07-shared-ui.md)。
+ESM 独立插件包结构与分发见 [08-plugin-packages.md](08-plugin-packages.md)。
+
+插件通过 `@robviz/core` SDK 构建，由宿主在运行时通过 Native ESM 和 Import Maps 动态加载，无需重新编译宿主。
+
 > 目标读者：为 RobViz 写插件的人和 AI agent。读完本文即可独立完成一个插件。
 
-## 0. 一分钟上手
+## 0. 插件包构建与安装
+
+官方通用插件位于独立仓库 `robviz_plugins`。插件也可作为独立包开发：
 
 ```bash
-npm run plugin:new my-plugin   # 生成 src/plugins/my-plugin/index.tsx 骨架
-# 编辑 index.tsx 实现功能
-npm run lint && npx tsc -b --noEmit && npm test   # 验证
-npm run dev                    # 打开页面即可看到插件生效
-```
+# 在插件仓库构建产物
+npm run build
+# 产物生成在 plugins/<id>/（包含 manifest.json、index.js、可选 style.css）
 
-插件 = `src/plugins/<目录名>/index.tsx` 里 **default 导出一个 `RobvizPlugin` 对象**。
-放进目录即自动生效（构建期 `import.meta.glob` 发现），不需要在任何地方注册。
+# 安装到 RobViz 宿主
+cp -R plugins/<id> /path/to/robviz/plugins/<id>
+npm run plugins:scan   # 校验包并更新 plugins/index.json
+```
 
 ## 1. 插件契约
 
@@ -27,10 +38,12 @@ interface RobvizPlugin {
   sections?: Array<{ id: string; title: string; component: ComponentType<PluginSectionProps> }>;
   viewportTools?: PluginViewportTool[];
   pages?: PluginPage[];
+  toolbarTools?: Array<{ id: string; component: ComponentType<PluginToolProps> }>;
+  settings?: Array<{ id: string; title: string | ((ctx: PluginContext) => string); component: ComponentType<PluginSectionProps> }>;
 }
 ```
 
-五类扩展点，按需实现一类或多类：
+七类扩展点，按需实现一类或多类：
 
 | 扩展点 | 出现位置 | 适合做什么 |
 | --- | --- | --- |
@@ -39,6 +52,8 @@ interface RobvizPlugin {
 | `panels` | 顶栏“添加面板”菜单；允许创建多个停靠实例（或内置 3D 绑定） | 需要较大画面的内容（自定义图表、视频、表格、3D 主机位） |
 | `sections` | 顶栏“添加面板”菜单；单实例停靠面板 | 小型状态显示、控制开关 |
 | `viewportTools` | 3D 视口工具条 | 需要主视口点选/拖拽交互的机器人功能 |
+| `toolbarTools` | 顶栏操作区 | 自有交互工具，可通过 outlet 挂载抽屉 |
+| `settings` | 设置页中的插件自有分页 | 插件配置与后端设置，不把专属协议放进 Core |
 
 两类组件都保留原有 props。区别只在宿主生命周期：`panels` 可多开，每个实例有独立 `state`；
 `sections` 以 `<plugin-id>:<section-id>` 为稳定单例，用户可以移动、合并标签、最大化、关闭并重新添加。新建会话会首次加入当时启用的插件区块；关闭状态随会话配置保存，导入已有布局不会自动插入新插件区块。
@@ -136,11 +151,11 @@ state 必须是可 JSON 序列化的普通对象。
 ### 运行时启停
 
 用户可在“设置 → 插件”中启用或停用已打包插件。开关操作会弹出确认提示（“请先保存相关内容，切换插件将刷新页面”），
-确认后同步写入浏览器存储、清除各机器主页的 Dockview 停靠排列并刷新页面重新加载；取消则不改变配置亦不刷新。
-刷新后主页根据当前启用的板块自动重新排列；用户主动关闭的面板保持关闭，未保存的内存临时草稿（地图编辑笔刷、URDF XML、航点草稿）会随刷新丢弃。
-停用插件时，其声明的停靠面板与区块仅从布局中隐藏，其面板记录与参数状态（`state`）仍保留在配置中，重新启用后自动恢复；仅在启用状态下由用户主动关闭的面板才会从配置中移除。
-停用 3D 视图（`view-3d`）时，3D 视口画布卸载，顶栏“打开 PCD”与降采样等视口控制项自动隐藏；若解析 PCD 期间视口卸载或不可用，任务会安全终止并清理状态，不访问空场景。
-顶栏拖拽排序全局保留，停用插件的入口隐藏但保留原排序位置。插件仍由 Vite 在构建期发现，设置页不负责安装、删除或运行时扫描文件夹。
+确认后同步写入浏览器存储并刷新，保留所有会话的 Dockview 排列；取消则不改变配置。
+未保存的内存草稿会随刷新丢弃，因此必须先保存编辑内容。
+停用或缺失的插件面板显示占位内容，保留几何位置与参数状态，重新安装启用后恢复。
+基础 3D 是宿主固有能力，旧 `view-3d` 禁用记录不关闭基础 3D。
+插件通过运行时 ESM 加载，禁用入口不求值。安装与扫描见 [08-plugin-packages.md](08-plugin-packages.md)。
 
 插件模块顶层代码会在应用加载时执行，无法通过启停撤销，因此不要在模块顶层创建订阅、定时器、
 WebSocket 或 DOM 监听。把副作用放进 React `useEffect` 或 display 生命周期，并在 cleanup / `dispose()`
@@ -150,8 +165,8 @@ WebSocket 或 DOM 监听。把副作用放进 React `useEffect` 或 display 生�
 
 ### 单实例区块（最简单，从这里开始）
 
-完整可运行的例子：[src/plugins/example-odom-hud/index.tsx](../src/plugins/example-odom-hud/index.tsx)
-（订阅 Odometry 显示速度，约 60 行）。
+完整例子位于官方插件仓 `src/example-odom-hud/index.tsx`。
+在 Core 中运行 `npm run plugin:new my-plugin /path/to/plugin-repository` 可生成独立插件源码与 manifest。
 
 ### 可多开停靠面板
 
@@ -206,5 +221,5 @@ const plugin: RobvizPlugin = {
 npm run lint                # 无新增告警
 npx tsc -b --noEmit        # 类型通过
 npm test                    # registry 测试会确认插件被发现
-npm run dev                 # 连接真机，手动验证功能与深浅主题下的外观
+npm run dev                 # 先在离线环境验证外观。真机操作需要单独授权。
 ```

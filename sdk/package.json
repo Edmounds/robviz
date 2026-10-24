@@ -1,0 +1,20 @@
+{
+  "name": "@robviz/core",
+  "version": "0.1.5",
+  "type": "module",
+  "description": "RobViz plugin development contract. Runtime modules are provided by the host import map.",
+  "license": "MIT",
+  "exports": { ".": { "types": "./types/sdk/index.d.ts", "default": "./index.js" } },
+  "files": ["types", "index.js"],
+  "dependencies": {
+    "@foxglove/ws-protocol": "^0.8.0",
+    "@xterm/xterm": "^6.0.0",
+    "react-resizable-panels": "^4.12.2",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "three": "^0.185.0"
+  }
+}

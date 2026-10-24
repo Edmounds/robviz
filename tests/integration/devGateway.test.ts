@@ -62,7 +62,7 @@ afterEach(async () => {
 });
 
 describe("Vite development startup", () => {
-  it("starts the terminal gateway together with the dev server", async () => {
+  it("starts the terminal gateway only when explicitly requested", async () => {
     const vitePort = await freePort();
     const gatewayPort = await freePort();
     devProcess = spawn(process.execPath, [
@@ -72,7 +72,7 @@ describe("Vite development startup", () => {
       "--port",
       String(vitePort),
     ], {
-      env: { ...process.env, ROBVIZ_TERMINAL_GATEWAY_PORT: String(gatewayPort) },
+      env: { ...process.env, ROBVIZ_START_TERMINAL: "1", ROBVIZ_TERMINAL_GATEWAY_PORT: String(gatewayPort) },
       stdio: "ignore",
     });
 

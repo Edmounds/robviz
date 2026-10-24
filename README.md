@@ -8,17 +8,15 @@
 个人自用的 Web 机器人上位机，替代 rviz / rqt 的日常功能。浏览器直连 `foxglove_bridge`，机器人侧零部署。
 
 **技术栈**：React 19 + three.js + TypeScript + Vite；连接与消息解码在 Web Worker 内完成，
-主线程只做渲染；主应用无后端、无 Electron，`npm run build` 产物是纯静态页面。
-远程终端按需启动操作电脑上的本地网关，不改变机器人侧部署。
+主线程只做渲染；主应用为轻量通用宿主，`npm run build` 产物是纯静态页面。
+各功能模块（遥控、导航、曲线、地图编辑、航点编辑、URDF、图像预览/采集、终端等）作为独立插件包动态加载，无需重新编译宿主。
 
-**功能一览**：3D 显示（Map / LaserScan / PointCloud2 / Path / Marker / URDF / TF）、
+**功能一览**：3D 显示（Map / LaserScan / PointCloud2 / Path / Marker / TF）、
 TF 视野初始自适应、VSCode 风格圆角间距与全站字体缩放自适应、
-图像面板（压缩图 + 深度图 turbo 上色 + 悬停取值）、内置航点编辑器（正式/调试 YAML、2D odom 网格、TF 新鲜度）、
-图像采集页（原始 RGB 预览、单张无损 PNG 采集至 NUC、按键/空格快捷触发与状态统计）、
-曲线面板（多话题字段对比）、
-遥控 Teleop、服务调用、Nav 目标 / 初始位姿、TF 树、视角跟踪目标、大 PCD 加载清理、
-2D 地图编辑、布局配置保存/加载（rviz 式）、分割停靠工作区、多机器标签页、中英文与明暗主题、
-远程终端、运行时插件开关。
+TF 树、视角跟踪目标、大 PCD 加载清理、布局配置保存/加载（rviz 式）、分割停靠工作区、
+多机器标签页、中英文与明暗主题、动态 ESM 插件系统与统一设计系统。
+业务与专业工具由官方插件包（`robviz_plugins`）提供：
+遥控 Teleop、Nav 目标与初始位姿、曲线面板、2D 地图编辑、航点编辑与底图对齐、URDF 模型编辑、图像面板与 WebRTC 视频流、图像无损采集、远程 Shell 终端。
 
 **稳定性**：四层故障舱壁（面板错误边界 / 消息分发隔离 / 显示器隔离 / 连接 Worker 崩溃自愈），
 任何单个功能崩溃不影响其余功能与数据流，已用故障注入实测（技术方案 §8.8）。
@@ -54,7 +52,8 @@ npm install
 npm run dev
 ```
 
-`npm run dev` 会同时启动 Vite 和本机终端网关，不需要再单独运行终端服务。
+`npm run dev` 只启动前端，不默认启动终端网关。需要时另运行 `npm run terminal`。
+本机开发也可使用 `ROBVIZ_START_TERMINAL=1 npm run dev` 显式同时启动终端网关。
 
 浏览器打开 dev server 地址，连接机器人上的 `foxglove_bridge`，例如
 `ws://<robot-ip>:8765`。机器人侧启动方式见[连接真机](#连接真机)。

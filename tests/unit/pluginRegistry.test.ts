@@ -32,8 +32,8 @@ describe("plugin registry", () => {
     warn.mockRestore();
   });
 
-  it("示例插件被自动发现", () => {
-    expect(plugins.some((p) => p.id === "example-odom-hud")).toBe(true);
+  it("没有安装插件时注册表为空", () => {
+    expect(plugins).toEqual([]);
   });
 
   it("跳过与目录名不一致的插件 id", () => {
@@ -63,28 +63,14 @@ describe("plugin registry", () => {
     ];
 
     const enabled = resolvePlugins(all, []);
-    expect(enabled.panels.map((panel) => panel.kind)).toEqual(["a:main"]);
+    expect(enabled.panels.map((panel) => panel.kind)).toEqual(["3d", "a:main"]);
     expect(enabled.sections.map((section) => section.id)).toEqual(["b:main"]);
     expect(enabled.displays["custom/Thing"]).toBe(displayA);
 
     const disabledOwner = resolvePlugins(all, ["a"]);
-    expect(disabledOwner.panels).toEqual([]);
+    expect(disabledOwner.panels.map((panel) => panel.kind)).toEqual(["3d"]);
     expect(disabledOwner.sections.map((section) => section.id)).toEqual(["b:main"]);
     expect(disabledOwner.displays["custom/Thing"]).toBeUndefined();
-  });
-
-  it("ships Teleop and Nav enabled by default with plugin-owned sections and viewport tools", () => {
-    const teleop = plugins.find((plugin) => plugin.id === "teleop");
-    const nav = plugins.find((plugin) => plugin.id === "nav-goals");
-    expect(teleop?.sections?.map((section) => section.id)).toContain("teleop");
-    expect(nav?.sections?.map((section) => section.id)).toContain("config");
-    expect(nav?.viewportTools?.map((tool) => tool.id)).toEqual(["goal", "initialpose"]);
-
-    const enabled = resolvePlugins(plugins, []);
-    expect(enabled.sections.map((section) => section.id)).toContain("teleop:teleop");
-    expect(enabled.viewportTools.map((tool) => tool.id)).toEqual(["nav-goals:goal", "nav-goals:initialpose"]);
-    expect(resolvePlugins(plugins, ["teleop"]).sections.map((section) => section.id)).not.toContain("teleop:teleop");
-    expect(resolvePlugins(plugins, ["nav-goals"]).viewportTools).toEqual([]);
   });
 
   it("resolves viewport tools and removes them with the owning plugin", () => {
@@ -147,23 +133,14 @@ describe("plugin registry", () => {
     expect(disabled.pages.map((p) => p.id)).toEqual(["custom-plugin:analytics"]);
   });
 
-  it("resolves builtin 3D panel and bundles all 5 core plugins", () => {
-    const corePluginIds = ["view-3d", "map-editor", "urdf-editor", "waypoints-editor", "image-capture"];
-    for (const id of corePluginIds) {
-      expect(plugins.some((p) => p.id === id)).toBe(true);
-    }
-
-    const enabled = resolvePlugins(plugins, []);
+  it("keeps builtin 3D available without any plugin", () => {
+    const enabled = resolvePlugins([], []);
     const threeDPanel = enabled.panels.find((p) => p.kind === "3d");
     expect(threeDPanel).toBeDefined();
     expect(threeDPanel?.builtinKind).toBe("3d");
 
     const disabledThreeD = resolvePlugins(plugins, ["view-3d"]);
-    expect(disabledThreeD.panels.some((p) => p.kind === "3d")).toBe(false);
-
-    expect(enabled.pages.map((p) => p.id)).toContain("map");
-    expect(enabled.pages.map((p) => p.id)).toContain("urdf");
-    expect(enabled.pages.map((p) => p.id)).toContain("waypoints");
-    expect(enabled.pages.map((p) => p.id)).toContain("capture");
+    expect(disabledThreeD.panels.some((p) => p.kind === "3d")).toBe(true);
+    expect(resolvePlugins([], ["view-3d"]).panels.map((panel) => panel.kind)).toEqual(["3d"]);
   });
 });

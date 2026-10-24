@@ -47,7 +47,7 @@ const robotSessionSchema = z.object({
     groundVisible: z.boolean().default(DEFAULT_APP_SETTINGS.groundVisible),
     tfAxesLineWidth: z.number().min(1).max(6).default(DEFAULT_APP_SETTINGS.tfAxesLineWidth),
   }),
-  urdfInspectorPercent: z.number().gt(0).lte(100).default(35),
+  urdfInspectorPercent: z.number().gt(0).lte(100).optional(),
   pcdVoxel: z.number().nonnegative().default(0.1),
   followFrame: z.string().optional(),
   activeTopics: z.array(activeTopicSchema).default([]),
@@ -57,6 +57,11 @@ const robotSessionSchema = z.object({
   panels: z.array(panelSchema).default([]),
   dockLayout: z.unknown().optional(),
   camera: z.object({ position: vec3, target: vec3 }).optional(),
+}).transform(({ urdfInspectorPercent, ...session }) => {
+  if (urdfInspectorPercent !== undefined && session.pluginState["urdf-editor"] === undefined) {
+    session.pluginState["urdf-editor"] = { inspectorPercent: urdfInspectorPercent };
+  }
+  return session;
 });
 
 export type RobotSessionConfig = z.infer<typeof robotSessionSchema>;
@@ -224,7 +229,6 @@ export function createDefaultSession(id: string, name: string): RobotSessionConf
       groundVisible: DEFAULT_APP_SETTINGS.groundVisible,
       tfAxesLineWidth: DEFAULT_APP_SETTINGS.tfAxesLineWidth,
     },
-    urdfInspectorPercent: 35,
     pcdVoxel: 0.1,
     activeTopics: [],
     pluginState: {},
@@ -340,6 +344,58 @@ function migrateTeleopPanels(config: AppConfig): AppConfig {
   return config;
 }
 
+function migrateLegacyPlotPanels(config: AppConfig): AppConfig {
+  for (const session of config.sessions) {
+    const migratedIds = new Set<string>();
+    for (const panel of session.panels) {
+      if (panel.kind !== "plot") continue;
+      panel.kind = "plot:plot";
+      migratedIds.add(panel.id);
+    }
+    if (migratedIds.size === 0) continue;
+    const layout = session.dockLayout;
+    if (!layout || typeof layout !== "object" || !("panels" in layout)) continue;
+    const dockPanels = layout.panels;
+    if (!dockPanels || typeof dockPanels !== "object" || Array.isArray(dockPanels)) continue;
+    for (const [id, panel] of Object.entries(dockPanels)) {
+      if (!migratedIds.has(id) || !panel || typeof panel !== "object") continue;
+      const params = "params" in panel ? panel.params : undefined;
+      panel.params = {
+        ...(params && typeof params === "object" && !Array.isArray(params) ? params : {}),
+        panelId: id,
+        kind: "plot:plot",
+      };
+    }
+  }
+  return config;
+}
+
+function migrateLegacyImagePanels(config: AppConfig): AppConfig {
+  for (const session of config.sessions) {
+    const migratedIds = new Set<string>();
+    for (const panel of session.panels) {
+      if (panel.kind !== "image") continue;
+      panel.kind = "image:image";
+      migratedIds.add(panel.id);
+    }
+    if (migratedIds.size === 0) continue;
+    const layout = session.dockLayout;
+    if (!layout || typeof layout !== "object" || !("panels" in layout)) continue;
+    const dockPanels = layout.panels;
+    if (!dockPanels || typeof dockPanels !== "object" || Array.isArray(dockPanels)) continue;
+    for (const [id, panel] of Object.entries(dockPanels)) {
+      if (!migratedIds.has(id) || !panel || typeof panel !== "object") continue;
+      const params = "params" in panel ? panel.params : undefined;
+      panel.params = {
+        ...(params && typeof params === "object" && !Array.isArray(params) ? params : {}),
+        panelId: id,
+        kind: "image:image",
+      };
+    }
+  }
+  return config;
+}
+
 function purgeServicesPanels(config: AppConfig): AppConfig {
   for (const session of config.sessions) {
     session.panels = session.panels.filter((panel) => panel.kind !== "services" && panel.id !== "services");
@@ -367,5 +423,5 @@ export function parseAppConfig(text: string): AppConfig {
     const path = issue?.path.join(".") || "(根)";
     throw new Error(`配置格式不合法: ${path}: ${issue?.message ?? "unknown"}`);
   }
-  return purgeServicesPanels(migrateTeleopPanels(result.data));
+  return purgeServicesPanels(migrateLegacyImagePanels(migrateLegacyPlotPanels(migrateTeleopPanels(result.data))));
 }

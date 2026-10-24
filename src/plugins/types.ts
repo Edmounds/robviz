@@ -1,9 +1,8 @@
 /**
  * RobViz 插件契约。写插件请读 docs/04-plugin-guide.md。
  *
- * 插件 = src/plugins/<目录>/index.tsx 里 default 导出一个 RobvizPlugin。
- * 放进目录即自动生效（构建期 import.meta.glob 发现），无需注册代码。
- * 三类扩展点都套在 ErrorBoundary 里，插件崩溃不影响主体。
+ * 插件包默认导出 RobvizPlugin，通过公开 SDK 构建并在运行时加载。
+ * 渲染扩展点由 ErrorBoundary 隔离，副作用由插件负责释放。
  */
 import type { ComponentType } from "react";
 
@@ -52,6 +51,8 @@ export interface PluginContext {
   onPluginStateChange: (pluginId: string, state: unknown) => void;
   /** 获取指定服务的最终解析 URL（自动应用 Session 基准主机与网络端口覆盖） */
   getServiceUrl: (serviceId: string) => string;
+  /** Explicit media URL retained from the portable session configuration. */
+  mediaUrl?: string;
 }
 
 export interface ViewportPoseInteraction {
@@ -115,6 +116,11 @@ export interface PluginSectionProps {
   ctx: PluginContext;
 }
 
+/** A toolbar tool owns its interaction and may portal a drawer into the host outlet. */
+export interface PluginToolProps extends PluginPageProps {
+  outlet: HTMLElement | null;
+}
+
 export interface RobvizPlugin {
   /** 唯一 id（小写中划线），同时作为面板 kind 前缀 */
   id: string;
@@ -130,6 +136,8 @@ export interface RobvizPlugin {
   viewportTools?: PluginViewportTool[];
   /** 顶栏页面 */
   pages?: PluginPage[];
+  toolbarTools?: Array<{ id: string; component: ComponentType<PluginToolProps> }>;
+  settings?: Array<{ id: string; title: string | ((ctx: PluginContext) => string); component: ComponentType<PluginSectionProps> }>;
   /** 主动暴露的服务及默认端口（显示在网络设置中并允许用户自定义覆盖） */
   services?: PluginServiceDefinition[];
 }

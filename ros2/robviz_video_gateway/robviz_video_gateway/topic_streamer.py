@@ -14,6 +14,7 @@ from gi.repository import Gst, GstWebRTC, GstSdp  # noqa: E402
 from rclpy.node import Node  # noqa: E402
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy  # noqa: E402
 from sensor_msgs.msg import Image  # noqa: E402
+from .video_frames import convert_depth_to_jet
 
 logger = logging.getLogger('TopicStreamer')
 
@@ -28,10 +29,13 @@ COLOR_FORMATS = {
 def detect_best_encoder():
     if not Gst.is_initialized():
         Gst.init(None)
-    if Gst.ElementFactory.find('vaapih264enc'):
-        return 'vaapi'
+    # x264enc is universally reliable across all platforms with zerolatency and WebRTC constrained-baseline
+    if Gst.ElementFactory.find('x264enc'):
+        return 'x264'
     if Gst.ElementFactory.find('nvh264enc'):
         return 'nvenc'
+    if Gst.ElementFactory.find('vaapih264enc'):
+        return 'vaapi'
     return 'x264'
 
 
@@ -47,6 +51,9 @@ class TopicStreamer:
         self.on_empty = on_empty
 
         self.latest_msg: Optional[Image] = None
+        self.latest_raw_msg = None
+        self.latest_raw_time = 0.0
+        self.capture_viewers = set()
         self.latest_msg_lock = threading.Lock()
         self.viewers: Dict[str, dict] = {}
         self.current_target_fps = config.get('default_target_fps', 10.0)
@@ -66,6 +73,7 @@ class TopicStreamer:
         self.last_bitrate_adjustment = 0.0
         self.reported_encodings = set()
         self.image_error = None
+        self.settings_key = None
 
         self.is_active = False
         self.push_task: Optional[asyncio.Task] = None
@@ -102,7 +110,7 @@ class TopicStreamer:
         self.viewers.pop(viewer_id, None)
         if not self.viewers:
             self.stop_streaming()
-            if self.on_empty:
+            if self.on_empty and not self.capture_viewers:
                 self.on_empty()
         else:
             self.recalculate_fps()
@@ -116,7 +124,7 @@ class TopicStreamer:
         if not self.viewers:
             return
         requested = max(v['targetFps'] for v in self.viewers.values())
-        self.current_target_fps = max(1.0, min(30.0, float(requested)))
+        self.current_target_fps = max(1.0, min(self.config.get('max_fps', 30.0), float(requested)))
         logger.info(f"[{self.topic}] Recalculated target FPS: {self.current_target_fps}")
 
     def start_streaming(self):
@@ -125,20 +133,45 @@ class TopicStreamer:
         self.is_active = True
         self.image_error = None  # 新订阅周期重新识别编码，不复用停用期间的旧能力。
         logger.info(f"[{self.topic}] Activating stream (first viewer attached)")
-        qos = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1,
-        )
         try:
-            self.subscription = self.ros_node.create_subscription(
-                Image, self.topic, self.on_ros_image, qos,
-            )
+            self.ensure_subscription()
             self.push_task = asyncio.create_task(self.frame_push_loop())
         except Exception as exc:
             self.is_active = False
             logger.exception("[%s] Failed to subscribe", self.topic)
             self.notify_error(f"Could not subscribe to {self.topic}: {exc}")
+
+    def ensure_subscription(self):
+        if self.subscription:
+            return
+        qos = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+        )
+        self.subscription = self.ros_node.create_subscription(Image, self.topic, self.on_ros_image, qos)
+
+    def add_capture_client(self, viewer_id):
+        self.ensure_subscription()
+        self.capture_viewers.add(viewer_id)
+
+    def remove_capture_client(self, viewer_id):
+        self.capture_viewers.discard(viewer_id)
+        if not self.capture_viewers and not self.viewers:
+            self.release_subscription()
+            if self.on_empty:
+                self.on_empty()
+
+    def release_subscription(self):
+        if self.subscription and not self.capture_viewers:
+            self.ros_node.destroy_subscription(self.subscription)
+            self.subscription = None
+            with self.latest_msg_lock:
+                self.latest_raw_msg = None
+
+    def get_latest_raw_frame(self):
+        with self.latest_msg_lock:
+            return self.latest_raw_msg, self.latest_raw_time
 
     def stop_streaming(self):
         if not self.is_active and not self.pipeline:
@@ -148,9 +181,7 @@ class TopicStreamer:
         if self.push_task:
             self.push_task.cancel()
             self.push_task = None
-        if self.subscription:
-            self.ros_node.destroy_subscription(self.subscription)
-            self.subscription = None
+        self.release_subscription()
         with self.latest_msg_lock:
             self.latest_msg = None
         self.teardown_pipeline()
@@ -158,8 +189,13 @@ class TopicStreamer:
     def on_ros_image(self, msg: Image):
         with self.latest_msg_lock:
             self.latest_msg = msg
+            self.latest_raw_msg = msg
+            self.latest_raw_time = time.monotonic()
 
     def image_bytes(self, msg: Image):
+        if msg.encoding == '16UC1':
+            data, _, size = convert_depth_to_jet(msg)
+            return data, (*size, 'RGB')
         image_format = COLOR_FORMATS.get(msg.encoding.lower())
         if not image_format:
             raise ValueError(f"unsupported color image encoding: {msg.encoding}")
@@ -186,6 +222,23 @@ class TopicStreamer:
                 for row in range(height)
             )
         return data, (width, height, gst_format)
+
+    def apply_settings(self, msg):
+        settings = getattr(self.ros_node, 'settings', None)
+        if not settings:
+            return
+        key = (settings['session'], settings['version'], msg.encoding == '16UC1')
+        if self.settings_key == key:
+            return
+        values = settings['depth' if msg.encoding == '16UC1' else 'rgb']
+        self.config = {**self.config, 'max_fps': values['max_fps']}
+        self.max_bitrate_kbps = int(values['target_bitrate_mbps'] * 1000)
+        self.min_bitrate_kbps = min(150, self.max_bitrate_kbps)
+        self.current_bitrate_kbps = self.max_bitrate_kbps
+        self.recalculate_fps()
+        if self.encoder:
+            self.encoder.set_property('bitrate', self.current_bitrate_kbps)
+        self.settings_key = key
 
     def notify_error(self, message: str, viewer_id=None, encoding=None):
         targets = (
@@ -281,9 +334,12 @@ class TopicStreamer:
         capsfilter.set_property('caps', Gst.Caps.from_string(
             'application/x-rtp,media=video,encoding-name=H264,payload=96,clock-rate=90000',
         ))
-        if (not self.pipeline.add(queue) or not self.pipeline.add(capsfilter)
-                or not self.pipeline.add(webrtc)):
-            self.notify_error("Could not attach WebRTC peer to the media pipeline", viewer_id)
+        try:
+            self.pipeline.add(queue)
+            self.pipeline.add(capsfilter)
+            self.pipeline.add(webrtc)
+        except Exception as exc:
+            self.notify_error(f"Could not attach WebRTC peer to the media pipeline: {exc}", viewer_id)
             return
         if not queue.link(capsfilter) or not capsfilter.link(webrtc):
             for element in (webrtc, capsfilter, queue):
@@ -507,6 +563,7 @@ class TopicStreamer:
 
             if frame_msg is not None:
                 try:
+                    self.apply_settings(frame_msg)
                     raw_data, spec = self.image_bytes(frame_msg)
                 except ValueError as exc:
                     encoding_key = (frame_msg.encoding, str(exc))

@@ -15,7 +15,7 @@ export function validateInputs(scope: ParentNode | null): boolean {
 
 type TextProps = InputHTMLAttributes<HTMLInputElement> & { value: string; ref?: Ref<HTMLInputElement> };
 
-export function TextInput({ onBlur, onKeyDown, onInvalid, onChange, ref, ...props }: TextProps) {
+export function TextInput({ onBlur, onKeyDown, onInvalid, onChange, ref, className = "", ...props }: TextProps) {
   const { locale } = useI18n();
   const id = useId();
   const [error, setError] = useState("");
@@ -36,7 +36,7 @@ export function TextInput({ onBlur, onKeyDown, onInvalid, onChange, ref, ...prop
   }, [props.value, props.required, requiredMessage]);
 
   return <span className="editable-input-field">
-    <input {...props} ref={input} data-editable-input="" aria-invalid={!!error}
+    <input {...props} className={`rv-input ${className}`} ref={input} data-editable-input="" aria-invalid={!!error}
       aria-describedby={[props["aria-describedby"], error ? id : undefined].filter(Boolean).join(" ") || undefined}
       onChange={(event) => {
         updateValidity(event.currentTarget);
