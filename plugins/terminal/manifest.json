@@ -1,0 +1,18 @@
+{
+  "id": "terminal",
+  "name": "终端 (Terminal)",
+  "version": "0.1.0",
+  "sdkApiVersion": 1,
+  "entry": "index.js",
+  "style": "style.css",
+  "files": [
+    "index.js",
+    "style.css"
+  ],
+  "requiredServices": [
+    {
+      "id": "terminal",
+      "protocolVersion": 1
+    }
+  ]
+}

@@ -29,7 +29,11 @@ __pycache__/
 *$py.class
 
 # Local plugin installations and generated SDK declarations
-/plugins/
+/plugins/*
+!/plugins/image/
+!/plugins/plot/
+!/plugins/terminal/
+!/plugins/index.json
 /sdk/types/
 /sdk/*.tgz
 
