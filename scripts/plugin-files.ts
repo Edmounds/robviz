@@ -180,7 +180,7 @@ async function swapPackage(root: string, id: string, stage: string, remove = fal
 export async function installCatalogPlugin(root: string, catalogValue: unknown, idValue: string, read: (file: string) => Promise<Buffer>) {
   const id = pluginIdSchema.parse(idValue);
   const record = catalogSchema.parse(catalogValue).plugins.find((plugin) => plugin.id === id);
-  if (!record || record.directory !== `plugins/${id}`) throw new Error("Plugin is absent from the configured catalog");
+  if (!record || (record.directory !== id && record.directory !== `plugins/${id}`)) throw new Error("Plugin is absent from the configured catalog");
   const names = Object.keys(record.sha256);
   if (!names.includes("manifest.json") || names.length > 257) throw new Error("Invalid catalog file list");
   const stage = await mkdtemp(join(root, ".stage-"));

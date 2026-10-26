@@ -69,7 +69,7 @@ describe("plugin package protocol", () => {
       "manifest.json": Buffer.from(JSON.stringify({ ...manifest, version: "1.1.0" })),
       "index.js": Buffer.from("export default {id:'sample',name:'New version'};"),
     };
-    const catalog = { sdkApiVersion: 1, plugins: [{ id: "sample", version: "1.1.0", directory: "plugins/sample",
+    const catalog = { sdkApiVersion: 1, plugins: [{ id: "sample", version: "1.1.0", directory: "sample",
       sha256: Object.fromEntries(Object.entries(files).map(([name, data]) => [name, createHash("sha256").update(data).digest("hex")])) }] };
     await withPluginLock(root, () => installCatalogPlugin(root, catalog, "sample", async (path) => files[path.split("/").at(-1)!]));
     expect((await readPackage(root, "sample")).version).toBe("1.1.0");
